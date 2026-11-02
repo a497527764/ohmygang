@@ -2,6 +2,7 @@ pub mod base32;
 pub mod crypto;
 pub mod heartsteel;
 pub mod protocol;
+pub mod rooms;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
