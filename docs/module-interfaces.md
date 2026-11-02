@@ -419,3 +419,4 @@ transport、crypto、storage → 不依赖其他业务模块
 
 - 2026-11-02 按设计审查修订：合并 `reliability` 到 `sync`，新增 `core`、`protocol`、`settings`，移除 `friends` 和打洞接口，补齐缺失的接口。
 - 原文引用的 `design-review.md` 未入库，相关引用已移除。
+- 2026-11-02 M1-1 已实现：`crypto`、`protocol`（房间码、事件、事件内容）、`heartsteel`（判定与重放）、`rooms`（状态推导），共 44 个单元测试。包与帧、存储、网络和界面尚未实现。
