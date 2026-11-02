@@ -6,9 +6,9 @@
 
 ---
 
-## 1. Git：只用 master，不建分支
+## 1. Git：只用 master/main，不建分支
 
-- 单人开发，**不需要 feature 分支、不需要 PR**。所有改动直接在 `master` 上提交。
+- 单人开发，**不需要 feature 分支、不需要 PR**。所有改动直接在 `master`/`main` 上提交。
 - 不要创建、切换、合并分支，除非我明确要求。
 - 流程：改代码 → 相关检查/测试通过 → `git add` **本次相关的文件**（不用 `git add -A`）→ `git commit` → （我要求时）`git push`。
 - 不用 `--force`、`reset --hard` 等破坏性命令；push 之前跟我确认一次（push 是对外可见的动作）。
