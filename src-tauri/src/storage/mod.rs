@@ -11,6 +11,7 @@ pub mod identity;
 pub mod rooms;
 mod schema;
 pub mod settings;
+pub mod sync_state;
 
 use std::path::Path;
 

@@ -29,6 +29,7 @@ export function SettingsPage(p: Props) {
   const [newRelay, setNewRelay] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [volume, setVolume] = useState(s.volume);
+  const [limits, setLimits] = useState({ lan: String(s.historyLimitLan), relay: String(s.historyLimitRelay) });
 
   async function update(patch: Partial<Omit<Settings, "defaultRelays">>): Promise<boolean> {
     setError(null);
@@ -177,6 +178,37 @@ export function SettingsPage(p: Props) {
             </button>
           </form>
           {error && <p className="field-error">{error}</p>}
+        </section>
+
+        <section className="settings-section">
+          <h3>聊天记录</h3>
+          <p className="settings-note">新进一个群时，最多从群友那里同步最近多少条聊天。层数和群成员总是完整同步，不受这个数影响。</p>
+          <div className="limit-row">
+            <label>
+              <span>经局域网</span>
+              <input
+                type="number"
+                min={0}
+                max={100000}
+                value={limits.lan}
+                onChange={(e) => setLimits({ ...limits, lan: e.currentTarget.value })}
+                onBlur={() => update({ historyLimitLan: Number(limits.lan) || 0 })}
+              />
+              <span>条</span>
+            </label>
+            <label>
+              <span>经中继</span>
+              <input
+                type="number"
+                min={0}
+                max={100000}
+                value={limits.relay}
+                onChange={(e) => setLimits({ ...limits, relay: e.currentTarget.value })}
+                onBlur={() => update({ historyLimitRelay: Number(limits.relay) || 0 })}
+              />
+              <span>条</span>
+            </label>
+          </div>
         </section>
 
         <section className="settings-section">

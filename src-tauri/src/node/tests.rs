@@ -409,3 +409,104 @@ async fn unconfirmed_message_is_resent_and_then_marked_sent() {
     remove_db(&da);
     remove_db(&db);
 }
+
+fn chat_count(room: RoomId) -> impl Fn(&mut Core) -> usize + Send + Sync + Clone + 'static {
+    move |c: &mut Core| {
+        c.list_messages(&room, None, 500)
+            .unwrap()
+            .iter()
+            .filter(|i| matches!(i, crate::chat::TimelineItem::Chat(_)))
+            .count()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn chats_missed_while_offline_are_backfilled() {
+    let addrs = free_ports(2);
+    let (da, db) = (temp_db(), temp_db());
+    let a = start(&da, 1, addrs[0], &addrs).await;
+    let b = start(&db, 2, addrs[1], &addrs).await;
+    let (room, code) = create(&a).await;
+    join(&b, &code).await;
+    assert!(eventually(&b, status_is(room, RoomStatus::Active)).await);
+
+    drop(b);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    burst(&a, room, 20).await;
+    let b = start(&db, 2, addrs[1], &addrs).await;
+    // 重发要 6 秒后才开始，这里 5 秒内补齐只能靠聊天补齐
+    let count = chat_count(room);
+    assert!(
+        eventually(&b, move |c| count(c) == 20).await,
+        "离线期间错过的 20 条聊天全部补回"
+    );
+    let texts = b
+        .handle
+        .call(move |c, _| {
+            c.list_messages(&room, None, 50)
+                .unwrap()
+                .iter()
+                .filter_map(|i| match i {
+                    crate::chat::TimelineItem::Chat(m) => Some(m.text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap();
+    assert_eq!(texts.first().map(String::as_str), Some("冲 0"));
+    assert_eq!(
+        texts.last().map(String::as_str),
+        Some("冲 19"),
+        "按时间排好"
+    );
+
+    drop((a, b));
+    remove_db(&da);
+    remove_db(&db);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn new_member_only_gets_the_most_recent_chats() {
+    let addrs = free_ports(2);
+    let (da, dc) = (temp_db(), temp_db());
+    let a = start(&da, 1, addrs[0], &addrs).await;
+    let (room, code) = create(&a).await;
+    burst(&a, room, 10).await;
+
+    let c = start(&dc, 3, addrs[1], &addrs).await;
+    c.handle
+        .call(|core, _| {
+            core.update_settings(crate::settings::SettingsPatch {
+                history_limit_lan: Some(3),
+                ..Default::default()
+            })
+            .unwrap();
+        })
+        .await
+        .unwrap();
+    join(&c, &code).await;
+    assert!(eventually(&c, status_is(room, RoomStatus::Active)).await);
+    let count = chat_count(room);
+    assert!(
+        eventually(&c, move |core| count(core) == 3).await,
+        "只同步最近 3 条"
+    );
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(
+        c.handle.call(move |core, _| chat_count(room)(core)).await,
+        Some(3),
+        "更早的不再补"
+    );
+
+    burst(&a, room, 1).await;
+    let count = chat_count(room);
+    assert!(
+        eventually(&c, move |core| count(core) == 4).await,
+        "之后的新消息照常收到"
+    );
+
+    drop((a, c));
+    remove_db(&da);
+    remove_db(&dc);
+}

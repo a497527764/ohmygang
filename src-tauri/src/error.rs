@@ -25,6 +25,8 @@ pub enum AppError {
     InvalidRelay(String),
     #[error("音量必须在 0 到 100 之间")]
     InvalidVolume,
+    #[error("聊天同步条数最多 100000")]
+    InvalidHistoryLimit,
     #[error("本机密钥不可用：{0}")]
     KeyStore(String),
     #[error("本机数据解密失败，可能是本机主密钥被更换")]

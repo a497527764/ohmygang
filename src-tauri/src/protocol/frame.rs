@@ -5,7 +5,8 @@
 //!    room_id 已在包头、event_id 能由内容算出，都不传；收端用包头的 room_id 补上并重算 event_id，
 //!    再交给 `verify_stateless` 验签。把别的房间的事件塞进来，因 room_id 不同 event_id 也不同，验签必然失败。
 //! 2. 帧是 CBOR 枚举，变体名和字段名都用一两个字母，节省字节。
-//! 3. `decode_frame` 解不出来（损坏、或将来新增的帧类型）就返回 None，由调用方忽略。
+//! 3. M2 新增 `WantFloors`、`Floors`（新成员同步最近 n 条聊天，架构 7.4），单独成包；旧版本解不开就丢弃这个包。
+//! 4. `decode_frame` 解不出来（损坏、或将来新增的帧类型）就返回 None，由调用方忽略。
 
 use serde::{Deserialize, Serialize};
 
@@ -101,6 +102,15 @@ pub struct WantRange {
     pub to_seq: u64,
 }
 
+/// Floors 里的一项：某作者在最近 n 条聊天里最早的序号。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FloorEntry {
+    #[serde(rename = "a", with = "serde_bytes")]
+    pub author: ShortId,
+    #[serde(rename = "f")]
+    pub floor: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Frame {
     /// 实时广播或补齐响应。
@@ -128,6 +138,20 @@ pub enum Frame {
         to: ShortId,
         #[serde(rename = "r")]
         ranges: Vec<WantRange>,
+    },
+    /// 新成员问 `to`：最近 n 条聊天从每位作者的第几条开始。
+    #[serde(rename = "F")]
+    WantFloors {
+        #[serde(rename = "t", with = "serde_bytes")]
+        to: ShortId,
+        #[serde(rename = "n")]
+        n: u32,
+    },
+    /// 回答 WantFloors。
+    #[serde(rename = "G")]
+    Floors {
+        #[serde(rename = "v")]
+        vector: Vec<FloorEntry>,
     },
 }
 
@@ -209,6 +233,16 @@ mod tests {
                     stream: 0,
                     from_seq: 2,
                     to_seq: 5,
+                }],
+            },
+            Frame::WantFloors {
+                to: [9u8; 8],
+                n: 500,
+            },
+            Frame::Floors {
+                vector: vec![FloorEntry {
+                    author: [8u8; 8],
+                    floor: 42,
                 }],
             },
         ];

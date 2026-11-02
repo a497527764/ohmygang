@@ -32,10 +32,14 @@ use tokio::time::MissedTickBehavior;
 use crate::app_core::{Core, CoreEvent, RoomStatus};
 use crate::crypto::{EventId, MemberId, RoomId, RoomKey};
 use crate::protocol::event::SignedEvent;
-use crate::protocol::frame::{Frame, HaveEntry, ShortId, WantRange, WireEvent, short_id};
+use crate::protocol::frame::{
+    FloorEntry, Frame, HaveEntry, ShortId, WantRange, WireEvent, short_id,
+};
 use crate::protocol::packet::{PacketError, open_packet, peek_room_id, seal_packets};
 use crate::sync::path::{self, PathKind, PeerPaths, Via};
-use crate::sync::plan::{MAX_WANT_EVENTS, dominates, ready_to_activate, state_gaps};
+use crate::sync::plan::{
+    MAX_WANT_EVENTS, chat_gaps, dominates, missing_total, ready_to_activate, state_gaps,
+};
 use crate::sync::resend::ResendQueue;
 use crate::transport::budget::Priority;
 use crate::transport::lan::{Inbox, LanConfig, LanTransport};
@@ -291,6 +295,15 @@ struct RoomSync {
     want: Option<InFlightWant>,
     failures: HashMap<MemberId, u32>,
     told_dissolve: HashMap<MemberId, Instant>,
+    floors: FloorAsk,
+}
+
+/// 新成员问「最近 n 条聊天从哪开始」的进度（架构 7.4）。已经是成员的房间一开始就是 Done，聊天从 1 开始补。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FloorAsk {
+    Needed,
+    Asked { at: Instant },
+    Done,
 }
 
 pub struct Node {
@@ -310,8 +323,12 @@ pub struct Node {
     resend: ResendQueue<SignedEvent>,
 }
 
-fn missing_count(gaps: &[WantRange]) -> u64 {
-    gaps.iter().map(|r| r.to_seq - r.from_seq + 1).sum()
+/// 发给某位同伴的路径：在局域网上就单播，否则经中继（帧里带目标，其他人收到会忽略）。
+fn route_to(p: &Peer, now: Instant) -> Route {
+    match (p.paths.kind(now), p.lan_addr) {
+        (PathKind::Lan, Some(addr)) => Route::Lan(addr),
+        _ => Route::Relay(Priority::Control),
+    }
 }
 
 impl Node {
@@ -410,6 +427,11 @@ impl Node {
                     want: None,
                     failures: HashMap::new(),
                     told_dissolve: HashMap::new(),
+                    floors: if status == RoomStatus::Joining {
+                        FloorAsk::Needed
+                    } else {
+                        FloorAsk::Done
+                    },
                 },
             );
         }
@@ -588,6 +610,8 @@ impl Node {
                 vector,
             } => self.on_have(room, source, member, period_s, vector).await,
             Frame::Want { to, ranges } => self.on_want(room, source, to, ranges),
+            Frame::WantFloors { to, n } => self.on_want_floors(room, source, to, n).await,
+            Frame::Floors { vector } => self.on_floors(room, vector).await,
         }
         self.maybe_activate(room).await;
     }
@@ -736,8 +760,8 @@ impl Node {
         }
     }
 
-    /// 没有在途的 Want 时，挑最近联系过、还没失败太多次的同伴，要它有、本机缺的状态事件。
-    /// 同伴在局域网上就单播，否则经中继发（Want 带目标，其他人收到会忽略）。
+    /// 没有在途的 Want 时，挑最近联系过、还没失败太多次的同伴，要它有、本机缺的事件：
+    /// 先补状态事件（任何同伴有就先要），都齐了再补聊天（新成员要等问到分界之后）。
     async fn plan_want(&mut self, room: RoomId) {
         let Ok(holdings) = self.core.holdings(&room) else {
             return;
@@ -755,19 +779,26 @@ impl Node {
             .filter(|(m, _)| rs.failures.get(*m).copied().unwrap_or(0) < self.cfg.want_max_tries)
             .collect();
         candidates.sort_by_key(|(_, p)| std::cmp::Reverse(p.last_seen));
-        let choice = candidates.into_iter().find_map(|(m, p)| {
+        let floors = self.floors_if_known(&room);
+        let state = candidates.iter().find_map(|(m, p)| {
             let gaps = state_gaps(&holdings, &p.vector);
-            let route = match (p.paths.kind(now), p.lan_addr) {
-                (PathKind::Lan, Some(addr)) => Route::Lan(addr),
-                _ => Route::Relay(Priority::Control),
-            };
-            (!gaps.is_empty()).then_some((*m, route, gaps))
+            (!gaps.is_empty()).then_some((**m, route_to(p, now), gaps))
+        });
+        let choice = state.or_else(|| {
+            let floors = floors.as_ref()?;
+            candidates.iter().find_map(|(m, p)| {
+                let gaps = chat_gaps(&holdings, &p.vector, floors);
+                (!gaps.is_empty()).then_some((**m, route_to(p, now), gaps))
+            })
         });
         let Some((peer, route, gaps)) = choice else {
             return;
         };
         let key = rs.key;
-        let missing_before = missing_count(&gaps);
+        let missing_before = rs
+            .peers
+            .get(&peer)
+            .map_or(0, |p| missing_total(&holdings, &p.vector, floors.as_ref()));
         let frame = Frame::Want {
             to: short_id(&peer),
             ranges: gaps,
@@ -782,11 +813,19 @@ impl Node {
         }
     }
 
-    /// 在途的 Want 有进展就放行下一个；超时没进展记一次失败，换人。
+    /// 聊天补齐分界已知（不是正在问分界的新成员）时返回分界表。
+    fn floors_if_known(&self, room: &RoomId) -> Option<HashMap<ShortId, u64>> {
+        let done = self.rooms.get(room)?.floors == FloorAsk::Done;
+        done.then(|| self.core.chat_floors(room).unwrap_or_default())
+    }
+
+    /// 在途的 Want 有进展（缺的总数变少）就放行下一个；超时没进展记一次失败，换人。
+    /// 缺的总数不受每次 64 个的限制，否则缺得多时每批都会被误判为没进展。
     fn check_want(&mut self, room: RoomId) {
         let Ok(holdings) = self.core.holdings(&room) else {
             return;
         };
+        let floors = self.floors_if_known(&room);
         let timeout = self.cfg.want_timeout;
         let Some(rs) = self.rooms.get_mut(&room) else {
             return;
@@ -797,7 +836,7 @@ impl Node {
         let missing_now = rs
             .peers
             .get(&w.peer)
-            .map_or(0, |p| missing_count(&state_gaps(&holdings, &p.vector)));
+            .map_or(0, |p| missing_total(&holdings, &p.vector, floors.as_ref()));
         if missing_now < w.missing_before {
             rs.failures.remove(&w.peer);
             rs.want = None;
@@ -805,6 +844,85 @@ impl Node {
             *rs.failures.entry(w.peer).or_default() += 1;
             rs.want = None;
         }
+    }
+
+    /// 新成员（Joining）先问一位同伴最近 n 条聊天从哪开始（架构 7.4），n 按到这位同伴的路径取本机上限。
+    /// 问了一直没回（比如对方是旧版本）就放弃，聊天从 1 开始补。
+    async fn maybe_ask_floors(&mut self, room: RoomId) {
+        let Some(rs) = self.rooms.get_mut(&room) else {
+            return;
+        };
+        match rs.floors {
+            FloorAsk::Done => return,
+            FloorAsk::Asked { at, .. } => {
+                if at.elapsed() > self.cfg.want_timeout * 2 {
+                    rs.floors = FloorAsk::Done;
+                }
+                return;
+            }
+            FloorAsk::Needed => {}
+        }
+        let now = Instant::now();
+        let Some((peer, p)) = rs.peers.iter().max_by_key(|(_, p)| p.last_seen) else {
+            return;
+        };
+        let (peer, route, key) = (*peer, route_to(p, now), rs.key);
+        let Ok(settings) = self.core.settings() else {
+            return;
+        };
+        let n = match route {
+            Route::Lan(_) => settings.history_limit_lan,
+            _ => settings.history_limit_relay,
+        };
+        let frame = Frame::WantFloors {
+            to: short_id(&peer),
+            n,
+        };
+        send_frame(&self.lan, self.relay.as_ref(), &key, &room, &frame, route).await;
+        if let Some(rs) = self.rooms.get_mut(&room) {
+            rs.floors = FloorAsk::Asked { at: now };
+        }
+    }
+
+    /// 回答 WantFloors：n 取对方要的和本机这条路径上限的较小值。
+    async fn on_want_floors(&mut self, room: RoomId, source: Source, to: ShortId, n: u32) {
+        if to != short_id(&self.me) {
+            return;
+        }
+        let (Some(key), Ok(settings)) = (self.key_of(&room), self.core.settings()) else {
+            return;
+        };
+        let limit = match source {
+            Source::Lan(_) => settings.history_limit_lan,
+            Source::Relay => settings.history_limit_relay,
+        };
+        let Ok(vector) = self.core.floors_for_last(&room, n.min(limit)) else {
+            return;
+        };
+        let frame = Frame::Floors { vector };
+        let route = source.reply(Priority::Control);
+        send_frame(&self.lan, self.relay.as_ref(), &key, &room, &frame, route).await;
+    }
+
+    /// 收到分界：列出的作者按列出的记；没列出但回答者有聊天的作者，分界设在回答者已有的之后（不要旧的）。
+    /// 没在问分界时收到的（比如回答别人的）不理。
+    async fn on_floors(&mut self, room: RoomId, vector: Vec<FloorEntry>) {
+        let Some(rs) = self.rooms.get_mut(&room) else {
+            return;
+        };
+        if !matches!(rs.floors, FloorAsk::Asked { .. }) {
+            return;
+        }
+        let mut floors: Vec<(ShortId, u64)> = vector.iter().map(|f| (f.author, f.floor)).collect();
+        let newest = rs.peers.values().max_by_key(|p| p.last_seen);
+        for e in newest.map(|p| p.vector.as_slice()).unwrap_or_default() {
+            if e.chat_max > 0 && !floors.iter().any(|(a, _)| *a == e.author) {
+                floors.push((e.author, e.chat_max + 1));
+            }
+        }
+        rs.floors = FloorAsk::Done;
+        let _ = self.core.set_chat_floors(&room, &floors);
+        self.plan_want(room).await;
     }
 
     async fn maybe_activate(&mut self, room: RoomId) {
@@ -866,6 +984,7 @@ impl Node {
                 self.send_have(room, Via::Relay).await;
             }
             self.check_want(room);
+            self.maybe_ask_floors(room).await;
             self.plan_want(room).await;
             self.maybe_activate(room).await;
         }

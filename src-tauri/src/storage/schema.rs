@@ -1,7 +1,7 @@
 //! 表结构（架构 9.1）。每个元素是一次升级，下标 + 1 就是升级后的版本号，只能在末尾追加，不能改已有的。
-//! 第 2 版（M1-4）加入 `settings`；`sync_state` 还用不到，留给 M2 以新版本加入。
+//! 第 2 版（M1-4）加入 `settings`；第 3 版（M2）加入 `sync_state`（每位作者的聊天补齐分界）。
 
-pub const MIGRATIONS: &[&str] = &[V1, V2];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3];
 
 const V1: &str = "
 CREATE TABLE identity (
@@ -72,5 +72,14 @@ const V2: &str = "
 CREATE TABLE settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+";
+
+const V3: &str = "
+CREATE TABLE sync_state (
+    room_id BLOB NOT NULL,
+    author BLOB NOT NULL,
+    chat_floor INTEGER NOT NULL,
+    PRIMARY KEY (room_id, author)
 );
 ";

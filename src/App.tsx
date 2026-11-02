@@ -57,6 +57,8 @@ function App() {
   membersRef.current = members;
 
   const fail = useCallback((e: unknown) => setError(String(e)), []);
+  // 补齐时会一下子来很多条：标记已读和刷新房间列表攒一下，300 毫秒内只做一次
+  const readTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadRooms = useCallback(() => api.rooms().then(setRooms).catch(fail), [fail]);
   const loadMembers = useCallback(
@@ -114,7 +116,13 @@ function App() {
         }
         if (e.type === "timeline") {
           setMessages((list) => mergeMessages(list, [e.message]));
-          api.markRead(e.roomId).then(loadRooms).catch(fail);
+          if (!readTimer.current) {
+            const roomId = e.roomId;
+            readTimer.current = setTimeout(() => {
+              readTimer.current = null;
+              api.markRead(roomId).then(loadRooms).catch(fail);
+            }, 300);
+          }
         }
         if (e.type === "stacks" || e.type === "room" || e.type === "status" || e.type === "live") {
           loadMembers(e.roomId);

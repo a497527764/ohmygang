@@ -987,6 +987,20 @@ input[role="switch"]:checked::before {
   flex: 1;
   height: 34px;
 }
+.limit-row {
+  display: flex;
+  gap: 24px;
+  margin-top: 10px;
+}
+.limit-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.limit-row input:not([type="checkbox"]):not([type="range"]) {
+  width: 96px;
+  height: 32px;
+}
 .settings-warn {
   margin: 0;
   padding: 10px 12px;

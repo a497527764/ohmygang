@@ -3,8 +3,57 @@
 use super::ingest_tests::{founding, remote_owner, state};
 use super::tests::{DEFAULT_PARAMS, new_core};
 use super::*;
-use crate::protocol::frame::short_id;
+use crate::protocol::frame::{ShortId, short_id};
 use crate::sync::plan::{ready_to_activate, state_gaps};
+
+#[test]
+fn floors_mark_where_the_last_n_chats_begin() {
+    let mut a = new_core();
+    let created = a.create_room("开黑", DEFAULT_PARAMS, 1000).unwrap();
+    let room = created.summary.room_id;
+    let mut b = new_core();
+    b.join_room(&created.code, 2000).unwrap();
+    b.ingest_events(&room, &a.room_events(&room).unwrap(), false, 3000)
+        .unwrap();
+    let joined = b.activate(&room, 4000).unwrap();
+    a.ingest_events(&room, &joined, false, 4000).unwrap();
+    // A 的聊天在 10、20、30、40、50 秒，B 的在 25、35、60 秒（各自从 1 编号）
+    for t in [10_000, 20_000, 30_000, 40_000, 50_000] {
+        a.send_text(&room, "甲", t).unwrap();
+    }
+    for t in [25_000, 35_000, 60_000] {
+        let s = b.send_text(&room, "乙", t).unwrap();
+        a.ingest_events(&room, &s.events, false, 100_000).unwrap();
+    }
+    let (sa, sb) = (
+        short_id(&a.identity().member_id),
+        short_id(&b.identity().member_id),
+    );
+    let floors = |n| {
+        let mut v: Vec<(ShortId, u64)> = a
+            .floors_for_last(&room, n)
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.author, f.floor))
+            .collect();
+        v.sort();
+        v
+    };
+    // 最近 4 条：B3(60) A5(50) A4(40) B2(35)
+    let mut want = vec![(sa, 4), (sb, 2)];
+    want.sort();
+    assert_eq!(floors(4), want);
+    assert!(floors(0).is_empty());
+    let mut all = vec![(sa, 1), (sb, 1)];
+    all.sort();
+    assert_eq!(floors(100), all);
+
+    // 分界落盘后能读回，后写的覆盖先写的
+    a.set_chat_floors(&room, &[(sa, 3), (sb, 7)]).unwrap();
+    a.set_chat_floors(&room, &[(sb, 2)]).unwrap();
+    let got = a.chat_floors(&room).unwrap();
+    assert_eq!((got.get(&sa), got.get(&sb)), (Some(&3), Some(&2)));
+}
 
 #[test]
 fn joining_member_catches_up_then_activates() {

@@ -56,6 +56,9 @@ export interface Settings {
   soundEnabled: boolean;
   /// 0–100。
   volume: number;
+  /// 新进群时最多同步最近多少条聊天：经局域网、经中继。
+  historyLimitLan: number;
+  historyLimitRelay: number;
   /// 内置默认中继，只读。
   defaultRelays: string[];
 }

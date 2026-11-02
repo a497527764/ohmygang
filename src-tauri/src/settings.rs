@@ -1,12 +1,12 @@
 //! 本机设置（接口文档第 11 节）：只影响本机，不影响层数计算。目前有「允许互联网」、中继列表（M1-4），
-//! 音效开关和音量（M1-5，音效在界面里播放，这里只保存）。
+//! 音效开关和音量（M1-5，音效在界面里播放，这里只保存），新成员同步聊天的条数上限（M2，局域网 5000、中继 500）。
 //!
 //! 实现流程：
 //! 1. 每项设置存成 `settings` 表的一行，值为 JSON 文本；没存过的项用默认值。
 //!    中继列表只在用户改过之后才落盘，所以以后调整默认列表，没改过的用户会自动用上新的；
 //!    改回和默认列表一模一样时删掉这一行，恢复「跟随默认」。
 //! 2. 修改时先校验再写入：中继地址去掉首尾空格，必须是 `wss://` 加上不含空白的地址，重复的只留第一个。
-//!    音量必须在 0–100。任一项不合格就整次修改都不生效。
+//!    音量必须在 0–100，聊天条数上限不超过 100000。任一项不合格就整次修改都不生效。
 
 use rusqlite::Connection;
 use serde::de::DeserializeOwned;
@@ -30,6 +30,9 @@ const INTERNET_ALLOWED: &str = "internet_allowed";
 const RELAYS: &str = "relays";
 const SOUND_ENABLED: &str = "sound_enabled";
 const VOLUME: &str = "volume";
+const HISTORY_LIMIT_LAN: &str = "history_limit_lan";
+const HISTORY_LIMIT_RELAY: &str = "history_limit_relay";
+const MAX_HISTORY_LIMIT: u32 = 100_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalSettings {
@@ -38,6 +41,10 @@ pub struct LocalSettings {
     pub sound_enabled: bool,
     /// 0–100。
     pub volume: u8,
+    /// 新进群时经局域网最多同步最近多少条聊天。
+    pub history_limit_lan: u32,
+    /// 经中继最多同步多少条（中继每秒只能发 3 包，所以少一些）。
+    pub history_limit_relay: u32,
 }
 
 impl Default for LocalSettings {
@@ -47,6 +54,8 @@ impl Default for LocalSettings {
             relays: DEFAULT_RELAYS.map(String::from).to_vec(),
             sound_enabled: true,
             volume: 80,
+            history_limit_lan: 5000,
+            history_limit_relay: 500,
         }
     }
 }
@@ -58,6 +67,8 @@ pub struct SettingsPatch {
     pub relays: Option<Vec<String>>,
     pub sound_enabled: Option<bool>,
     pub volume: Option<u8>,
+    pub history_limit_lan: Option<u32>,
+    pub history_limit_relay: Option<u32>,
 }
 
 fn read<T: DeserializeOwned>(conn: &Connection, key: &str) -> AppResult<Option<T>> {
@@ -75,6 +86,8 @@ pub fn load(conn: &Connection) -> AppResult<LocalSettings> {
         relays: read(conn, RELAYS)?.unwrap_or(d.relays),
         sound_enabled: read(conn, SOUND_ENABLED)?.unwrap_or(d.sound_enabled),
         volume: read(conn, VOLUME)?.unwrap_or(d.volume),
+        history_limit_lan: read(conn, HISTORY_LIMIT_LAN)?.unwrap_or(d.history_limit_lan),
+        history_limit_relay: read(conn, HISTORY_LIMIT_RELAY)?.unwrap_or(d.history_limit_relay),
     })
 }
 
@@ -82,6 +95,12 @@ pub fn update(conn: &Connection, patch: SettingsPatch) -> AppResult<LocalSetting
     let relays = patch.relays.map(normalize_relays).transpose()?;
     if patch.volume.is_some_and(|v| v > 100) {
         return Err(AppError::InvalidVolume);
+    }
+    if [patch.history_limit_lan, patch.history_limit_relay]
+        .iter()
+        .any(|v| v.is_some_and(|v| v > MAX_HISTORY_LIMIT))
+    {
+        return Err(AppError::InvalidHistoryLimit);
     }
     let tx = conn.unchecked_transaction()?;
     if let Some(v) = patch.internet_allowed {
@@ -99,6 +118,12 @@ pub fn update(conn: &Connection, patch: SettingsPatch) -> AppResult<LocalSetting
     }
     if let Some(v) = patch.volume {
         write(&tx, VOLUME, v)?;
+    }
+    if let Some(v) = patch.history_limit_lan {
+        write(&tx, HISTORY_LIMIT_LAN, v)?;
+    }
+    if let Some(v) = patch.history_limit_relay {
+        write(&tx, HISTORY_LIMIT_RELAY, v)?;
     }
     tx.commit()?;
     load(conn)

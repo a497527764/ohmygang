@@ -314,6 +314,22 @@ pub fn mark_sent(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// 最近 n 条聊天（按显示顺序）里每位作者最早的序号。
+pub fn recent_chat_floors(
+    conn: &Connection,
+    room: &RoomId,
+    n: u32,
+) -> AppResult<Vec<(MemberId, u64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT author_id, MIN(seq) FROM (
+             SELECT author_id, seq FROM events WHERE room_id = ?1 AND stream = 1
+             ORDER BY display_ts DESC, event_id DESC LIMIT ?2
+         ) GROUP BY author_id",
+    )?;
+    let rows = stmt.query_map(params![room, n], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
 /// 本人还没被确认的事件，按 local_seq 升序。
 pub fn pending_own(
     conn: &Connection,

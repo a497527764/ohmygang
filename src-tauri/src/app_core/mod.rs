@@ -9,7 +9,7 @@
 //!    最后为新的聊天和系统提示、层数变化、实时叠层生成给界面的通知。整批在一个事务里。
 //! 4. 它是唯一知道所有模块的地方，业务模块之间不互相回调。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::chat;
 use crate::crypto::{EventId, Identity, MemberId, RoomId, RoomKey};
@@ -19,11 +19,11 @@ use crate::identity::{self, IdentityView};
 use crate::keystore::KeyStore;
 use crate::protocol::body::{self, ProfileBody, Rule};
 use crate::protocol::event::{SignedEvent, Stream, kind, verify_stateless};
-use crate::protocol::frame::{HaveEntry, WantRange, short_id};
+use crate::protocol::frame::{FloorEntry, HaveEntry, ShortId, WantRange, short_id};
 use crate::rooms::service as rooms;
 use crate::settings;
 use crate::storage::events::{self, PutResult, StoredEvent};
-use crate::storage::{Connection, rooms as room_store};
+use crate::storage::{Connection, rooms as room_store, sync_state};
 use crate::sync::plan::Holdings;
 
 pub use crate::chat::{ChatMessage, TimelineCursor, TimelineItem};
@@ -281,7 +281,35 @@ impl Core {
         for (author, stream, seq) in events::holdings_rows(&self.conn, room)? {
             h.add(short_id(&author), stream, seq);
         }
+        for (author, floor) in sync_state::floors(&self.conn, room)? {
+            h.set_chat_floor(author, floor);
+        }
         Ok(h)
+    }
+
+    /// 每位作者的聊天补齐分界（架构 7.3）；没有记录的作者从 1 开始。
+    pub fn chat_floors(&self, room: &RoomId) -> AppResult<HashMap<ShortId, u64>> {
+        sync_state::floors(&self.conn, room)
+    }
+
+    pub fn set_chat_floors(&mut self, room: &RoomId, floors: &[(ShortId, u64)]) -> AppResult<()> {
+        let tx = self.conn.transaction()?;
+        for (author, floor) in floors {
+            sync_state::set_floor(&tx, room, author, *floor)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 回答 WantFloors：最近 n 条聊天里每位作者最早的序号（架构 7.4）。
+    pub fn floors_for_last(&self, room: &RoomId, n: u32) -> AppResult<Vec<FloorEntry>> {
+        Ok(events::recent_chat_floors(&self.conn, room, n)?
+            .into_iter()
+            .map(|(author, floor)| FloorEntry {
+                author: short_id(&author),
+                floor,
+            })
+            .collect())
     }
 
     pub fn have_vector(&self, room: &RoomId) -> AppResult<Vec<HaveEntry>> {

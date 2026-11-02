@@ -90,6 +90,8 @@ pub fn seal_packets(
                 vector,
             }),
             Frame::Want { to, ranges } => split(ranges, |ranges| Frame::Want { to: *to, ranges }),
+            Frame::Floors { vector } => split(vector, |vector| Frame::Floors { vector }),
+            Frame::WantFloors { .. } => vec![whole],
         }
     };
     frames.iter().map(|f| seal_one(key, room_id, f)).collect()

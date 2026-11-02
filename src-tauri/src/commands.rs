@@ -196,6 +196,8 @@ pub struct SettingsDto {
     pub relays: Vec<String>,
     pub sound_enabled: bool,
     pub volume: u8,
+    pub history_limit_lan: u32,
+    pub history_limit_relay: u32,
     /// 内置默认中继，设置页「恢复默认」用。
     pub default_relays: Vec<String>,
 }
@@ -207,6 +209,8 @@ impl From<&LocalSettings> for SettingsDto {
             relays: s.relays.clone(),
             sound_enabled: s.sound_enabled,
             volume: s.volume,
+            history_limit_lan: s.history_limit_lan,
+            history_limit_relay: s.history_limit_relay,
             default_relays: DEFAULT_RELAYS.map(String::from).to_vec(),
         }
     }
@@ -220,6 +224,8 @@ pub struct SettingsPatchDto {
     pub relays: Option<Vec<String>>,
     pub sound_enabled: Option<bool>,
     pub volume: Option<u8>,
+    pub history_limit_lan: Option<u32>,
+    pub history_limit_relay: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -609,6 +615,8 @@ pub async fn settings_update(
             relays: patch.relays,
             sound_enabled: patch.sound_enabled,
             volume: patch.volume,
+            history_limit_lan: patch.history_limit_lan,
+            history_limit_relay: patch.history_limit_relay,
         })?;
         // 只有网络相关的项变了才需要重建中继连接池
         out.settings_changed = net_changed;
