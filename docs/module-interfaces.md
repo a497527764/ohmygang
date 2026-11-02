@@ -357,7 +357,7 @@ LocalSettings {
 ## 12. UI 桥（Tauri）
 
 **Commands**  
-`identity_*` · `backup_export` · `backup_import` · `rooms_*`（含 `rooms_get_code`、`rooms_set_prefs`、`rooms_set_active`）· `chat_send_text` · `chat_list` · `heartsteel_leaderboard` · `settings_*` · `relay_status` · `network_status`（局域网端口及是否被占）
+`identity_*` · `backup_export` · `backup_import` · `rooms_*`（含 `rooms_get_code`、`rooms_set_prefs`、`rooms_set_active`、`rooms_rule`、`rooms_rename`、`rooms_set_rule`、`rooms_leave`、`rooms_dissolve`、`rooms_cancel_join`）· `chat_send_text` · `chat_list` · `heartsteel_leaderboard` · `settings_*` · `relay_status` · `network_status`（局域网端口及是否被占）
 
 **Events**  
 `chat://item` · `chat://delivery` · `heartsteel://stacks` · `heartsteel://live` · `room://*` · `sync://progress` · `transport://path` · `transport://relay` · `protocol://mismatch`
@@ -424,6 +424,12 @@ transport、crypto、storage → 不依赖其他业务模块
 - 2026-11-02 M1-3 已实现：`protocol` 的帧与加密包、`transport` 的局域网 UDP 与洪水防护、`sync` 的同步决策（纯函数），以及节点 `node`（对应 `sync` 的运行部分，独占 `Core`，处理命令、收包、定时器）。界面桥 `commands.rs` 提供 10 个命令，事件统一为 `hs://event`。界面是最小可用版（房间、聊天、成员与层数）。共 114 个单元测试，含 4 个双节点集成测试。中继（M1-4）、排行榜与音效（M1-5）、聊天补齐与重发（M2）尚未实现。
 - 2026-11-02 M1-3 两台机器局域网验收通过（release 版 exe，同一路由器、关闭代理）：进房、实时聊天、连发叠层两边层数一致、关掉重开后数据还在。
 - 2026-11-03 M1-4 已实现：`transport` 的 Nostr 事件、发送预算、中继连接池（`RelayPool`），`sync` 的路径判定，`settings`（允许互联网、中继列表，表结构第 2 版），节点接入中继。和本文档第 9 节的差异：订阅不按房间单独增删，而是整体更新房间列表（`set_rooms`）；关闭互联网或改中继列表时整个连接池重建，没有单独的 `set_internet_allowed` / `set_relays`；路径变化不发事件，界面每 5 秒查一次。`LocalSettings` 目前只有 `internet_allowed` 和 `relays`。新增命令 `settings_get`、`settings_update`、`relay_status`，`rooms_members` 带路径。共 147 个单元测试，含 8 个连本地假中继的连接池测试和 4 个经假中继的多节点集成测试。
+- 2026-11-03 M3 已实现：
+  - 群管理：`rooms_rule`、`rooms_rename`、`rooms_set_rule`、`rooms_leave`、`rooms_dissolve`、`rooms_cancel_join`；
+  - 托盘常驻；
+  - NSIS 安装包。
+  - 共 185 个单元测试。
+  - 验收对照见 [acceptance.md](acceptance.md)。
 - 2026-11-03 M2 已实现：
   - 送达状态与 6/15/30 秒重发（`NodeEvent::Delivered`，界面通知类型 `delivered`）；
   - 聊天补齐（`WantFloors` / `Floors`、`sync_state`、设置项 `history_limit_lan` / `history_limit_relay`）；
