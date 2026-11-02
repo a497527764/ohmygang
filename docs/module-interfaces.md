@@ -350,14 +350,14 @@ LocalSettings {
 }
 ```
 
-这些都是本机偏好，不影响层数计算。
+这些都是本机偏好，不影响层数计算。目前（M1-5）实现了 `internet_allowed`、`relays`、`sound_enabled`（默认开）、`volume`（0–100，默认 80）；两个历史上限随 M2 的聊天补齐加入。中继列表改回和默认一模一样时不再单独保存，以后跟随默认列表。
 
 ---
 
 ## 12. UI 桥（Tauri）
 
 **Commands**  
-`identity_*` · `backup_export` · `backup_import` · `rooms_*`（含 `rooms_get_code`、`rooms_set_prefs`）· `chat_send_text` · `chat_list` · `heartsteel_leaderboard` · `settings_*` · `relay_status`
+`identity_*` · `backup_export` · `backup_import` · `rooms_*`（含 `rooms_get_code`、`rooms_set_prefs`）· `chat_send_text` · `chat_list` · `heartsteel_leaderboard` · `settings_*` · `relay_status` · `network_status`（局域网端口及是否被占）
 
 **Events**  
 `chat://item` · `chat://delivery` · `heartsteel://stacks` · `heartsteel://live` · `room://*` · `sync://progress` · `transport://path` · `transport://relay` · `protocol://mismatch`
@@ -424,4 +424,5 @@ transport、crypto、storage → 不依赖其他业务模块
 - 2026-11-02 M1-3 已实现：`protocol` 的帧与加密包、`transport` 的局域网 UDP 与洪水防护、`sync` 的同步决策（纯函数），以及节点 `node`（对应 `sync` 的运行部分，独占 `Core`，处理命令、收包、定时器）。界面桥 `commands.rs` 提供 10 个命令，事件统一为 `hs://event`。界面是最小可用版（房间、聊天、成员与层数）。共 114 个单元测试，含 4 个双节点集成测试。中继（M1-4）、排行榜与音效（M1-5）、聊天补齐与重发（M2）尚未实现。
 - 2026-11-02 M1-3 两台机器局域网验收通过（release 版 exe，同一路由器、关闭代理）：进房、实时聊天、连发叠层两边层数一致、关掉重开后数据还在。
 - 2026-11-03 M1-4 已实现：`transport` 的 Nostr 事件、发送预算、中继连接池（`RelayPool`），`sync` 的路径判定，`settings`（允许互联网、中继列表，表结构第 2 版），节点接入中继。和本文档第 9 节的差异：订阅不按房间单独增删，而是整体更新房间列表（`set_rooms`）；关闭互联网或改中继列表时整个连接池重建，没有单独的 `set_internet_allowed` / `set_relays`；路径变化不发事件，界面每 5 秒查一次。`LocalSettings` 目前只有 `internet_allowed` 和 `relays`。新增命令 `settings_get`、`settings_update`、`relay_status`，`rooms_members` 带路径。共 147 个单元测试，含 8 个连本地假中继的连接池测试和 4 个经假中继的多节点集成测试。
+- 2026-11-03 M1-5 已实现：本机设置加音效开关和音量；房间免打扰、置顶（`rooms_set_prefs`）；排行榜命令 `heartsteel_leaderboard`（同层同名次）；单实例（再次打开只调出已有窗口）；局域网端口被占时退回随机端口并在界面提示（`network_status`）。界面改为微信式：头像带层数角标、群资料抽屉（成员网格、排行榜、免打扰和置顶）、设置页。共 155 个单元测试；界面用单机双开脚本自测（角标与排行榜一致、免打扰和音量 0 不响、音量 80 响一次、置顶、开关互联网、非法中继地址）。
 - 2026-11-03 M1-4 跨网两机验收通过（release 版 exe，一台家里宽带、一台移动或联通手机热点，都关闭代理）：进房、实时聊天、连发叠层两边层数一致、成员显示「中继」、关掉重开后数据还在。
