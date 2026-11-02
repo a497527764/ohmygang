@@ -422,3 +422,4 @@ transport、crypto、storage → 不依赖其他业务模块
 - 2026-11-02 M1-1 已实现：`crypto`、`protocol`（房间码、事件、事件内容）、`heartsteel`（判定与重放）、`rooms`（状态推导），共 44 个单元测试。包与帧、存储、网络和界面尚未实现。
 - 2026-11-02 M1-2 已实现：`storage`（SQLite）、`identity`（主密钥存 Windows 凭据管理器）、`rooms` 建房与进房、`chat`（发言、消息列表、未读）、`heartsteel` 重算与层数缓存、`core` 的入站处理。`core` 在代码里叫 `app_core`（Rust 标准库已有 `core`），对外是 `Core` 结构体，事件通知为 `CoreEvent`。共 80 个单元测试（另有 1 个读写真实凭据管理器的测试，默认不跑，用 `cargo test --lib keystore -- --ignored` 手动验证）。网络（`sync`、`transport`、`protocol` 的包与帧）、`settings` 和界面尚未实现；进房后 Joining 转 Active 在 M1-3。
 - 2026-11-02 M1-3 已实现：`protocol` 的帧与加密包、`transport` 的局域网 UDP 与洪水防护、`sync` 的同步决策（纯函数），以及节点 `node`（对应 `sync` 的运行部分，独占 `Core`，处理命令、收包、定时器）。界面桥 `commands.rs` 提供 10 个命令，事件统一为 `hs://event`。界面是最小可用版（房间、聊天、成员与层数）。共 114 个单元测试，含 4 个双节点集成测试。中继（M1-4）、排行榜与音效（M1-5）、聊天补齐与重发（M2）尚未实现。
+- 2026-11-02 M1-3 两台机器局域网验收通过（release 版 exe，同一路由器、关闭代理）：进房、实时聊天、连发叠层两边层数一致、关掉重开后数据还在。
