@@ -38,6 +38,8 @@ pub fn run() {
             commands::rooms_get_code,
             commands::rooms_members,
             commands::rooms_mark_read,
+            commands::rooms_set_prefs,
+            commands::heartsteel_leaderboard,
             commands::chat_send_text,
             commands::chat_list,
             commands::settings_get,

@@ -16,6 +16,7 @@ use crate::app_core::{
     Core, CoreEvent, LocalSettings, MemberView, RoomStatus, RoomSummary, RuleParams, SettingsPatch,
 };
 use crate::chat::{NoticeKind, TimelineCursor, TimelineItem};
+use crate::crypto::MemberId;
 use crate::error::AppResult;
 use crate::identity::IdentityView;
 use crate::node::{NodeEvent, NodeHandle, Outbox, now_ms};
@@ -81,6 +82,8 @@ pub struct RoomDto {
     pub is_owner: bool,
     pub unread: u32,
     pub last_active: u64,
+    pub muted: bool,
+    pub pinned: bool,
 }
 
 impl From<&RoomSummary> for RoomDto {
@@ -92,8 +95,36 @@ impl From<&RoomSummary> for RoomDto {
             is_owner: r.is_owner,
             unread: r.unread,
             last_active: r.last_active,
+            muted: r.muted,
+            pinned: r.pinned,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderboardEntryDto {
+    pub member_id: String,
+    pub stacks: u32,
+    /// 名次从 1 开始，同层同名次（1、1、3）。
+    pub rank: u32,
+}
+
+/// 排行榜已按层数降序排好（同层按成员 ID），这里只算名次。
+fn leaderboard_dto(board: &[(MemberId, u32)]) -> Vec<LeaderboardEntryDto> {
+    let mut out: Vec<LeaderboardEntryDto> = Vec::with_capacity(board.len());
+    for (i, (id, stacks)) in board.iter().enumerate() {
+        let rank = match out.last() {
+            Some(prev) if prev.stacks == *stacks => prev.rank,
+            _ => i as u32 + 1,
+        };
+        out.push(LeaderboardEntryDto {
+            member_id: hex(id),
+            stacks: *stacks,
+            rank,
+        });
+    }
+    out
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -451,6 +482,34 @@ pub async fn relay_status(
     .ok_or_else(|| "后台服务已停止，请重启应用".to_string())
 }
 
+/// 房间的本机偏好（免打扰、置顶），没给的不改。
+#[tauri::command]
+pub async fn rooms_set_prefs(
+    node: State<'_, NodeHandle>,
+    room_id: String,
+    muted: Option<bool>,
+    pinned: Option<bool>,
+) -> Result<RoomDto, String> {
+    let room = unhex::<16>(&room_id)?;
+    on_node(&node, move |core, _| {
+        Ok(RoomDto::from(&core.set_room_prefs(&room, muted, pinned)?))
+    })
+    .await
+}
+
+/// 心之钢排行榜：只列当前成员，层数降序。
+#[tauri::command]
+pub async fn heartsteel_leaderboard(
+    node: State<'_, NodeHandle>,
+    room_id: String,
+) -> Result<Vec<LeaderboardEntryDto>, String> {
+    let room = unhex::<16>(&room_id)?;
+    on_node(&node, move |core, _| {
+        Ok(leaderboard_dto(&core.leaderboard(&room)?))
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn rooms_mark_read(node: State<'_, NodeHandle>, room_id: String) -> Result<(), String> {
     let room = unhex::<16>(&room_id)?;
@@ -529,6 +588,39 @@ mod tests {
     use super::*;
     use crate::chat::{ChatMessage, NoticeKind, RoomNotice, TimelineItem};
     use crate::storage::events::Delivery;
+
+    #[test]
+    fn leaderboard_ranks_share_ties() {
+        let board = vec![
+            ([1u8; 32], 3),
+            ([2u8; 32], 3),
+            ([3u8; 32], 1),
+            ([4u8; 32], 0),
+        ];
+        let dto = leaderboard_dto(&board);
+        assert_eq!(
+            dto.iter().map(|e| e.rank).collect::<Vec<_>>(),
+            vec![1, 1, 3, 4]
+        );
+        assert_eq!(dto[2].member_id, hex(&[3u8; 32]));
+        assert_eq!(dto[2].stacks, 1);
+    }
+
+    #[test]
+    fn room_dto_carries_local_prefs() {
+        let r = RoomSummary {
+            room_id: [1u8; 16],
+            title: None,
+            status: RoomStatus::Active,
+            is_owner: false,
+            unread: 0,
+            last_active: 0,
+            muted: true,
+            pinned: false,
+        };
+        let d = RoomDto::from(&r);
+        assert!(d.muted && !d.pinned);
+    }
 
     #[test]
     fn member_path_and_relay_state_names() {

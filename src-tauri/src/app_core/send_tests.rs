@@ -54,6 +54,38 @@ fn three_quick_messages_stack_once() {
 }
 
 #[test]
+fn leaderboard_is_sorted_by_stacks_then_member_id() {
+    let (mut a, room, code) = owner_with_room();
+    let mut others = Vec::new();
+    for _ in 0..2 {
+        let mut x = new_core();
+        x.join_room(&code, 500).unwrap();
+        x.ingest_events(&room, &a.room_events(&room).unwrap(), false, 1500)
+            .unwrap();
+        let written = x.activate(&room, 2000).unwrap();
+        a.ingest_events(&room, &written, false, 2000).unwrap();
+        others.push(x);
+    }
+    for t in [10_000, 11_000, 12_000] {
+        a.send_text(&room, "冲", t).unwrap();
+        others[1].send_text(&room, "冲", t).unwrap();
+    }
+    let c_events = others[1].room_events(&room).unwrap();
+    a.ingest_events(&room, &c_events, false, 20_000).unwrap();
+
+    let me = a.identity().member_id;
+    let b = others[0].identity().member_id;
+    let c = others[1].identity().member_id;
+    let mut top = [me, c];
+    top.sort();
+    assert_eq!(
+        a.leaderboard(&room).unwrap(),
+        vec![(top[0], 1), (top[1], 1), (b, 0)],
+        "层数降序，同层按成员 ID 升序"
+    );
+}
+
+#[test]
 fn cooldown_blocks_then_restack_after() {
     let (mut a, room, _) = owner_with_room();
     let me = a.identity().member_id;

@@ -134,6 +134,20 @@ pub fn update_cache(
     Ok(())
 }
 
+/// 本机偏好（免打扰、置顶），`None` 表示不改。房间不存在时返回 false。
+pub fn set_prefs(
+    conn: &Connection,
+    room: &RoomId,
+    muted: Option<bool>,
+    pinned: Option<bool>,
+) -> AppResult<bool> {
+    let n = conn.execute(
+        "UPDATE rooms SET muted = COALESCE(?2, muted), pinned = COALESCE(?3, pinned) WHERE room_id = ?1",
+        params![room, muted, pinned],
+    )?;
+    Ok(n > 0)
+}
+
 /// 最近活跃时间只往后推。
 pub fn touch(conn: &Connection, room: &RoomId, ts_ms: u64) -> AppResult<()> {
     conn.execute(

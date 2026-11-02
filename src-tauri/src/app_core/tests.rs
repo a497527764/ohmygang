@@ -22,6 +22,40 @@ pub(super) const DEFAULT_PARAMS: RuleParams = RuleParams {
 };
 
 #[test]
+fn room_prefs_change_only_given_fields_and_pinned_rooms_come_first() {
+    let mut a = new_core();
+    let r1 = a
+        .create_room("一", DEFAULT_PARAMS, 1000)
+        .unwrap()
+        .summary
+        .room_id;
+    let r2 = a
+        .create_room("二", DEFAULT_PARAMS, 2000)
+        .unwrap()
+        .summary
+        .room_id;
+    let order = |c: &Core| {
+        c.list_rooms()
+            .unwrap()
+            .iter()
+            .map(|r| r.room_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(order(&a), vec![r2, r1], "默认按最近活跃");
+
+    let s = a.set_room_prefs(&r1, None, Some(true)).unwrap();
+    assert!(s.pinned && !s.muted);
+    assert_eq!(order(&a), vec![r1, r2], "置顶的在前");
+
+    let s = a.set_room_prefs(&r1, Some(true), None).unwrap();
+    assert!(s.pinned && s.muted, "只改给定项");
+    assert!(matches!(
+        a.set_room_prefs(&[9u8; 16], Some(true), None),
+        Err(AppError::RoomNotFound)
+    ));
+}
+
+#[test]
 fn create_room_makes_me_owner_with_default_rule() {
     let mut a = new_core();
     a.set_nickname("阿钢", 500).unwrap();

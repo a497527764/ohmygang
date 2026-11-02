@@ -232,6 +232,23 @@ impl Core {
         chat::mark_read(&self.conn, room)
     }
 
+    /// 房间的本机偏好（免打扰、置顶），`None` 表示不改。只影响本机。
+    pub fn set_room_prefs(
+        &mut self,
+        room: &RoomId,
+        muted: Option<bool>,
+        pinned: Option<bool>,
+    ) -> AppResult<RoomSummary> {
+        if !room_store::set_prefs(&self.conn, room, muted, pinned)? {
+            return Err(AppError::RoomNotFound);
+        }
+        rooms::summary(
+            &self.conn,
+            &self.view.member_id,
+            &rooms::get(&self.conn, room)?,
+        )
+    }
+
     pub fn settings(&self) -> AppResult<LocalSettings> {
         settings::load(&self.conn)
     }
