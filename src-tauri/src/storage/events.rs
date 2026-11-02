@@ -6,12 +6,13 @@
 //!    插入时数据库分配自增的 local_seq，表示本机收到的先后顺序，用于未读和已读游标。
 //! 2. 查询把行原样还原成 `SignedEvent`，字段一个不改，所以还原后仍能通过验签。
 //! 3. `timeline` 按 (display_ts, event_id) 倒序取一页再翻成正序；翻页游标是本页第一条的 (display_ts, event_id)。
+//! 4. `append_own`：本人写新事件的唯一入口，取下一个 seq 和严格递增的 ts（架构 4.1），签名后入库，投递状态为 Pending。
 
 use rusqlite::{Connection, OptionalExtension, Params, Row, params};
 
-use crate::crypto::{EventId, MemberId, RoomId};
+use crate::crypto::{EventId, Identity, MemberId, RoomId};
 use crate::error::AppResult;
-use crate::protocol::event::{SignedEvent, Stream, UnsignedEvent, kind};
+use crate::protocol::event::{SignedEvent, Stream, UnsignedEvent, build_event, kind, next_ts};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delivery {
@@ -277,4 +278,23 @@ pub fn count_unread(
         params![room, kind::CHAT, me, after, dissolve_ts],
         |r| r.get(0),
     )?)
+}
+
+/// 本人在某房间写一条新事件并入库，返回签好名的事件。同时把房间的最近活跃时间推到这条事件。
+pub fn append_own(
+    conn: &Connection,
+    me: &Identity,
+    room: &RoomId,
+    stream: Stream,
+    k: u16,
+    body: Vec<u8>,
+    now_ms: u64,
+) -> AppResult<SignedEvent> {
+    let author = me.member_id();
+    let seq = next_seq(conn, room, &author, stream)?;
+    let ts = next_ts(now_ms, last_ts(conn, room, &author)?);
+    let e = build_event(me, *room, stream, seq, ts, k, body);
+    put_event(conn, &e, ts, Some(Delivery::Pending))?;
+    crate::storage::rooms::touch(conn, room, ts)?;
+    Ok(e)
 }
