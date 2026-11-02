@@ -484,7 +484,7 @@ impl Node {
         candidates.sort_by_key(|(_, p)| std::cmp::Reverse(p.last_seen));
         let choice = candidates.into_iter().find_map(|(m, p)| {
             let gaps = state_gaps(&holdings, &p.vector);
-            (!gaps.is_empty()).then(|| (*m, p.addr, gaps))
+            (!gaps.is_empty()).then_some((*m, p.addr, gaps))
         });
         let Some((peer, addr, gaps)) = choice else {
             return;

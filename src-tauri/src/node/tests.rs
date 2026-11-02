@@ -1,7 +1,7 @@
 //! 双节点（三节点）集成测试：在 127.0.0.1 上用真实 UDP 互连，定时器缩短到几十毫秒。
 
 use std::net::{SocketAddr, UdpSocket};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -53,13 +53,13 @@ fn temp_db() -> PathBuf {
     std::env::temp_dir().join(format!("lolgang-node-{tag}.db"))
 }
 
-fn remove_db(path: &PathBuf) {
+fn remove_db(path: &Path) {
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
 }
 
-async fn start(db: &PathBuf, key: u8, me: SocketAddr, all: &[SocketAddr]) -> TestNode {
+async fn start(db: &Path, key: u8, me: SocketAddr, all: &[SocketAddr]) -> TestNode {
     let core = Core::open(storage::open(db).unwrap(), &MemoryKeyStore([key; 32])).unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink_events = events.clone();
@@ -232,7 +232,9 @@ async fn late_joiner_catches_up_state_without_old_sounds() {
     assert_eq!(live_count(&c), 0, "补齐回来的历史叠层不播放音效");
 
     drop((a, b, c));
-    dbs.iter().for_each(remove_db);
+    for d in &dbs {
+        remove_db(d);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
