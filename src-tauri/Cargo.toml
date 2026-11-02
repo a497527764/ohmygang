@@ -29,6 +29,7 @@ getrandom = "0.4"
 thiserror = "2"
 ciborium = "0.2"
 serde_bytes = "0.11"
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
