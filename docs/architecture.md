@@ -76,7 +76,7 @@ check       = SHA-256("hs/code/v1" ‖ payload) 前 10 位
 房间码      = "HS1-" + Crockford Base32(payload ‖ check)    # 共 48 个字符
 ```
 
-展示时每 4 个字符一组，解析时忽略连字符和大小写。校验位不对立即报错，否则打错的码会算出一把「有效」密钥，用户会进入一个永远没人的空房间。
+"HS1-" 之后是 44 个 Base32 字符（218 位，末尾补 2 个 0 位）。展示时每 4 个字符一组，解析时忽略连字符、空白和大小写。校验位不对立即报错，否则打错的码会算出一把「有效」密钥，用户会进入一个永远没人的空房间。10 位校验位约有 1/1024 的概率漏过一个抄错的码。
 
 ```text
 prk      = HKDF-Extract(salt = owner_tag, ikm = room_secret)
@@ -118,6 +118,7 @@ sig      = Ed25519(作者私钥, "hs/sig/v1" ‖ event_id)
 - `event_id` 由内容决定，同一 ID 不可能对应两份内容。
 - `body` 只编码一次、按原始字节算哈希，收端不重新序列化，因此不存在规范化编码问题。
 - `ts_ms = max(本机时间, 本人上一事件 ts_ms + 1)`，保证同一作者严格递增，时钟回拨也不影响。
+- 定长拼接全部用大端：format 1 字节、room_id 16、author_id 32、stream 1、seq 8、ts_ms 8、kind 2，然后是 body 长度（u32，4 字节）和 body。
 
 ### 4.2 类型
 
@@ -132,13 +133,15 @@ sig      = Ed25519(作者私钥, "hs/sig/v1" ‖ event_id)
 | state | `Heartsteel` | rule_epoch, triggers | 见第 5 节 |
 | chat | `Chat` | text | 上限 900 字节 |
 
+**kind 编号**：RoomCreate 1、Join 2、Leave 3、Profile 4、Rename 5、ConfigNotice 6、Dissolve 7、Heartsteel 8、Chat 100。body 用 CBOR 编码，事件 ID 等字节字段编成 CBOR 字节串。
+
 **未知 kind**：签名有效就入库并可转发给别人，但不显示、不参与计算。否则旧版本客户端会把它一直当作缺失反复拉取。
 
 ### 4.3 入库规则
 
 收到事件时**只做无状态校验**，结果不依赖本机已有什么，因此不会造成成员间分歧：
 
-1. `format` 受支持，事件大小在上限内；
+1. `format` 受支持，body 不超过 1024 字节；
 2. `event_id` 与内容相符，`sig` 验证通过；
 3. `room_id` 与当前房间一致；
 4. 状态事件 `seq ≤ 100000`（诚实用户达不到，防止灌爆状态日志）。
