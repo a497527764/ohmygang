@@ -1,62 +1,34 @@
-// 最小可用界面（M1-3）：左栏房间列表与建房/进房，中栏聊天，右栏成员与层数。
-// 数据都从 api.ts 取；收到 hs://event 时只刷新受影响的部分。排行榜、设置页、美化在 M1-5。
-// M1-4 加了成员的联系路径（局域网/中继/离线）和中继连接数，这两样没有推送，每 5 秒刷新一次。
+// 主界面（M1-5，微信式）：左边窄栏（我的头像、聊天、设置），房间列表，聊天区；群资料是右侧抽屉，设置是弹出页。
+// 数据都从 api.ts 取；收到 hs://event 时只刷新受影响的部分。成员路径、中继和局域网状态没有推送，每 5 秒刷新一次。
+// 音效在这里决定播不播：本机音效开关、房间免打扰、音量。
 import { useCallback, useEffect, useRef, useState } from "react";
 import heartsteel from "./assets/heartsteel.png";
-import heartsteelSound from "./assets/heartsteel.mp3";
 import {
   api,
   mergeMessages,
   type HsEvent,
   type Identity,
   type Member,
-  type MemberPath,
   type Message,
+  type NetworkStatus,
   type RelayHealth,
   type Room,
+  type Settings,
 } from "./api";
+import { Avatar } from "./components/Avatar";
+import { ChatView, type Flash, type Pulse } from "./components/ChatView";
+import { Dialog } from "./components/Dialog";
+import { GroupDrawer } from "./components/GroupDrawer";
+import { Icon } from "./components/Icon";
+import { RoomList } from "./components/RoomList";
+import { SettingsPage } from "./components/SettingsPage";
+import { displayName } from "./names";
+import { playHeartsteel } from "./sound";
 import "./app.css";
 
 const PAGE = 100;
 
-const PATH_NAMES: Record<MemberPath, string> = { lan: "局域网", relay: "中继", offline: "离线" };
-
-/// undefined 表示还没查到。冷却中的中继也是连着的，算已连接。
-function relayText(relays: RelayHealth[] | null | undefined): string {
-  if (relays === undefined) return "";
-  if (relays === null) return "未联网，只走局域网";
-  const connected = relays.filter((r) => r.state === "ok" || r.state === "cooling").length;
-  return `中继 已连接 ${connected}/${relays.length}`;
-}
-
-// 心之钢音效（内置）。只在收到 Rust 的实时叠层通知时播放：补齐回来的历史叠层不会发这个通知（架构 5.6）。
-// 每次新建一个播放器，两人几乎同时叠层时两声可以重叠，不会互相打断。
-function playHeartsteel() {
-  new Audio(heartsteelSound).play().catch((e) => console.warn("心之钢音效播放失败", e));
-}
-
-function displayName(id: string, members: Member[]): string {
-  const m = members.find((x) => x.memberId === id);
-  return m?.nickname || m?.fingerprint.slice(0, 6) || id.slice(0, 6);
-}
-
-function noticeText(m: Message, members: Member[]): string {
-  const who = displayName(m.authorId, members);
-  switch (m.notice) {
-    case "join":
-      return `${who} 加入了群聊`;
-    case "leave":
-      return `${who} 退出了群聊`;
-    case "rename":
-      return `${who} 把群名改为「${m.title ?? ""}」`;
-    case "config":
-      return `${who} 修改了心之钢规则`;
-    case "dissolve":
-      return `${who} 解散了群聊`;
-    default:
-      return "";
-  }
-}
+type DialogKind = "create" | "join" | "nickname";
 
 function App() {
   const [me, setMe] = useState<Identity | null>(null);
@@ -64,136 +36,163 @@ function App() {
   const [active, setActive] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
-  const [draft, setDraft] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [relays, setRelays] = useState<RelayHealth[] | null | undefined>(undefined);
+  const [network, setNetwork] = useState<NetworkStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<DialogKind | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pulse, setPulse] = useState<Pulse | null>(null);
+  const [flash, setFlash] = useState<Flash | null>(null);
+  const [boardKey, setBoardKey] = useState(0);
+  // 事件回调里要读最新值，用 ref 存一份
   const activeRef = useRef<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const roomsRef = useRef<Room[]>([]);
+  const settingsRef = useRef<Settings | null>(null);
+  const membersRef = useRef<Member[]>([]);
+  roomsRef.current = rooms;
+  settingsRef.current = settings;
+  membersRef.current = members;
 
-  const fail = (e: unknown) => setError(String(e));
+  const fail = useCallback((e: unknown) => setError(String(e)), []);
 
-  const loadRooms = useCallback(() => api.rooms().then(setRooms).catch(fail), []);
-  const loadMembers = useCallback((roomId: string) => api.members(roomId).then(setMembers).catch(fail), []);
+  const loadRooms = useCallback(() => api.rooms().then(setRooms).catch(fail), [fail]);
+  const loadMembers = useCallback(
+    (roomId: string) =>
+      api
+        .members(roomId)
+        .then((list) => {
+          if (activeRef.current === roomId) setMembers(list);
+        })
+        .catch(fail),
+    [fail],
+  );
 
   const openRoom = useCallback(
     async (roomId: string) => {
       activeRef.current = roomId;
       setActive(roomId);
       setMessages([]);
+      setMembers([]);
+      setDrawerOpen(false);
       try {
-        setMessages(await api.messages(roomId, null, PAGE));
-        setMembers(await api.members(roomId));
+        const [list, people] = await Promise.all([api.messages(roomId, null, PAGE), api.members(roomId)]);
+        if (activeRef.current !== roomId) return;
+        setMessages(list);
+        setMembers(people);
         await api.markRead(roomId);
         await loadRooms();
       } catch (e) {
         fail(e);
       }
     },
-    [loadRooms],
+    [loadRooms, fail],
   );
 
   useEffect(() => {
     api.identity().then(setMe).catch(fail);
+    api.settings().then(setSettings).catch(fail);
     loadRooms();
     const off = api.onEvent((e: HsEvent) => {
       const current = activeRef.current;
-      if (e.type === "live") playHeartsteel(); // 任何房间的实时叠层都响
+      if (e.type === "live") {
+        const s = settingsRef.current;
+        const room = roomsRef.current.find((r) => r.roomId === e.roomId);
+        if (s?.soundEnabled && !room?.muted) playHeartsteel(s.volume);
+        if (e.roomId === current) {
+          const key = Date.now();
+          setPulse({ memberId: e.memberId, key });
+          setFlash({ text: `${displayName(e.memberId, membersRef.current)} 叠到 ${e.newStacks} 层心之钢`, key });
+        }
+      }
       if (e.roomId === current) {
         if (e.type === "timeline") {
           setMessages((list) => mergeMessages(list, [e.message]));
           api.markRead(e.roomId).then(loadRooms).catch(fail);
         }
-        if (e.type === "stacks" || e.type === "room" || e.type === "status") loadMembers(e.roomId);
-        if (e.type === "live") setNotice(`心之钢 +1！`);
+        if (e.type === "stacks" || e.type === "room" || e.type === "status" || e.type === "live") {
+          loadMembers(e.roomId);
+          setBoardKey((k) => k + 1);
+        }
       }
-      if (e.type === "mismatch") setError("有成员的版本和你不同，请双方更新到同一版本");
+      if (e.type === "mismatch") setError("有群友的版本和你不同，请双方更新到同一版本");
       if (e.type !== "timeline" || e.roomId !== current) loadRooms();
     });
     return () => {
       off.then((f) => f());
     };
-  }, [loadRooms, loadMembers]);
+  }, [loadRooms, loadMembers, fail]);
 
+  // 成员路径、中继和局域网状态没有推送，定时刷新
   useEffect(() => {
     const refresh = () => {
       api.relayStatus().then(setRelays).catch(fail);
+      api.networkStatus().then(setNetwork).catch(fail);
       if (active) loadMembers(active);
     };
     refresh();
     const t = setInterval(refresh, 5000);
     return () => clearInterval(t);
-  }, [active, loadMembers]);
+  }, [active, loadMembers, fail]);
 
-  // 用花括号包住：新版 WebView2 的 scrollIntoView 会返回 Promise，直接返回会被 React 当成清理函数而崩溃
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [messages.length]);
-  useEffect(() => {
-    if (!notice) return;
-    const t = setTimeout(() => setNotice(null), 2000);
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2500);
     return () => clearTimeout(t);
-  }, [notice]);
+  }, [toast]);
+  useEffect(() => {
+    if (!pulse) return;
+    const t = setTimeout(() => setPulse(null), 1200);
+    return () => clearTimeout(t);
+  }, [pulse]);
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), 1800);
+    return () => clearTimeout(t);
+  }, [flash]);
 
   const room = rooms.find((r) => r.roomId === active) ?? null;
-
-  async function createRoom() {
-    const title = window.prompt("群名称");
-    if (!title) return;
-    try {
-      const created = await api.createRoom(title);
-      await loadRooms();
-      await openRoom(created.room.roomId);
-      await navigator.clipboard.writeText(created.code).catch(() => {});
-      setNotice("建房成功，房间码已复制，发给群友即可加入");
-    } catch (e) {
-      fail(e);
-    }
-  }
-
-  async function joinRoom() {
-    const code = window.prompt("粘贴房间码");
-    if (!code) return;
-    try {
-      const joined = await api.joinRoom(code.trim());
-      await loadRooms();
-      await openRoom(joined.roomId);
-    } catch (e) {
-      fail(e);
-    }
-  }
 
   async function copyCode() {
     if (!active) return;
     try {
       await navigator.clipboard.writeText(await api.roomCode(active));
-      setNotice("房间码已复制");
+      setToast("房间码已复制，发给群友即可加入");
     } catch (e) {
       fail(e);
     }
   }
 
-  async function rename() {
-    const nickname = window.prompt("你的昵称（最多 32 个字）", me?.nickname ?? "");
-    if (nickname === null) return;
-    try {
-      setMe(await api.setNickname(nickname));
+  async function confirmDialog(kind: DialogKind, value: string) {
+    if (kind === "create") {
+      const created = await api.createRoom(value.trim());
+      await loadRooms();
+      await openRoom(created.room.roomId);
+      await navigator.clipboard.writeText(created.code).catch(() => {});
+      setToast("建好了，房间码已复制，发给群友即可加入");
+    } else if (kind === "join") {
+      const joined = await api.joinRoom(value.trim());
+      await loadRooms();
+      await openRoom(joined.roomId);
+    } else {
+      setMe(await api.setNickname(value));
       if (active) loadMembers(active);
-    } catch (e) {
-      fail(e);
     }
+    setDialog(null);
   }
 
-  async function send() {
-    const text = draft.trim();
-    if (!active || !text) return;
+  async function send(text: string): Promise<boolean> {
+    if (!active) return false;
     try {
       const sent = await api.send(active, text);
-      setDraft("");
       setMessages((list) => mergeMessages(list, [sent]));
       loadMembers(active);
+      return true;
     } catch (e) {
       fail(e);
+      return false;
     }
   }
 
@@ -208,136 +207,129 @@ function App() {
     }
   }
 
-  const canSend = room?.status === "active";
-  const hint =
-    room?.status === "joining"
-      ? "等待成员上线：和任意一位在线成员同步后才能发言"
-      : room?.status === "dissolved"
-        ? "群已解散，只能查看历史"
-        : "";
+  async function setPrefs(prefs: { muted?: boolean; pinned?: boolean }) {
+    if (!active) return;
+    try {
+      await api.setRoomPrefs(active, prefs);
+      await loadRooms();
+    } catch (e) {
+      fail(e);
+    }
+  }
+
+  async function updateSettings(patch: Partial<Omit<Settings, "defaultRelays">>) {
+    setSettings(await api.updateSettings(patch));
+    if (patch.internetAllowed !== undefined || patch.relays !== undefined) {
+      setRelays(await api.relayStatus());
+    }
+  }
+
+  const dialogProps = {
+    create: { title: "建一个群", confirm: "建房", placeholder: "群名称，比如：周五开黑", maxLength: 64 },
+    join: { title: "用房间码进房", confirm: "进房", placeholder: "粘贴群友发来的房间码（HS1- 开头）" },
+    nickname: { title: "修改昵称", confirm: "保存", placeholder: "最多 32 个字", maxLength: 32, initial: me?.nickname ?? "" },
+  };
 
   return (
     <div className="app">
-      <header className="top">
-        <img src={heartsteel} alt="心之钢" className="logo" />
-        <span className="brand">心之钢群聊</span>
-        <button className="link" onClick={rename} title="修改昵称">
-          {me ? me.nickname || `未设置昵称（${me.fingerprint.slice(0, 6)}）` : "…"}
+      <nav className="rail" aria-label="主导航">
+        <button className="rail-me" onClick={() => setSettingsOpen(true)} title="我的资料和设置">
+          {me ? <Avatar fingerprint={me.fingerprint} name={me.nickname} size={36} /> : <span className="avatar" />}
         </button>
-      </header>
+        <button className="rail-item current" title="聊天" aria-current="page">
+          <Icon name="chat" size={22} />
+        </button>
+        <span className="rail-spacer" />
+        <button className="rail-item" onClick={() => setSettingsOpen(true)} title="设置" aria-label="设置">
+          <Icon name="gear" size={22} />
+        </button>
+      </nav>
 
-      {error && (
-        <div className="banner error" onClick={() => setError(null)}>
-          {error}（点击关闭）
-        </div>
-      )}
-      {notice && <div className="banner">{notice}</div>}
+      <RoomList
+        rooms={rooms}
+        active={active}
+        onOpen={openRoom}
+        onCreate={() => setDialog("create")}
+        onJoin={() => setDialog("join")}
+      />
 
-      <div className="columns">
-        <aside className="rooms">
-          <div className="actions">
-            <button onClick={createRoom}>建房</button>
-            <button onClick={joinRoom}>进房</button>
+      <div className="main">
+        {network?.lanDegraded && (
+          <div className="banner warn">局域网端口被其他软件占用，现在只能经中继联系群友。详情见设置。</div>
+        )}
+        {error && (
+          <button className="banner error" onClick={() => setError(null)} title="点击关闭">
+            {error}
+          </button>
+        )}
+        {room ? (
+          <ChatView
+            room={room}
+            me={me}
+            members={members}
+            messages={messages}
+            relays={relays}
+            canLoadOlder={messages.length >= PAGE}
+            pulse={pulse}
+            flash={flash}
+            onLoadOlder={loadOlder}
+            onSend={send}
+            onOpenDrawer={() => setDrawerOpen(true)}
+          />
+        ) : (
+          <div className="welcome">
+            <img src={heartsteel} alt="" width={96} height={96} />
+            <p>在群里 5 秒内连发 3 条消息，就能叠一层心之钢。</p>
+            <div className="welcome-actions">
+              <button className="primary" onClick={() => setDialog("create")}>
+                建房
+              </button>
+              <button className="soft" onClick={() => setDialog("join")}>
+                用房间码进房
+              </button>
+            </div>
           </div>
-          {rooms.length === 0 && <p className="muted">还没有房间</p>}
-          {rooms.map((r) => (
-            <div
-              key={r.roomId}
-              className={`room ${r.roomId === active ? "selected" : ""}`}
-              onClick={() => openRoom(r.roomId)}
-            >
-              <span className="title">{r.title ?? "（同步中）"}</span>
-              {r.status === "joining" && <span className="tag">等待</span>}
-              {r.status === "dissolved" && <span className="tag">已解散</span>}
-              {r.unread > 0 && <span className="unread">{r.unread}</span>}
-            </div>
-          ))}
-        </aside>
-
-        <main className="chat">
-          {room ? (
-            <>
-              <div className="chat-head">
-                <span>{room.title ?? "（同步中）"}</span>
-                <span className="net">{relayText(relays)}</span>
-              </div>
-              <div className="messages">
-                {messages.length >= PAGE && (
-                  <button className="link older" onClick={loadOlder}>
-                    加载更早的消息
-                  </button>
-                )}
-                {messages.map((m) =>
-                  m.kind === "notice" ? (
-                    <div key={m.eventId} className="notice">
-                      {noticeText(m, members)}
-                    </div>
-                  ) : (
-                    <div key={m.eventId} className={`msg ${m.authorId === me?.memberId ? "mine" : ""}`}>
-                      <div className="meta">
-                        {displayName(m.authorId, members)} · {new Date(m.displayTs).toLocaleTimeString()}
-                        {m.delivery === "pending" && " · 发送中"}
-                      </div>
-                      <div className="text">{m.text}</div>
-                    </div>
-                  ),
-                )}
-                <div ref={bottomRef} />
-              </div>
-              {hint && <div className="hint">{hint}</div>}
-              <form
-                className="composer"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  send();
-                }}
-              >
-                <input
-                  value={draft}
-                  onChange={(e) => setDraft(e.currentTarget.value)}
-                  placeholder={canSend ? "说点什么，5 秒内连发 3 条叠一层心之钢" : ""}
-                  disabled={!canSend}
-                  maxLength={300}
-                />
-                <button type="submit" disabled={!canSend || !draft.trim()}>
-                  发送
-                </button>
-              </form>
-            </>
-          ) : (
-            <div className="empty">
-              <img src={heartsteel} alt="" width={120} height={120} />
-              <p>建一个房间，或者粘贴房间码进房</p>
-            </div>
-          )}
-        </main>
-
-        <aside className="members">
-          {room && (
-            <>
-              <button onClick={copyCode}>复制房间码</button>
-              <div className="section">成员</div>
-              {members
-                .filter((m) => m.inRoom)
-                .map((m) => (
-                  <div key={m.memberId} className="member">
-                    <span className="name">
-                      {m.nickname || m.fingerprint.slice(0, 6)}
-                      {m.isOwner && <span className="tag">房主</span>}
-                      {m.memberId !== me?.memberId && (
-                        <span className={`tag path-${m.path}`}>{PATH_NAMES[m.path]}</span>
-                      )}
-                    </span>
-                    <span className="stacks" title="心之钢层数">
-                      <img src={heartsteel} alt="" />
-                      {m.stacks}
-                    </span>
-                  </div>
-                ))}
-            </>
-          )}
-        </aside>
+        )}
+        {toast && (
+          <div className="toast" role="status">
+            {toast}
+          </div>
+        )}
       </div>
+
+      {room && drawerOpen && (
+        <GroupDrawer
+          room={room}
+          me={me}
+          members={members}
+          refreshKey={boardKey}
+          pulse={pulse}
+          onClose={() => setDrawerOpen(false)}
+          onCopyCode={copyCode}
+          onPrefs={setPrefs}
+          onError={fail}
+        />
+      )}
+      {settingsOpen && settings && (
+        <SettingsPage
+          me={me}
+          settings={settings}
+          relays={relays}
+          network={network}
+          onClose={() => setSettingsOpen(false)}
+          onEditNickname={() => setDialog("nickname")}
+          onUpdate={updateSettings}
+          onPreview={playHeartsteel}
+        />
+      )}
+      {dialog && (
+        <Dialog
+          key={dialog}
+          {...dialogProps[dialog]}
+          onConfirm={(v) => confirmDialog(dialog, v)}
+          onCancel={() => setDialog(null)}
+        />
+      )}
     </div>
   );
 }

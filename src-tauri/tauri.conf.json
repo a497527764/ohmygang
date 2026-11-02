@@ -13,8 +13,10 @@
     "windows": [
       {
         "title": "心之钢群聊",
-        "width": 800,
-        "height": 600
+        "width": 1000,
+        "height": 700,
+        "minWidth": 720,
+        "minHeight": 480
       }
     ],
     "security": {

@@ -20,6 +20,8 @@ export interface Room {
   isOwner: boolean;
   unread: number;
   lastActive: number;
+  muted: boolean;
+  pinned: boolean;
 }
 
 /// 现在经哪条路径能联系上这位成员（架构 6.5）。
@@ -35,10 +37,33 @@ export interface Member {
   path: MemberPath;
 }
 
+export interface LeaderboardEntry {
+  memberId: string;
+  stacks: number;
+  /// 从 1 开始，同层同名次。
+  rank: number;
+}
+
 export interface RelayHealth {
   url: string;
   state: "connecting" | "ok" | "cooling" | "retired";
   lastEchoMs: number | null;
+}
+
+export interface Settings {
+  internetAllowed: boolean;
+  relays: string[];
+  soundEnabled: boolean;
+  /// 0–100。
+  volume: number;
+  /// 内置默认中继，只读。
+  defaultRelays: string[];
+}
+
+export interface NetworkStatus {
+  lanPort: number;
+  /// 局域网端口被占，用的是随机端口，收不到别人的局域网广播。
+  lanDegraded: boolean;
 }
 
 export interface Message {
@@ -76,11 +101,19 @@ export const api = {
   roomCode: (roomId: string) => invoke<string>("rooms_get_code", { roomId }),
   members: (roomId: string) => invoke<Member[]>("rooms_members", { roomId }),
   markRead: (roomId: string) => invoke<void>("rooms_mark_read", { roomId }),
+  /// 没给的项不改。
+  setRoomPrefs: (roomId: string, prefs: { muted?: boolean; pinned?: boolean }) =>
+    invoke<Room>("rooms_set_prefs", { roomId, muted: prefs.muted ?? null, pinned: prefs.pinned ?? null }),
+  leaderboard: (roomId: string) => invoke<LeaderboardEntry[]>("heartsteel_leaderboard", { roomId }),
   send: (roomId: string, text: string) => invoke<Message>("chat_send_text", { roomId, text }),
   messages: (roomId: string, before: Cursor | null, limit: number) =>
     invoke<Message[]>("chat_list", { roomId, before, limit }),
+  settings: () => invoke<Settings>("settings_get"),
+  /// 没给的项不改。
+  updateSettings: (patch: Partial<Omit<Settings, "defaultRelays">>) => invoke<Settings>("settings_update", { patch }),
   /// 关闭「允许互联网」时为 null。
   relayStatus: () => invoke<RelayHealth[] | null>("relay_status"),
+  networkStatus: () => invoke<NetworkStatus>("network_status"),
   onEvent: (cb: (e: HsEvent) => void): Promise<UnlistenFn> =>
     listen<HsEvent>("hs://event", (e) => cb(e.payload)),
 };
