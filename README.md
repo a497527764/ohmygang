@@ -1,7 +1,18 @@
-# Tauri + React + Typescript
+# 心之钢群聊
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+以英雄联盟「心之钢」为主题的去中心化群聊：局域网直连加公共中继，不需要自建服务器；连发消息叠心之钢层数。Windows 桌面应用，Tauri 2（Rust 核心 + React 界面）。
 
-## Recommended IDE Setup
+## 文档
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- [需求](docs/requirements.md)
+- [架构](docs/architecture.md)
+- [模块接口](docs/module-interfaces.md)
+- 协作规则：[AGENTS.md](AGENTS.md)
+
+## 开发
+
+```bash
+pnpm install
+pnpm tauri dev
+cd src-tauri && cargo test --lib
+```
