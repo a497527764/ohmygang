@@ -23,9 +23,18 @@ use crate::rooms::service as rooms;
 use crate::storage::events::{self, PutResult, StoredEvent};
 use crate::storage::{Connection, rooms as room_store};
 
+pub use crate::chat::ChatMessage;
 pub use crate::error::AppError;
 pub use crate::rooms::service::{MemberView, RoomSummary, RuleParams};
+pub use crate::storage::events::Delivery;
 pub use crate::storage::rooms::RoomStatus;
+
+/// 发言的结果：消息本身、本次新写的事件（M1-3 交给 sync 发出去）、给界面的通知。
+pub struct SentMessage {
+    pub message: ChatMessage,
+    pub events: Vec<SignedEvent>,
+    pub notes: Vec<CoreEvent>,
+}
 
 /// 给界面的通知（接口文档各模块的 Events）。M1-5 把它们转发成 Tauri 事件。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,6 +176,40 @@ impl Core {
         rooms::leaderboard(&self.conn, room)
     }
 
+    /// 本人发言。和叠层判定在同一个事务里；本人实时叠层同样产生 HeartsteelLive，用于播放音效。
+    pub fn send_text(&mut self, room: &RoomId, text: &str, now_ms: u64) -> AppResult<SentMessage> {
+        let tx = self.conn.transaction()?;
+        let (message, written, stacked) = chat::send_text(&tx, &self.me, room, text, now_ms)?;
+        tx.commit()?;
+        let mut notes = Vec::new();
+        if let Some(s) = stacked {
+            let me = self.view.member_id;
+            if s.replayed.changed {
+                notes.push(CoreEvent::StacksChanged {
+                    room_id: *room,
+                    changes: vec![(me, s.replayed.stacks)],
+                });
+            }
+            if s.replayed
+                .valid
+                .iter()
+                .any(|h| h.event_id == s.event_id && hs::is_live_sound(true, h, now_ms))
+            {
+                notes.push(CoreEvent::HeartsteelLive {
+                    room_id: *room,
+                    member_id: me,
+                    new_stacks: s.replayed.stacks,
+                    event_id: s.event_id,
+                });
+            }
+        }
+        Ok(SentMessage {
+            message,
+            events: written,
+            notes,
+        })
+    }
+
     /// 处理收到的一批事件。`is_live` 表示来自实时帧（会影响显示时间和是否播放音效）。
     pub fn ingest_events(
         &mut self,
@@ -291,3 +334,6 @@ mod tests;
 
 #[cfg(test)]
 mod ingest_tests;
+
+#[cfg(test)]
+mod send_tests;
