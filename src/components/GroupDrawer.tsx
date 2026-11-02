@@ -2,8 +2,9 @@
 // 排行榜和角标都来自 Rust 重放出的层数，所以一定一致；层数变化时由 refreshKey 触发重新拉取。
 import { useEffect, useState } from "react";
 import heartsteel from "../assets/heartsteel.png";
-import { api, type Identity, type LeaderboardEntry, type Member, type Room } from "../api";
+import { api, type Identity, type LeaderboardEntry, type Member, type Room, type RoomRule } from "../api";
 import { displayName, PATH_NAMES } from "../names";
+import { ruleText } from "../rule";
 import { Avatar } from "./Avatar";
 import { Icon } from "./Icon";
 import type { Pulse } from "./ChatView";
@@ -17,17 +18,23 @@ interface Props {
   onClose: () => void;
   onCopyCode: () => void;
   onPrefs: (prefs: { muted?: boolean; pinned?: boolean }) => void;
+  onRename: () => void;
+  onEditRule: (rule: RoomRule) => void;
+  onLeave: () => void;
+  onDissolve: () => void;
   onError: (e: unknown) => void;
 }
 
 export function GroupDrawer(p: Props) {
   const [query, setQuery] = useState("");
   const [board, setBoard] = useState<LeaderboardEntry[]>([]);
+  const [rule, setRule] = useState<RoomRule | null>(null);
   const { roomId } = p.room;
   const { onError } = p;
 
   useEffect(() => {
     api.leaderboard(roomId).then(setBoard).catch(onError);
+    api.roomRule(roomId).then(setRule).catch(onError);
   }, [roomId, p.refreshKey, onError]);
 
   const q = query.trim().toLowerCase();
@@ -35,6 +42,8 @@ export function GroupDrawer(p: Props) {
     .filter((m) => m.inRoom)
     .filter((m) => !q || (m.nickname ?? "").toLowerCase().includes(q) || m.fingerprint.toLowerCase().includes(q));
   const owner = p.members.find((m) => m.isOwner);
+  const active = p.room.status === "active";
+  const canManage = p.room.isOwner && active;
   const member = (id: string) => p.members.find((m) => m.memberId === id);
 
   return (
@@ -139,6 +148,28 @@ export function GroupDrawer(p: Props) {
 
         <section className="drawer-section info">
           <div className="info-row">
+            <span>群名称</span>
+            <span className="info-value">
+              {p.room.title ?? "同步中…"}
+              {canManage && (
+                <button className="link-button" onClick={p.onRename}>
+                  修改
+                </button>
+              )}
+            </span>
+          </div>
+          <div className="info-row">
+            <span>心之钢规则</span>
+            <span className="info-value">
+              {rule ? ruleText(rule) : "同步中…"}
+              {canManage && rule && (
+                <button className="link-button" onClick={() => p.onEditRule(rule)}>
+                  修改
+                </button>
+              )}
+            </span>
+          </div>
+          <div className="info-row">
             <span>房主</span>
             <span>{owner ? displayName(owner.memberId, p.members) : "未知"}</span>
           </div>
@@ -150,6 +181,19 @@ export function GroupDrawer(p: Props) {
             </button>
           </div>
         </section>
+
+        {active && (
+          <section className="drawer-section danger-zone">
+            <button className="danger-button" onClick={p.onLeave}>
+              退出群聊
+            </button>
+            {p.room.isOwner && (
+              <button className="danger-button" onClick={p.onDissolve}>
+                解散群聊
+              </button>
+            )}
+          </section>
+        )}
       </aside>
     </div>
   );

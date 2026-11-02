@@ -13,6 +13,8 @@ pub enum AppError {
     NotOwner,
     #[error("房间当前不能发言")]
     RoomNotActive,
+    #[error("只有正在加入的群可以取消")]
+    RoomNotJoining,
     #[error("消息太长，最多 900 字节")]
     TextTooLong,
     #[error("群名为空或太长，最多 64 个字符")]

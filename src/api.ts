@@ -37,6 +37,13 @@ export interface Member {
   path: MemberPath;
 }
 
+export interface RoomRule {
+  epoch: number;
+  windowMs: number;
+  threshold: number;
+  cooldownMs: number;
+}
+
 export interface LeaderboardEntry {
   memberId: string;
   stacks: number;
@@ -110,6 +117,13 @@ export const api = {
     invoke<Room>("rooms_set_prefs", { roomId, muted: prefs.muted ?? null, pinned: prefs.pinned ?? null }),
   /// 界面当前打开的房间，Rust 据此决定哪个房间同步得更勤。
   setActiveRoom: (roomId: string | null) => invoke<void>("rooms_set_active", { roomId }),
+  roomRule: (roomId: string) => invoke<RoomRule | null>("rooms_rule", { roomId }),
+  renameRoom: (roomId: string, title: string) => invoke<void>("rooms_rename", { roomId, title }),
+  setRoomRule: (roomId: string, rule: { windowMs: number; threshold: number; cooldownMs: number }) =>
+    invoke<void>("rooms_set_rule", { roomId, ...rule }),
+  leaveRoom: (roomId: string) => invoke<void>("rooms_leave", { roomId }),
+  dissolveRoom: (roomId: string) => invoke<void>("rooms_dissolve", { roomId }),
+  cancelJoin: (roomId: string) => invoke<void>("rooms_cancel_join", { roomId }),
   leaderboard: (roomId: string) => invoke<LeaderboardEntry[]>("heartsteel_leaderboard", { roomId }),
   send: (roomId: string, text: string) => invoke<Message>("chat_send_text", { roomId, text }),
   messages: (roomId: string, before: Cursor | null, limit: number) =>

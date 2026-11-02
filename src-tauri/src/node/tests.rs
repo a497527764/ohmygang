@@ -254,6 +254,17 @@ async fn restarted_node_reconnects_and_stays_consistent() {
     let (room, code) = create(&a).await;
     join(&b, &code).await;
     assert!(eventually(&b, status_is(room, RoomStatus::Active)).await);
+    // 先等 A 也收到 B 的进房，否则 A 的排行榜里还没有 B
+    assert!(
+        eventually(&a, move |c| c
+            .list_members(&room)
+            .unwrap()
+            .iter()
+            .filter(|m| m.in_room)
+            .count()
+            == 2)
+        .await
+    );
     burst(&a, room, 3).await;
     let board = a.handle.call(move |c, _| stacks(c, &room)).await.unwrap();
     assert!(eventually(&b, move |c| stacks(c, &room) == board).await);
@@ -604,6 +615,47 @@ async fn importing_another_identity_resets_room_sync() {
     assert!(
         eventually(&b, status_is(room, RoomStatus::Active)).await,
         "A 回来、同步后重新激活"
+    );
+
+    drop((a, b));
+    remove_db(&da);
+    remove_db(&db);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn leave_notice_goes_out_before_the_room_goes_quiet() {
+    let addrs = free_ports(2);
+    let (da, db) = (temp_db(), temp_db());
+    let a = start(&da, 1, addrs[0], &addrs).await;
+    let b = start(&db, 2, addrs[1], &addrs).await;
+    let (room, code) = create(&a).await;
+    join(&b, &code).await;
+    let members = move |n: usize| {
+        move |c: &mut Core| {
+            c.list_members(&room)
+                .unwrap()
+                .iter()
+                .filter(|m| m.in_room)
+                .count()
+                == n
+        }
+    };
+    assert!(eventually(&a, members(2)).await);
+
+    b.handle
+        .call(move |core, out| {
+            let written = core.leave_room(&room, now_ms()).unwrap();
+            out.broadcast(room, written);
+        })
+        .await
+        .unwrap();
+    assert!(eventually(&a, members(1)).await, "A 收到 B 的退出");
+    assert_eq!(
+        b.handle
+            .inspect(move |n| n.member_paths(&room).is_empty())
+            .await,
+        Some(true),
+        "退出后 B 不再为这个房间联网"
     );
 
     drop((a, b));

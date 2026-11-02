@@ -148,6 +148,21 @@ pub fn set_prefs(
     Ok(n > 0)
 }
 
+/// 删除一个房间在本机的全部记录（加入中取消时用，架构 8.2）。由调用方放进事务。
+pub fn delete_room(conn: &Connection, room: &RoomId) -> AppResult<()> {
+    for table in [
+        "rooms",
+        "room_rules",
+        "members",
+        "events",
+        "read_state",
+        "sync_state",
+    ] {
+        conn.execute(&format!("DELETE FROM {table} WHERE room_id = ?1"), [room])?;
+    }
+    Ok(())
+}
+
 /// 最近活跃时间只往后推。
 pub fn touch(conn: &Connection, room: &RoomId, ts_ms: u64) -> AppResult<()> {
     conn.execute(

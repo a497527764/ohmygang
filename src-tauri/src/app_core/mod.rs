@@ -19,7 +19,7 @@ use crate::heartsteel::service::{self as hs, Replayed};
 use crate::identity::{self, IdentityView};
 use crate::keystore::KeyStore;
 use crate::keystore::{PURPOSE_IDENTITY, encrypt_local};
-use crate::protocol::body::{self, ProfileBody, Rule};
+use crate::protocol::body::{self, ConfigNoticeBody, ProfileBody, RenameBody, Rule};
 use crate::protocol::event::{SignedEvent, Stream, kind, verify_stateless};
 use crate::protocol::frame::{FloorEntry, HaveEntry, ShortId, WantRange, short_id};
 use crate::rooms::service as rooms;
@@ -446,6 +446,101 @@ impl Core {
         Ok(written)
     }
 
+    /// 房主改群名（需求 3.5），写一条 Rename。
+    pub fn rename_room(
+        &mut self,
+        room: &RoomId,
+        title: &str,
+        now_ms: u64,
+    ) -> AppResult<Vec<SignedEvent>> {
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > body::TITLE_MAX_CHARS {
+            return Err(AppError::InvalidTitle);
+        }
+        let tx = self.conn.transaction()?;
+        require_active_owner(&tx, &self.view.member_id, room)?;
+        let b = body::encode(&RenameBody {
+            title: title.to_string(),
+        });
+        let e = events::append_own(&tx, &self.me, room, Stream::State, kind::RENAME, b, now_ms)?;
+        rooms::apply_state(&tx, room)?;
+        tx.commit()?;
+        Ok(vec![e])
+    }
+
+    /// 房主改心之钢规则（需求 3.4），写一条 ConfigNotice，epoch 在当前最大值上加 1。
+    /// 以前的叠层按当时的规则算，不受影响；为保险起见仍重算全房。
+    pub fn set_room_rule(
+        &mut self,
+        room: &RoomId,
+        params: RuleParams,
+        now_ms: u64,
+    ) -> AppResult<Vec<SignedEvent>> {
+        let tx = self.conn.transaction()?;
+        require_active_owner(&tx, &self.view.member_id, room)?;
+        let rule = Rule {
+            rule_epoch: rooms::current_rule(&tx, room)?.map_or(0, |r| r.rule_epoch) + 1,
+            window_ms: params.window_ms,
+            threshold: params.threshold,
+            cooldown_ms: params.cooldown_ms,
+        };
+        if !rule.is_valid() {
+            return Err(AppError::InvalidRule);
+        }
+        let b = body::encode(&ConfigNoticeBody { rule });
+        let e = events::append_own(
+            &tx,
+            &self.me,
+            room,
+            Stream::State,
+            kind::CONFIG_NOTICE,
+            b,
+            now_ms,
+        )?;
+        rooms::apply_state(&tx, room)?;
+        hs::recompute_room(&tx, room)?;
+        tx.commit()?;
+        Ok(vec![e])
+    }
+
+    /// 退出房间（需求 3.2）：写一条 Leave，状态改为 Left。聊天记录保留只读，层数保留，用房间码可以重新进房。
+    pub fn leave_room(&mut self, room: &RoomId, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
+        let tx = self.conn.transaction()?;
+        if rooms::get(&tx, room)?.status != RoomStatus::Active {
+            return Err(AppError::RoomNotActive);
+        }
+        let e = events::append_own(
+            &tx,
+            &self.me,
+            room,
+            Stream::State,
+            kind::LEAVE,
+            vec![],
+            now_ms,
+        )?;
+        rooms::apply_state(&tx, room)?;
+        room_store::set_status(&tx, room, RoomStatus::Left)?;
+        tx.commit()?;
+        Ok(vec![e])
+    }
+
+    /// 取消加入（架构 8.2）：从没在这个群写过事件的，删除本机记录；以前是成员、退出后又重新进房的，退回 Left，保留聊天记录。
+    pub fn cancel_join(&mut self, room: &RoomId) -> AppResult<()> {
+        let me = self.view.member_id;
+        let tx = self.conn.transaction()?;
+        if rooms::get(&tx, room)?.status != RoomStatus::Joining {
+            return Err(AppError::RoomNotJoining);
+        }
+        let was_member = !events::query_by_author(&tx, room, &me, Stream::State)?.is_empty();
+        if was_member {
+            room_store::set_status(&tx, room, RoomStatus::Left)?;
+        } else {
+            room_store::delete_room(&tx, room)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// 房主解散房间（需求 3.2，不可撤销）。解散后的叠层无效，所以重算全房层数。返回新写的解散事件。
     pub fn dissolve_room(&mut self, room: &RoomId, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
         let tx = self.conn.transaction()?;
@@ -624,6 +719,18 @@ impl Core {
     }
 }
 
+/// 只有房主、且房间是 Active 时才能改群名、改规则。
+fn require_active_owner(conn: &Connection, me: &MemberId, room: &RoomId) -> AppResult<()> {
+    let row = rooms::get(conn, room)?;
+    if crate::protocol::room_code::owner_tag_of(me) != row.owner_tag {
+        return Err(AppError::NotOwner);
+    }
+    if row.status != RoomStatus::Active {
+        return Err(AppError::RoomNotActive);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -644,3 +751,6 @@ mod sync_tests;
 
 #[cfg(test)]
 mod backup_tests;
+
+#[cfg(test)]
+mod manage_tests;

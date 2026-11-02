@@ -40,6 +40,7 @@ interface Props {
   /// 成功返回 true，输入框随之清空。
   onSend: (text: string) => Promise<boolean>;
   onOpenDrawer: () => void;
+  onCancelJoin: () => void;
 }
 
 export function ChatView(p: Props) {
@@ -64,7 +65,9 @@ export function ChatView(p: Props) {
       ? "正在等待群里有人上线：和任意一位在线成员同步后就能发言。"
       : p.room.status === "dissolved"
         ? "这个群已解散，只能查看聊天记录。"
-        : "";
+        : p.room.status === "left"
+          ? "你已退出这个群，聊天记录只能查看。用房间码可以重新进房。"
+          : "";
 
   async function submit() {
     const text = draft.trim();
@@ -130,7 +133,16 @@ export function ChatView(p: Props) {
         </div>
       )}
 
-      {hint && <div className="hint">{hint}</div>}
+      {hint && (
+        <div className="hint">
+          <span>{hint}</span>
+          {p.room.status === "joining" && (
+            <button className="link-button" onClick={p.onCancelJoin}>
+              取消加入
+            </button>
+          )}
+        </div>
+      )}
       <form
         className="composer"
         onSubmit={(e) => {

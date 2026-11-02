@@ -13,14 +13,17 @@ import {
   type NetworkStatus,
   type RelayHealth,
   type Room,
+  type RoomRule,
   type Settings,
 } from "./api";
 import { Avatar } from "./components/Avatar";
 import { ChatView, type Flash, type Pulse } from "./components/ChatView";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import { Dialog } from "./components/Dialog";
 import { GroupDrawer } from "./components/GroupDrawer";
 import { Icon } from "./components/Icon";
 import { RoomList } from "./components/RoomList";
+import { RuleDialog } from "./components/RuleDialog";
 import { SettingsPage } from "./components/SettingsPage";
 import { displayName } from "./names";
 import { playHeartsteel } from "./sound";
@@ -28,7 +31,8 @@ import "./app.css";
 
 const PAGE = 100;
 
-type DialogKind = "create" | "join" | "nickname";
+type DialogKind = "create" | "join" | "nickname" | "rename";
+type ConfirmKind = "leave" | "dissolve" | "cancelJoin";
 
 function App() {
   const [me, setMe] = useState<Identity | null>(null);
@@ -42,6 +46,8 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogKind | null>(null);
+  const [confirmKind, setConfirmKind] = useState<ConfirmKind | null>(null);
+  const [ruleEdit, setRuleEdit] = useState<RoomRule | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pulse, setPulse] = useState<Pulse | null>(null);
@@ -189,11 +195,41 @@ function App() {
       const joined = await api.joinRoom(value.trim());
       await loadRooms();
       await openRoom(joined.roomId);
+    } else if (kind === "rename") {
+      if (!active) return;
+      await api.renameRoom(active, value);
+      await afterManage(active);
     } else {
       setMe(await api.setNickname(value));
       if (active) loadMembers(active);
     }
     setDialog(null);
+  }
+
+  /// 群管理操作之后：刷新房间列表、当前房间的消息和成员、群资料。
+  async function afterManage(roomId: string) {
+    await loadRooms();
+    if (activeRef.current === roomId) await openRoom(roomId);
+    setBoardKey((k) => k + 1);
+  }
+
+  async function confirmManage(kind: ConfirmKind) {
+    if (!active) return;
+    const roomId = active;
+    if (kind === "leave") {
+      await api.leaveRoom(roomId);
+      await afterManage(roomId);
+    } else if (kind === "dissolve") {
+      await api.dissolveRoom(roomId);
+      await afterManage(roomId);
+    } else {
+      await api.cancelJoin(roomId);
+      activeRef.current = null;
+      setActive(null);
+      api.setActiveRoom(null).catch(fail);
+      await loadRooms();
+    }
+    setConfirmKind(null);
   }
 
   async function send(text: string): Promise<boolean> {
@@ -241,6 +277,27 @@ function App() {
     create: { title: "建一个群", confirm: "建房", placeholder: "群名称，比如：周五开黑", maxLength: 64 },
     join: { title: "用房间码进房", confirm: "进房", placeholder: "粘贴群友发来的房间码（HS1- 开头）" },
     nickname: { title: "修改昵称", confirm: "保存", placeholder: "最多 32 个字", maxLength: 32, initial: me?.nickname ?? "" },
+    rename: { title: "修改群名称", confirm: "保存", placeholder: "最多 64 个字", maxLength: 64, initial: room?.title ?? "" },
+  };
+  const roomTitle = room?.title ?? "这个群";
+  const confirmProps: Record<ConfirmKind, { title: string; message: string; confirm: string; danger?: boolean }> = {
+    leave: {
+      title: "退出群聊",
+      message: `退出「${roomTitle}」后不再收发这个群的消息。聊天记录保留在本机只读，你的心之钢层数保留，以后用房间码可以重新进房。`,
+      confirm: "退出",
+      danger: true,
+    },
+    dissolve: {
+      title: "解散群聊",
+      message: `解散「${roomTitle}」后所有人都不能再发言，也不能撤销。聊天记录各自保留只读。暂时不在线的群友下次遇到知道的人时才会得知。`,
+      confirm: "解散",
+      danger: true,
+    },
+    cancelJoin: {
+      title: "取消加入",
+      message: `不再等待加入「${roomTitle}」。以后想进还可以再用房间码进房。`,
+      confirm: "取消加入",
+    },
   };
 
   return (
@@ -288,6 +345,7 @@ function App() {
             onLoadOlder={loadOlder}
             onSend={send}
             onOpenDrawer={() => setDrawerOpen(true)}
+            onCancelJoin={() => setConfirmKind("cancelJoin")}
           />
         ) : (
           <div className="welcome">
@@ -320,6 +378,10 @@ function App() {
           onClose={() => setDrawerOpen(false)}
           onCopyCode={copyCode}
           onPrefs={setPrefs}
+          onRename={() => setDialog("rename")}
+          onEditRule={setRuleEdit}
+          onLeave={() => setConfirmKind("leave")}
+          onDissolve={() => setConfirmKind("dissolve")}
           onError={fail}
         />
       )}
@@ -333,6 +395,25 @@ function App() {
           onEditNickname={() => setDialog("nickname")}
           onUpdate={updateSettings}
           onPreview={playHeartsteel}
+        />
+      )}
+      {confirmKind && (
+        <ConfirmDialog
+          key={confirmKind}
+          {...confirmProps[confirmKind]}
+          onConfirm={() => confirmManage(confirmKind)}
+          onCancel={() => setConfirmKind(null)}
+        />
+      )}
+      {ruleEdit && active && (
+        <RuleDialog
+          rule={ruleEdit}
+          onConfirm={async (r) => {
+            await api.setRoomRule(active, r);
+            setRuleEdit(null);
+            await afterManage(active);
+          }}
+          onCancel={() => setRuleEdit(null)}
         />
       )}
       {dialog && (

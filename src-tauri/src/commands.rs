@@ -564,6 +564,99 @@ pub async fn rooms_set_active(
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleDto {
+    pub epoch: u32,
+    pub window_ms: u32,
+    pub threshold: u32,
+    pub cooldown_ms: u32,
+}
+
+/// 房间当前的心之钢规则；还没同步到建房事件时为 null。
+#[tauri::command]
+pub async fn rooms_rule(
+    node: State<'_, NodeHandle>,
+    room_id: String,
+) -> Result<Option<RuleDto>, String> {
+    let room = unhex::<16>(&room_id)?;
+    on_node(&node, move |core, _| {
+        Ok(core.room_rule(&room)?.map(|r| RuleDto {
+            epoch: r.rule_epoch,
+            window_ms: r.window_ms,
+            threshold: r.threshold,
+            cooldown_ms: r.cooldown_ms,
+        }))
+    })
+    .await
+}
+
+/// 房主改群名。
+#[tauri::command]
+pub async fn rooms_rename(
+    node: State<'_, NodeHandle>,
+    room_id: String,
+    title: String,
+) -> Result<(), String> {
+    let room = unhex::<16>(&room_id)?;
+    on_node(&node, move |core, out| {
+        out.broadcast(room, core.rename_room(&room, &title, now_ms())?);
+        Ok(())
+    })
+    .await
+}
+
+/// 房主改心之钢规则（窗口 1–60 秒、条数 2–10、冷却 1 秒–1 小时）。
+#[tauri::command]
+pub async fn rooms_set_rule(
+    node: State<'_, NodeHandle>,
+    room_id: String,
+    window_ms: u32,
+    threshold: u32,
+    cooldown_ms: u32,
+) -> Result<(), String> {
+    let room = unhex::<16>(&room_id)?;
+    let params = RuleParams {
+        window_ms,
+        threshold,
+        cooldown_ms,
+    };
+    on_node(&node, move |core, out| {
+        out.broadcast(room, core.set_room_rule(&room, params, now_ms())?);
+        Ok(())
+    })
+    .await
+}
+
+/// 退出房间：聊天记录保留只读，层数保留。
+#[tauri::command]
+pub async fn rooms_leave(node: State<'_, NodeHandle>, room_id: String) -> Result<(), String> {
+    let room = unhex::<16>(&room_id)?;
+    on_node(&node, move |core, out| {
+        out.broadcast(room, core.leave_room(&room, now_ms())?);
+        Ok(())
+    })
+    .await
+}
+
+/// 房主解散房间，不可撤销。
+#[tauri::command]
+pub async fn rooms_dissolve(node: State<'_, NodeHandle>, room_id: String) -> Result<(), String> {
+    let room = unhex::<16>(&room_id)?;
+    on_node(&node, move |core, out| {
+        out.broadcast(room, core.dissolve_room(&room, now_ms())?);
+        Ok(())
+    })
+    .await
+}
+
+/// 取消正在加入的房间。
+#[tauri::command]
+pub async fn rooms_cancel_join(node: State<'_, NodeHandle>, room_id: String) -> Result<(), String> {
+    let room = unhex::<16>(&room_id)?;
+    on_node(&node, move |core, _| core.cancel_join(&room)).await
+}
+
 #[tauri::command]
 pub async fn rooms_mark_read(node: State<'_, NodeHandle>, room_id: String) -> Result<(), String> {
     let room = unhex::<16>(&room_id)?;

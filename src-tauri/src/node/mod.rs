@@ -405,13 +405,15 @@ impl Node {
                         self.rooms.clear();
                         self.resend = ResendQueue::new(self.cfg.resend_after);
                     }
-                    self.refresh_rooms();
+                    // 先只加新房间、不移走已退出的：退出时写的 Leave 还要发出去
+                    self.sync_rooms(false);
                     if out.settings_changed {
                         self.apply_settings();
                     }
                     for (room, events) in out.broadcasts {
                         self.send_events(room, events).await;
                     }
+                    self.refresh_rooms();
                     for n in out.notes {
                         (self.sink)(n);
                     }
@@ -431,11 +433,18 @@ impl Node {
 
     /// 和 Core 的房间列表对齐：新房间取密钥，已有的更新状态，已退出的移除；房间有增减时更新中继订阅。
     fn refresh_rooms(&mut self) {
+        self.sync_rooms(true);
+    }
+
+    /// `prune` 为 false 时不移走已退出的房间。
+    fn sync_rooms(&mut self, prune: bool) {
         let Ok(list) = self.core.sync_rooms() else {
             return;
         };
         let before: HashSet<RoomId> = self.rooms.keys().copied().collect();
-        self.rooms.retain(|id, _| list.iter().any(|(r, _)| r == id));
+        if prune {
+            self.rooms.retain(|id, _| list.iter().any(|(r, _)| r == id));
+        }
         for (room, status) in list {
             if let Some(rs) = self.rooms.get_mut(&room) {
                 rs.status = status;
