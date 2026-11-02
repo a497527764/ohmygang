@@ -20,6 +20,7 @@ use crate::crypto::MemberId;
 use crate::error::AppResult;
 use crate::identity::IdentityView;
 use crate::node::{NodeEvent, NodeHandle, Outbox, now_ms};
+use crate::settings::DEFAULT_RELAYS;
 use crate::storage::events::Delivery;
 use crate::sync::path::PathKind;
 use crate::transport::relay::{RelayHealth, RelayState};
@@ -195,6 +196,8 @@ pub struct SettingsDto {
     pub relays: Vec<String>,
     pub sound_enabled: bool,
     pub volume: u8,
+    /// 内置默认中继，设置页「恢复默认」用。
+    pub default_relays: Vec<String>,
 }
 
 impl From<&LocalSettings> for SettingsDto {
@@ -204,6 +207,7 @@ impl From<&LocalSettings> for SettingsDto {
             relays: s.relays.clone(),
             sound_enabled: s.sound_enabled,
             volume: s.volume,
+            default_relays: DEFAULT_RELAYS.map(String::from).to_vec(),
         }
     }
 }

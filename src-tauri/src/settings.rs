@@ -3,7 +3,8 @@
 //!
 //! 实现流程：
 //! 1. 每项设置存成 `settings` 表的一行，值为 JSON 文本；没存过的项用默认值。
-//!    中继列表只在用户改过之后才落盘，所以以后调整默认列表，没改过的用户会自动用上新的。
+//!    中继列表只在用户改过之后才落盘，所以以后调整默认列表，没改过的用户会自动用上新的；
+//!    改回和默认列表一模一样时删掉这一行，恢复「跟随默认」。
 //! 2. 修改时先校验再写入：中继地址去掉首尾空格，必须是 `wss://` 加上不含空白的地址，重复的只留第一个。
 //!    音量必须在 0–100。任一项不合格就整次修改都不生效。
 
@@ -87,7 +88,11 @@ pub fn update(conn: &Connection, patch: SettingsPatch) -> AppResult<LocalSetting
         write(&tx, INTERNET_ALLOWED, v)?;
     }
     if let Some(v) = relays {
-        write(&tx, RELAYS, v)?;
+        if v == DEFAULT_RELAYS {
+            store::delete(&tx, RELAYS)?;
+        } else {
+            write(&tx, RELAYS, v)?;
+        }
     }
     if let Some(v) = patch.sound_enabled {
         write(&tx, SOUND_ENABLED, v)?;
@@ -181,6 +186,33 @@ mod tests {
         assert!(!s.sound_enabled);
         assert_eq!(s.volume, 0);
         assert!(s.internet_allowed, "没给的项不变");
+    }
+
+    #[test]
+    fn restoring_default_relays_follows_future_defaults() {
+        let c = storage::open_in_memory().unwrap();
+        update(
+            &c,
+            SettingsPatch {
+                relays: Some(vec!["wss://mine.example".into()]),
+                ..SettingsPatch::default()
+            },
+        )
+        .unwrap();
+        assert!(store::get(&c, RELAYS).unwrap().is_some());
+        let s = update(
+            &c,
+            SettingsPatch {
+                relays: Some(DEFAULT_RELAYS.map(String::from).to_vec()),
+                ..SettingsPatch::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(s.relays, DEFAULT_RELAYS.map(String::from).to_vec());
+        assert!(
+            store::get(&c, RELAYS).unwrap().is_none(),
+            "改回默认列表后不再单独保存，以后默认列表调整时自动跟上"
+        );
     }
 
     #[test]

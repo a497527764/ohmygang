@@ -12,6 +12,11 @@ pub fn get(conn: &Connection, key: &str) -> AppResult<Option<String>> {
         .optional()?)
 }
 
+pub fn delete(conn: &Connection, key: &str) -> AppResult<()> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+    Ok(())
+}
+
 pub fn set(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     conn.execute(
         "INSERT INTO settings (key, value) VALUES (?1, ?2)
