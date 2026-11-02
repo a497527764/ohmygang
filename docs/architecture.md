@@ -285,7 +285,7 @@ Packet = "HS"(2) ‖ proto(1) ‖ room_id(16) ‖ nonce(24) ‖ AEAD(Frame) (含
 ```
 
 - 整包不超过 **1200 字节**，包头 59 字节，留给帧 1141 字节；不做分片。
-- 包头作为 AEAD 的关联数据。
+- 包头前 19 字节（`"HS"`、proto、room_id）作为 AEAD 的关联数据，改动任何一个字节都解密失败；nonce 直接参与解密。
 - `proto` 与本机不同时不解析，并提示「有成员版本不同，请更新」。
 
 ### 6.2 帧
@@ -299,6 +299,11 @@ Want   { to: 短 ID, ranges: Vec<(作者短 ID, stream, from_seq, to_seq)> }
 WantFloors { to: 短 ID, n: u32 }                    # 新成员询问「最近 n 条聊天」的分界
 Floors { vector: Vec<(作者短 ID, floor_seq)> }
 ```
+
+**线上编码**：
+- 事件在线上省掉两个可推导的字段：room_id 已在包头，event_id 由内容算出。收端用包头的 room_id 补上、重算 event_id 再验签，每条事件少 48 字节。事件编码成 CBOR 数组 `[作者公钥, stream, seq, ts_ms, kind, body, sig]`。
+- 帧是 CBOR 编码的枚举，变体名用一两个字母（`E` = Events、`H` = Have、`W` = Want，M2 再加 `WF`、`F`）；解不出来的帧直接忽略。
+- 一个 Events 帧放不下时拆成多个包；Have 放不下时拆成多帧。
 
 短 ID 是公钥前 8 字节。控制帧（Have、Want、Floors）不单独签名：能解密的都是持码者，伪造它们最多让对方显示错误的在线状态或投递状态，属于已接受的风险。
 
@@ -364,7 +369,7 @@ Floors { vector: Vec<(作者短 ID, floor_seq)> }
 ### 7.2 Have
 
 ```text
-HaveEntry { author: 短 ID, state_max: u32, chat_max: u32 }   # 对每位作者，本机持有的最大序号
+HaveEntry { author: 短 ID, state_max: u32, chat_max: u32 }   # 对每位作者，从 1 起连续持有到的最大序号（有空洞时只报到空洞之前，否则同伴会来要本机其实没有的事件）
 ```
 
 发送时机：
