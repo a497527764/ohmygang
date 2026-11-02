@@ -5,6 +5,7 @@
 //!    闭包把新写的事件放进 `Outbox`，节点随后用 `Events { live: true }` 广播出去；改了本机设置时按新设置重建中继连接池。
 //!    `NodeHandle::inspect` 读取节点自己的状态（成员路径、中继状态）。
 //! 2. 两条路径（架构 6.5）：局域网 UDP 始终广播；按设置启动中继连接池，关闭「允许互联网」时没有连接池。
+//!    局域网端口被占（多半是别的软件）时不退出，退回随机端口：局域网只能发不能收，中继照常，界面据此提示。
 //!    本人的事件在有成员只能经中继联系、或局域网上没人在线时，再发一份到中继。
 //! 3. 收包：两条路径的包走同一套处理，只是记下来源。按包头 room_id 找到房间密钥解密。Events 交给 Core 入库；
 //!    Have 记下同伴（局域网地址、向量、每条路径的出现时间和周期），再做抑制、补齐和激活检查；
@@ -48,6 +49,14 @@ pub enum NodeEvent {
 }
 
 pub type Sink = Arc<dyn Fn(NodeEvent) + Send + Sync>;
+
+/// 局域网端口情况。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LanStatus {
+    pub port: u16,
+    /// 配置的端口被占，用的是随机端口，收不到别人的局域网广播。
+    pub degraded: bool,
+}
 
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
@@ -266,6 +275,7 @@ struct RoomSync {
 pub struct Node {
     core: Core,
     lan: LanTransport,
+    lan_degraded: bool,
     relay: Option<RelayHandle>,
     relay_in: Option<RelayInbox>,
     cfg: NodeConfig,
@@ -284,12 +294,21 @@ fn missing_count(gaps: &[WantRange]) -> u64 {
 
 impl Node {
     pub async fn spawn(core: Core, cfg: NodeConfig, sink: Sink) -> std::io::Result<NodeHandle> {
-        let (lan, inbox) = LanTransport::bind(&cfg.lan).await?;
+        let (lan, inbox, lan_degraded) = match LanTransport::bind(&cfg.lan).await {
+            Ok((lan, inbox)) => (lan, inbox, false),
+            Err(_) => {
+                let mut fallback = cfg.lan.clone();
+                fallback.bind.set_port(0);
+                let (lan, inbox) = LanTransport::bind(&fallback).await?;
+                (lan, inbox, true)
+            }
+        };
         let (tx, rx) = mpsc::channel::<Job>(64);
         let me = core.identity().member_id;
         let mut node = Node {
             core,
             lan,
+            lan_degraded,
             relay: None,
             relay_in: None,
             cfg,
@@ -410,6 +429,13 @@ impl Node {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub fn lan_status(&self) -> LanStatus {
+        LanStatus {
+            port: self.lan.local_addr().port(),
+            degraded: self.lan_degraded,
+        }
     }
 
     /// 各中继的连接状态；关闭互联网时为 None。

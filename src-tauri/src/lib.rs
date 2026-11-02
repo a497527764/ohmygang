@@ -21,9 +21,26 @@ use tauri::{Emitter, Manager};
 
 use transport::lan::LAN_PORT;
 
+/// 开发用的单机双开：环境变量 `LOLGANG_INSTANCE=2` 表示第二实例。
+fn is_second_instance() -> bool {
+    std::env::var("LOLGANG_INSTANCE").is_ok_and(|v| v == "2")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // 再次打开程序时不起新进程，而是把已经打开的窗口调到前面。
+    // 第二实例不注册，单机双开不受影响。这个插件只在 Rust 侧检查，不给前端任何权限。
+    if !is_second_instance() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }));
+    }
+    builder
         .setup(|app| {
             let node = start_node(app.handle())?;
             app.manage(node);
@@ -45,6 +62,7 @@ pub fn run() {
             commands::settings_get,
             commands::settings_update,
             commands::relay_status,
+            commands::network_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -56,7 +74,7 @@ pub fn run() {
 /// 单机双开（开发用）：环境变量 `LOLGANG_INSTANCE=2` 时，数据目录、凭据条目、UDP 端口都换一套；
 /// 开发版的广播同时发往两个端口，两个实例就能在一台电脑上互相发现。
 fn start_node(app: &tauri::AppHandle) -> Result<node::NodeHandle, Box<dyn std::error::Error>> {
-    let second = std::env::var("LOLGANG_INSTANCE").is_ok_and(|v| v == "2");
+    let second = is_second_instance();
     let mut dir = app.path().app_data_dir()?;
     if second {
         dir.push("instance-2");

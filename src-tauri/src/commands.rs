@@ -469,6 +469,27 @@ pub async fn rooms_members(
         .collect())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkStatusDto {
+    pub lan_port: u16,
+    /// 局域网端口被占，用的是随机端口，收不到别人的局域网广播。
+    pub lan_degraded: bool,
+}
+
+#[tauri::command]
+pub async fn network_status(node: State<'_, NodeHandle>) -> Result<NetworkStatusDto, String> {
+    node.inspect(|n| {
+        let s = n.lan_status();
+        NetworkStatusDto {
+            lan_port: s.port,
+            lan_degraded: s.degraded,
+        }
+    })
+    .await
+    .ok_or_else(|| "后台服务已停止，请重启应用".to_string())
+}
+
 /// 各中继的连接状态；关闭「允许互联网」时返回 null。
 #[tauri::command]
 pub async fn relay_status(

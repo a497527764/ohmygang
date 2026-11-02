@@ -313,3 +313,23 @@ async fn member_offline_during_dissolve_learns_it_later() {
     remove_db(&da);
     remove_db(&db);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn busy_lan_port_falls_back_to_a_random_port() {
+    let taken = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let busy = taken.local_addr().unwrap();
+    let free = free_ports(1)[0];
+    let (d1, d2) = (temp_db(), temp_db());
+    let degraded = start(&d1, 1, busy, &[busy]).await;
+    let normal = start(&d2, 2, free, &[free]).await;
+
+    let s = degraded.handle.inspect(|n| n.lan_status()).await.unwrap();
+    assert!(s.degraded, "端口被占时照常启动，但报告降级");
+    assert_ne!(s.port, busy.port());
+    let s = normal.handle.inspect(|n| n.lan_status()).await.unwrap();
+    assert_eq!((s.port, s.degraded), (free.port(), false));
+
+    drop((degraded, normal, taken));
+    remove_db(&d1);
+    remove_db(&d2);
+}

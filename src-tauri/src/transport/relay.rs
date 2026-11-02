@@ -428,7 +428,31 @@ impl Connection {
             tokio::time::interval((self.cfg.echo_timeout / 4).min(Duration::from_secs(1)));
         check.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
+            // 按顺序检查：房间列表变了先重发订阅，再发新事件。否则新房间的第一批事件可能先于订阅到达中继，
+            // 收不到回显，25 秒后被误判为不健康而重连。发送排在接收前面：发送受预算限制，不会饿死接收。
             tokio::select! {
+                biased;
+                changed = self.rooms.changed() => {
+                    if changed.is_err() {
+                        return End::Shutdown;
+                    }
+                    let msg = self.req().unwrap_or_else(|| close_message(SUB_ID));
+                    if sink.send(Message::text(msg)).await.is_err() {
+                        return End::Reconnect { healthy };
+                    }
+                }
+                item = out.recv() => {
+                    let Some((id, text)) = item else {
+                        return End::Shutdown;
+                    };
+                    if sink.send(Message::Text(text)).await.is_err() {
+                        return End::Reconnect { healthy };
+                    }
+                    // 判断超时只看最早的那个；积压太多时不再记新的
+                    if pending.len() < MAX_PENDING_ECHOES {
+                        pending.push_back((id, Instant::now()));
+                    }
+                }
                 msg = source.next() => {
                     let text = match msg {
                         Some(Ok(Message::Text(t))) => t,
@@ -469,27 +493,6 @@ impl Connection {
                             return End::Reconnect { healthy }; // 订阅没了，重连重新订阅
                         }
                         _ => {}
-                    }
-                }
-                item = out.recv() => {
-                    let Some((id, text)) = item else {
-                        return End::Shutdown;
-                    };
-                    if sink.send(Message::Text(text)).await.is_err() {
-                        return End::Reconnect { healthy };
-                    }
-                    // 判断超时只看最早的那个；积压太多时不再记新的
-                    if pending.len() < MAX_PENDING_ECHOES {
-                        pending.push_back((id, Instant::now()));
-                    }
-                }
-                changed = self.rooms.changed() => {
-                    if changed.is_err() {
-                        return End::Shutdown;
-                    }
-                    let msg = self.req().unwrap_or_else(|| close_message(SUB_ID));
-                    if sink.send(Message::text(msg)).await.is_err() {
-                        return End::Reconnect { healthy };
                     }
                 }
                 _ = check.tick() => {

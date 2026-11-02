@@ -74,6 +74,18 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
     false
 }
 
+/// 这个节点认为在房间里的成员数（含自己）。
+fn in_room(room: RoomId, n: usize) -> impl Fn(&mut Core) -> bool + Send + Sync + Clone + 'static {
+    move |c: &mut Core| {
+        c.list_members(&room)
+            .unwrap()
+            .iter()
+            .filter(|m| m.in_room)
+            .count()
+            == n
+    }
+}
+
 /// 每 20 毫秒查一次路径，5 秒内变成 `want` 就返回 true。
 async fn path_becomes(node: &TestNode, room: RoomId, member: MemberId, want: PathKind) -> bool {
     for _ in 0..250 {
@@ -101,6 +113,8 @@ async fn relay_only_pair_joins_chats_and_agrees_on_stacks() {
     );
     let a_id = member_id(&a).await;
     assert!(path_becomes(&b, room, a_id, PathKind::Relay).await);
+    // 等 A 也收到 B 的进房事件，否则 A 的排行榜里还没有 B，两边永远对不上
+    assert!(eventually(&a, in_room(room, 2)).await, "A 应看到 B 进房");
 
     burst(&a, room, 3).await;
     let board = a.handle.call(move |c, _| stacks(c, &room)).await.unwrap();
@@ -141,6 +155,14 @@ async fn lan_pair_and_relay_only_member_agree() {
         path_becomes(&a, room, c_id, PathKind::Relay).await,
         "A 经中继看到 C"
     );
+    // B 要先知道 C 只在中继，才会把自己的聊天也发到中继（M1 不补聊天，晚了就收不到）
+    assert!(
+        path_becomes(&b, room, c_id, PathKind::Relay).await,
+        "B 经中继看到 C"
+    );
+    for n in [&a, &b, &c] {
+        assert!(eventually(n, in_room(room, 3)).await, "三人互相知道已进房");
+    }
 
     // A、B 之间的聊天也经中继到达 C
     burst(&a, room, 3).await;
