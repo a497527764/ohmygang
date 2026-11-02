@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::chat::{self, TimelineItem};
+use crate::chat;
 use crate::crypto::{EventId, Identity, MemberId, RoomId};
 use crate::error::AppResult;
 use crate::heartsteel::service::{self as hs, Replayed};
@@ -23,7 +23,7 @@ use crate::rooms::service as rooms;
 use crate::storage::events::{self, PutResult, StoredEvent};
 use crate::storage::{Connection, rooms as room_store};
 
-pub use crate::chat::ChatMessage;
+pub use crate::chat::{ChatMessage, TimelineCursor, TimelineItem};
 pub use crate::error::AppError;
 pub use crate::rooms::service::{MemberView, RoomSummary, RuleParams};
 pub use crate::storage::events::Delivery;
@@ -210,6 +210,24 @@ impl Core {
         })
     }
 
+    /// 聊天窗口的一页（正序）。`before` 为 None 时取最新一页；翻页时传入上一页第一条的 `cursor()`。
+    pub fn list_messages(
+        &self,
+        room: &RoomId,
+        before: Option<TimelineCursor>,
+        limit: u32,
+    ) -> AppResult<Vec<TimelineItem>> {
+        chat::list_messages(&self.conn, room, before, limit)
+    }
+
+    pub fn unread(&self, room: &RoomId) -> AppResult<u32> {
+        chat::unread(&self.conn, room, &self.view.member_id)
+    }
+
+    pub fn mark_read(&mut self, room: &RoomId) -> AppResult<()> {
+        chat::mark_read(&self.conn, room)
+    }
+
     /// 处理收到的一批事件。`is_live` 表示来自实时帧（会影响显示时间和是否播放音效）。
     pub fn ingest_events(
         &mut self,
@@ -337,3 +355,6 @@ mod ingest_tests;
 
 #[cfg(test)]
 mod send_tests;
+
+#[cfg(test)]
+mod timeline_tests;

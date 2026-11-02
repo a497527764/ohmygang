@@ -171,3 +171,63 @@ pub fn send_text(
     }
     Ok((message, written, stacked))
 }
+
+impl TimelineItem {
+    /// 用这一条作为翻页游标：下一页取它之前的条目。
+    pub fn cursor(&self) -> TimelineCursor {
+        match self {
+            TimelineItem::Chat(m) => TimelineCursor {
+                display_ts: m.display_ts,
+                event_id: m.event_id,
+            },
+            TimelineItem::Notice(n) => TimelineCursor {
+                display_ts: n.display_ts,
+                event_id: n.event_id,
+            },
+        }
+    }
+}
+
+/// 聊天窗口的一页（正序，最多 limit 条）。有些事件不显示（非房主的管理事件、解散后的聊天），
+/// 过滤后不够一页就继续往前取，保证翻页不重不漏。
+pub fn list_messages(
+    conn: &Connection,
+    room: &RoomId,
+    before: Option<TimelineCursor>,
+    limit: u32,
+) -> AppResult<Vec<TimelineItem>> {
+    let row = room_store::get_room(conn, room)?.ok_or(AppError::RoomNotFound)?;
+    let mut cursor = before.map(|c| (c.display_ts, c.event_id));
+    let mut items: Vec<TimelineItem> = Vec::new();
+    loop {
+        let raw = events::timeline(conn, room, cursor, limit)?;
+        let Some(oldest) = raw.first() else {
+            break;
+        };
+        cursor = Some((oldest.display_ts, oldest.event.event_id));
+        let mut older: Vec<TimelineItem> = raw
+            .iter()
+            .filter_map(|s| to_item(s, &row.owner_tag, row.dissolve_ts))
+            .collect();
+        older.append(&mut items);
+        items = older;
+        if items.len() >= limit as usize || raw.len() < limit as usize {
+            break;
+        }
+    }
+    let extra = items.len().saturating_sub(limit as usize);
+    items.drain(..extra);
+    Ok(items)
+}
+
+/// 未读：他人发的、本机收到晚于已读游标的聊天条数（架构 4.5，迟到的旧消息也算）。
+pub fn unread(conn: &Connection, room: &RoomId, me: &MemberId) -> AppResult<u32> {
+    let row = room_store::get_room(conn, room)?.ok_or(AppError::RoomNotFound)?;
+    let cursor = room_store::read_cursor(conn, room)?;
+    events::count_unread(conn, room, me, cursor, row.dissolve_ts)
+}
+
+/// 已读游标移到当前最大的 local_seq。
+pub fn mark_read(conn: &Connection, room: &RoomId) -> AppResult<()> {
+    room_store::set_read_cursor(conn, room, events::max_local_seq(conn, room)?)
+}
