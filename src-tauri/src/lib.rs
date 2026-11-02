@@ -18,9 +18,51 @@ pub mod transport;
 
 use std::sync::Arc;
 
-use tauri::{Emitter, Manager};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 
 use transport::lan::LAN_PORT;
+
+/// 把主窗口调到前面（托盘点击、托盘菜单、再次打开程序都用它）。
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// 托盘常驻（需求 2.4 的 M3）：单击托盘图标显示主窗口，菜单只有「显示主窗口」「退出」。只在 Rust 侧，不给前端开权限。
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("心之钢群聊")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, e| match e.id.as_ref() {
+            "show" => show_main(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, e| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = e
+            {
+                show_main(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
 
 /// 开发用的单机双开：环境变量 `LOLGANG_INSTANCE=2` 表示第二实例。
 fn is_second_instance() -> bool {
@@ -34,18 +76,22 @@ pub fn run() {
     // 第二实例不注册，单机双开不受影响。这个插件只在 Rust 侧检查，不给前端任何权限。
     if !is_second_instance() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.unminimize();
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
+            show_main(app)
         }));
     }
     builder
         .setup(|app| {
+            setup_tray(app)?;
             let node = start_node(app.handle())?;
             app.manage(node);
             Ok(())
+        })
+        // 点窗口的关闭按钮只收进托盘，程序继续收消息；真正退出用托盘菜单的「退出」
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::identity_get,

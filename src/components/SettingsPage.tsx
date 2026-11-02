@@ -215,6 +215,13 @@ export function SettingsPage(p: Props) {
         <BackupSection />
 
         <section className="settings-section">
+          <h3>后台运行</h3>
+          <p className="settings-note">
+            点窗口右上角的关闭按钮只会把窗口收进右下角的托盘，程序继续收消息、叠层照常响。要彻底退出，请右键托盘里的心之钢图标，选「退出」。
+          </p>
+        </section>
+
+        <section className="settings-section">
           <h3>局域网</h3>
           {p.network?.lanDegraded ? (
             <p className="settings-warn">
