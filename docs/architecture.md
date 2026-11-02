@@ -348,6 +348,8 @@ Floors { vector: Vec<(作者短 ID, floor_seq)> }
 | 经中继补齐 500 条聊天 | — | 125 包，3 包/秒，约 42 秒 |
 | 经中继补齐 5000 条聊天 | 逐条约 17 分钟 | 1250 包，约 7 分钟，因此默认不走中继 |
 
+**实现状态（M1-4，6.4–6.6）**：已按上述规则实现。中继连接用 WebSocket + 系统证书（Windows SChannel），和浏览器一样能通过会检查加密流量的杀毒软件或公司代理。收到的中继事件只看 kind 和 `x` 标签，不验 Nostr 层签名：包本身已用房间密钥认证加密，中继也会验签。中继 Have 每 30 秒；经中继回应 Want 每秒 3 包。「允许互联网」开关和中继列表存在本机设置里（默认开启、默认 8 个中继），改了之后整个连接池重建；设置页界面在 M1-5。界面在成员旁显示「局域网 / 中继 / 离线」，房间标题旁显示中继连接数。跨网验收（含移动、联通补测）待做。
+
 ### 6.7 防灌水
 
 包大小上限、上述速率限制、状态事件序号上限、每次 Want 最多 64 个事件。持码者仍可灌聊天，这只影响聊天窗口，不影响层数和房间状态。
@@ -415,7 +417,7 @@ HaveEntry { author: 短 ID, state_max: u64, chat_max: u64 }   # 对每位作者�
 - 已退出的房间不再有任何网络活动。
 - 已解散的房间不主动发 Have；收到别人的 Have 且对方尚不知道解散时，回一次 `Dissolve` 事件（限频），让迟到的成员也能得知。
 
-**实现状态（M1-3）**：已实现实时广播（只发一次）、周期 Have 与延迟 Have 及其抑制、按 Want 补齐**状态事件**、Joining 转 Active、已解散房间回告解散。以下留给 M2：聊天补齐（WantFloors / Floors、chat_floor）、6/15/30 秒重发、发送中/已发送、网络变化后重新绑定 socket，以及后台房降频（目前所有房间都按活跃房的 5 秒周期）。所以 M1-3 中离线期间错过的聊天不会补回，但层数、房主、规则、成员一定会补齐。
+**实现状态（M1-3）**：已实现实时广播（只发一次）、周期 Have 与延迟 Have 及其抑制、按 Want 补齐**状态事件**、Joining 转 Active、已解散房间回告解散。以下留给 M2：聊天补齐（WantFloors / Floors、chat_floor）、6/15/30 秒重发、发送中/已发送、网络变化后重新绑定 socket，以及后台房降频（目前所有房间都按活跃房的 5 秒周期）。所以 M1-3 中离线期间错过的聊天不会补回，但层数、房主、规则、成员一定会补齐。M1-4 起这些同步也经中继进行，规则见 6.5、6.6。
 
 ### 7.6 历史可用性（架构声明）
 
@@ -481,7 +483,7 @@ Joining ──同步完成──▶ Active ──leave──▶ Left ──重�
 
 `events` 需要索引：`(room_id, author_id, stream, seq)`、`(room_id, display_ts, event_id)`、`(room_id, local_seq)`。
 
-实现状态（M1-2）：已建 `identity`、`rooms`（另含 `dissolve_ts` 缓存列）、`room_rules`、`members`、`events`（另含 `format` 列，还原事件验签要用）、`read_state`；`sync_state`、`settings` 尚未建，分别在 M2、M1-5 以新版本升级加入。表结构版本记在 `PRAGMA user_version`。
+实现状态（M1-2）：已建 `identity`、`rooms`（另含 `dissolve_ts` 缓存列）、`room_rules`、`members`、`events`（另含 `format` 列，还原事件验签要用）、`read_state`；`sync_state` 尚未建，在 M2 以新版本升级加入。表结构版本记在 `PRAGMA user_version`。M1-4 升到第 2 版，加入 `settings`（键值，值为 JSON 文本；没存过的项用默认值，所以中继列表只在用户改过后才落盘）。
 
 路径和在线状态只放内存，不落盘。
 
