@@ -4,3 +4,9 @@ pub mod budget;
 pub mod flood;
 pub mod lan;
 pub mod nostr;
+pub mod relay;
+
+#[cfg(test)]
+mod fake_relay;
+#[cfg(test)]
+mod relay_tests;
