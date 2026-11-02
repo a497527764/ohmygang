@@ -20,6 +20,8 @@ use crate::error::AppResult;
 use crate::identity::IdentityView;
 use crate::node::{NodeEvent, NodeHandle, Outbox, now_ms};
 use crate::storage::events::Delivery;
+use crate::sync::path::PathKind;
+use crate::transport::relay::{RelayHealth, RelayState};
 
 /// 建房时用的默认规则（5 秒内 3 条，冷却 30 秒）。改规则的入口在 M3。
 const DEFAULT_RULE: RuleParams = RuleParams {
@@ -109,10 +111,12 @@ pub struct MemberDto {
     pub stacks: u32,
     pub is_owner: bool,
     pub in_room: bool,
+    /// 现在经哪条路径能联系上：lan、relay、offline（自己也是 offline，界面不显示）。
+    pub path: &'static str,
 }
 
-impl From<&MemberView> for MemberDto {
-    fn from(m: &MemberView) -> Self {
+impl MemberDto {
+    fn new(m: &MemberView, path: PathKind) -> Self {
         MemberDto {
             member_id: hex(&m.member_id),
             fingerprint: m.fingerprint.clone(),
@@ -120,6 +124,35 @@ impl From<&MemberView> for MemberDto {
             stacks: m.stacks,
             is_owner: m.is_owner,
             in_room: m.in_room,
+            path: match path {
+                PathKind::Lan => "lan",
+                PathKind::Relay => "relay",
+                PathKind::Unknown => "offline",
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayHealthDto {
+    pub url: String,
+    /// connecting、ok、cooling、retired。
+    pub state: &'static str,
+    pub last_echo_ms: Option<u64>,
+}
+
+impl From<&RelayHealth> for RelayHealthDto {
+    fn from(h: &RelayHealth) -> Self {
+        RelayHealthDto {
+            url: h.url.clone(),
+            state: match h.state {
+                RelayState::Connecting => "connecting",
+                RelayState::Ok => "ok",
+                RelayState::Cooling => "cooling",
+                RelayState::Retired => "retired",
+            },
+            last_echo_ms: h.last_echo_ms,
         }
     }
 }
@@ -382,14 +415,34 @@ pub async fn rooms_members(
     room_id: String,
 ) -> Result<Vec<MemberDto>, String> {
     let room = unhex::<16>(&room_id)?;
-    on_node(&node, move |core, _| {
-        Ok(core
-            .list_members(&room)?
-            .iter()
-            .map(MemberDto::from)
-            .collect())
+    let members = on_node(&node, move |core, _| core.list_members(&room)).await?;
+    let paths = node
+        .inspect(move |n| n.member_paths(&room))
+        .await
+        .unwrap_or_default();
+    Ok(members
+        .iter()
+        .map(|m| {
+            let path = paths
+                .iter()
+                .find(|(id, _)| *id == m.member_id)
+                .map_or(PathKind::Unknown, |(_, p)| *p);
+            MemberDto::new(m, path)
+        })
+        .collect())
+}
+
+/// 各中继的连接状态；关闭「允许互联网」时返回 null。
+#[tauri::command]
+pub async fn relay_status(
+    node: State<'_, NodeHandle>,
+) -> Result<Option<Vec<RelayHealthDto>>, String> {
+    node.inspect(|n| {
+        n.relay_status()
+            .map(|list| list.iter().map(RelayHealthDto::from).collect())
     })
     .await
+    .ok_or_else(|| "后台服务已停止，请重启应用".to_string())
 }
 
 #[tauri::command]
@@ -466,6 +519,30 @@ mod tests {
     use super::*;
     use crate::chat::{ChatMessage, NoticeKind, RoomNotice, TimelineItem};
     use crate::storage::events::Delivery;
+
+    #[test]
+    fn member_path_and_relay_state_names() {
+        let m = MemberView {
+            member_id: [1; 32],
+            fingerprint: "abcdef".into(),
+            nickname: None,
+            stacks: 2,
+            is_owner: false,
+            in_room: true,
+        };
+        let names =
+            [PathKind::Lan, PathKind::Relay, PathKind::Unknown].map(|p| MemberDto::new(&m, p).path);
+        assert_eq!(names, ["lan", "relay", "offline"]);
+
+        let h = RelayHealthDto::from(&RelayHealth {
+            url: "wss://a.example".into(),
+            state: RelayState::Cooling,
+            last_echo_ms: Some(120),
+        });
+        assert_eq!(h.state, "cooling");
+        let json = serde_json::to_value(&h).unwrap();
+        assert_eq!(json["lastEchoMs"], 120);
+    }
 
     #[test]
     fn hex_roundtrip_and_errors() {

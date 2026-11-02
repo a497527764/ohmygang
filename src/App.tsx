@@ -1,12 +1,33 @@
 // 最小可用界面（M1-3）：左栏房间列表与建房/进房，中栏聊天，右栏成员与层数。
-// 数据都从 api.ts 取；收到 hs://event 时只刷新受影响的部分。排行榜、音效、设置页、美化在 M1-5。
+// 数据都从 api.ts 取；收到 hs://event 时只刷新受影响的部分。排行榜、设置页、美化在 M1-5。
+// M1-4 加了成员的联系路径（局域网/中继/离线）和中继连接数，这两样没有推送，每 5 秒刷新一次。
 import { useCallback, useEffect, useRef, useState } from "react";
 import heartsteel from "./assets/heartsteel.png";
 import heartsteelSound from "./assets/heartsteel.mp3";
-import { api, mergeMessages, type HsEvent, type Identity, type Member, type Message, type Room } from "./api";
+import {
+  api,
+  mergeMessages,
+  type HsEvent,
+  type Identity,
+  type Member,
+  type MemberPath,
+  type Message,
+  type RelayHealth,
+  type Room,
+} from "./api";
 import "./app.css";
 
 const PAGE = 100;
+
+const PATH_NAMES: Record<MemberPath, string> = { lan: "局域网", relay: "中继", offline: "离线" };
+
+/// undefined 表示还没查到。冷却中的中继也是连着的，算已连接。
+function relayText(relays: RelayHealth[] | null | undefined): string {
+  if (relays === undefined) return "";
+  if (relays === null) return "未联网，只走局域网";
+  const connected = relays.filter((r) => r.state === "ok" || r.state === "cooling").length;
+  return `中继 已连接 ${connected}/${relays.length}`;
+}
 
 // 心之钢音效（内置）。只在收到 Rust 的实时叠层通知时播放：补齐回来的历史叠层不会发这个通知（架构 5.6）。
 // 每次新建一个播放器，两人几乎同时叠层时两声可以重叠，不会互相打断。
@@ -46,6 +67,7 @@ function App() {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [relays, setRelays] = useState<RelayHealth[] | null | undefined>(undefined);
   const activeRef = useRef<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -92,6 +114,16 @@ function App() {
       off.then((f) => f());
     };
   }, [loadRooms, loadMembers]);
+
+  useEffect(() => {
+    const refresh = () => {
+      api.relayStatus().then(setRelays).catch(fail);
+      if (active) loadMembers(active);
+    };
+    refresh();
+    const t = setInterval(refresh, 5000);
+    return () => clearInterval(t);
+  }, [active, loadMembers]);
 
   // 用花括号包住：新版 WebView2 的 scrollIntoView 会返回 Promise，直接返回会被 React 当成清理函数而崩溃
   useEffect(() => {
@@ -225,7 +257,10 @@ function App() {
         <main className="chat">
           {room ? (
             <>
-              <div className="chat-head">{room.title ?? "（同步中）"}</div>
+              <div className="chat-head">
+                <span>{room.title ?? "（同步中）"}</span>
+                <span className="net">{relayText(relays)}</span>
+              </div>
               <div className="messages">
                 {messages.length >= PAGE && (
                   <button className="link older" onClick={loadOlder}>
@@ -289,6 +324,9 @@ function App() {
                     <span className="name">
                       {m.nickname || m.fingerprint.slice(0, 6)}
                       {m.isOwner && <span className="tag">房主</span>}
+                      {m.memberId !== me?.memberId && (
+                        <span className={`tag path-${m.path}`}>{PATH_NAMES[m.path]}</span>
+                      )}
                     </span>
                     <span className="stacks" title="心之钢层数">
                       <img src={heartsteel} alt="" />

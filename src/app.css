@@ -128,6 +128,14 @@ button.link {
   padding: 0 4px;
   margin-left: 4px;
 }
+.path-lan {
+  color: #2e8b57;
+  border-color: currentColor;
+}
+.path-relay {
+  color: #2f74c0;
+  border-color: currentColor;
+}
 .unread {
   background: var(--accent);
   color: #fff;
@@ -145,9 +153,17 @@ button.link {
   min-height: 0;
 }
 .chat-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
   font-weight: 600;
+}
+.chat-head .net {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
 }
 .messages {
   flex: 1;

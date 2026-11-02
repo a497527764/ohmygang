@@ -22,6 +22,9 @@ export interface Room {
   lastActive: number;
 }
 
+/// 现在经哪条路径能联系上这位成员（架构 6.5）。
+export type MemberPath = "lan" | "relay" | "offline";
+
 export interface Member {
   memberId: string;
   fingerprint: string;
@@ -29,6 +32,13 @@ export interface Member {
   stacks: number;
   isOwner: boolean;
   inRoom: boolean;
+  path: MemberPath;
+}
+
+export interface RelayHealth {
+  url: string;
+  state: "connecting" | "ok" | "cooling" | "retired";
+  lastEchoMs: number | null;
 }
 
 export interface Message {
@@ -69,6 +79,8 @@ export const api = {
   send: (roomId: string, text: string) => invoke<Message>("chat_send_text", { roomId, text }),
   messages: (roomId: string, before: Cursor | null, limit: number) =>
     invoke<Message[]>("chat_list", { roomId, before, limit }),
+  /// 关闭「允许互联网」时为 null。
+  relayStatus: () => invoke<RelayHealth[] | null>("relay_status"),
   onEvent: (cb: (e: HsEvent) => void): Promise<UnlistenFn> =>
     listen<HsEvent>("hs://event", (e) => cb(e.payload)),
 };
