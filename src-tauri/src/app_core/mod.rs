@@ -21,6 +21,7 @@ use crate::protocol::body::{self, ProfileBody, Rule};
 use crate::protocol::event::{SignedEvent, Stream, kind, verify_stateless};
 use crate::protocol::frame::{HaveEntry, WantRange, short_id};
 use crate::rooms::service as rooms;
+use crate::settings;
 use crate::storage::events::{self, PutResult, StoredEvent};
 use crate::storage::{Connection, rooms as room_store};
 use crate::sync::plan::Holdings;
@@ -28,6 +29,7 @@ use crate::sync::plan::Holdings;
 pub use crate::chat::{ChatMessage, TimelineCursor, TimelineItem};
 pub use crate::error::AppError;
 pub use crate::rooms::service::{MemberView, RoomSummary, RuleParams};
+pub use crate::settings::{LocalSettings, SettingsPatch};
 pub use crate::storage::events::Delivery;
 pub use crate::storage::rooms::RoomStatus;
 
@@ -228,6 +230,14 @@ impl Core {
 
     pub fn mark_read(&mut self, room: &RoomId) -> AppResult<()> {
         chat::mark_read(&self.conn, room)
+    }
+
+    pub fn settings(&self) -> AppResult<LocalSettings> {
+        settings::load(&self.conn)
+    }
+
+    pub fn update_settings(&mut self, patch: SettingsPatch) -> AppResult<LocalSettings> {
+        settings::update(&self.conn, patch)
     }
 
     // ---- 以下供同步（节点）使用 ----

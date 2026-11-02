@@ -10,6 +10,7 @@ pub mod keystore;
 pub mod node;
 pub mod protocol;
 pub mod rooms;
+pub mod settings;
 pub mod storage;
 pub mod sync;
 pub mod transport;
@@ -39,6 +40,8 @@ pub fn run() {
             commands::rooms_mark_read,
             commands::chat_send_text,
             commands::chat_list,
+            commands::settings_get,
+            commands::settings_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

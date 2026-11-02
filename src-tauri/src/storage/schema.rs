@@ -1,7 +1,7 @@
 //! 表结构（架构 9.1）。每个元素是一次升级，下标 + 1 就是升级后的版本号，只能在末尾追加，不能改已有的。
-//! `sync_state` 和 `settings` 还用不到，留给 M2、M1-5 以新版本加入。
+//! 第 2 版（M1-4）加入 `settings`；`sync_state` 还用不到，留给 M2 以新版本加入。
 
-pub const MIGRATIONS: &[&str] = &[V1];
+pub const MIGRATIONS: &[&str] = &[V1, V2];
 
 const V1: &str = "
 CREATE TABLE identity (
@@ -65,5 +65,12 @@ CREATE INDEX events_by_local ON events (room_id, local_seq);
 CREATE TABLE read_state (
     room_id BLOB PRIMARY KEY,
     read_local_seq INTEGER NOT NULL DEFAULT 0
+);
+";
+
+const V2: &str = "
+CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 ";

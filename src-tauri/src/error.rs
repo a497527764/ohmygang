@@ -21,6 +21,8 @@ pub enum AppError {
     NicknameTooLong,
     #[error("心之钢规则超出范围")]
     InvalidRule,
+    #[error("中继地址必须是 wss:// 开头的完整地址：{0}")]
+    InvalidRelay(String),
     #[error("本机密钥不可用：{0}")]
     KeyStore(String),
     #[error("本机数据解密失败，可能是本机主密钥被更换")]

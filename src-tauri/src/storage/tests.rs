@@ -172,6 +172,36 @@ fn rooms_rules_members_and_read_cursor() {
 }
 
 #[test]
+fn version_1_database_upgrades_without_losing_data() {
+    let path = std::env::temp_dir().join(format!(
+        "lolgang-v1-{}.db",
+        crate::crypto::random_bytes::<8>()
+            .map(u64::from_le_bytes)
+            .unwrap()
+    ));
+    {
+        // 按第 1 版建库并写入数据，模拟 M1-3 用户的数据库
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(schema::MIGRATIONS[0]).unwrap();
+        c.pragma_update(None, "user_version", 1).unwrap();
+        events::put_event(&c, &chat(&me(), 1, 1000, b"a"), 1000, None).unwrap();
+    }
+    {
+        let c = open(&path).unwrap();
+        let version: u32 = c
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version as usize, schema::MIGRATIONS.len());
+        assert_eq!(count(&c), 1);
+        settings::set(&c, "k", "v").unwrap();
+        assert_eq!(settings::get(&c, "k").unwrap().as_deref(), Some("v"));
+    }
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+}
+
+#[test]
 fn reopening_a_file_keeps_data() {
     let path = std::env::temp_dir().join(format!(
         "lolgang-test-{}.db",

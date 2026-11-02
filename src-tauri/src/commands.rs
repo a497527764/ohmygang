@@ -12,7 +12,9 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::app_core::{Core, CoreEvent, MemberView, RoomStatus, RoomSummary, RuleParams};
+use crate::app_core::{
+    Core, CoreEvent, LocalSettings, MemberView, RoomStatus, RoomSummary, RuleParams, SettingsPatch,
+};
 use crate::chat::{NoticeKind, TimelineCursor, TimelineItem};
 use crate::error::AppResult;
 use crate::identity::IdentityView;
@@ -120,6 +122,30 @@ impl From<&MemberView> for MemberDto {
             in_room: m.in_room,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsDto {
+    pub internet_allowed: bool,
+    pub relays: Vec<String>,
+}
+
+impl From<&LocalSettings> for SettingsDto {
+    fn from(s: &LocalSettings) -> Self {
+        SettingsDto {
+            internet_allowed: s.internet_allowed,
+            relays: s.relays.clone(),
+        }
+    }
+}
+
+/// 要修改的设置项，没给的不改。
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsPatchDto {
+    pub internet_allowed: Option<bool>,
+    pub relays: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -410,6 +436,26 @@ pub async fn chat_list(
             .iter()
             .map(MessageDto::from)
             .collect())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn settings_get(node: State<'_, NodeHandle>) -> Result<SettingsDto, String> {
+    on_node(&node, |core, _| Ok(SettingsDto::from(&core.settings()?))).await
+}
+
+#[tauri::command]
+pub async fn settings_update(
+    node: State<'_, NodeHandle>,
+    patch: SettingsPatchDto,
+) -> Result<SettingsDto, String> {
+    on_node(&node, move |core, _| {
+        let s = core.update_settings(SettingsPatch {
+            internet_allowed: patch.internet_allowed,
+            relays: patch.relays,
+        })?;
+        Ok(SettingsDto::from(&s))
     })
     .await
 }

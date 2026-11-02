@@ -10,6 +10,7 @@ pub mod events;
 pub mod identity;
 pub mod rooms;
 mod schema;
+pub mod settings;
 
 use std::path::Path;
 
