@@ -9,6 +9,8 @@ pub mod keystore;
 pub mod protocol;
 pub mod rooms;
 pub mod storage;
+pub mod sync;
+pub mod transport;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
