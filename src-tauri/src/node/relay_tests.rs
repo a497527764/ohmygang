@@ -178,7 +178,15 @@ async fn lan_pair_and_relay_only_member_agree() {
         eventually(&c, move |c| stacks(c, &room) == both).await,
         "C 的层数应与 A、B 一致"
     );
-    assert_eq!(chats(&c, room).await, 6);
+    let six = move |core: &mut Core| {
+        core.list_messages(&room, None, 100)
+            .unwrap()
+            .iter()
+            .filter(|i| matches!(i, TimelineItem::Chat(_)))
+            .count()
+            == 6
+    };
+    assert!(eventually(&c, six).await, "A、B 的 6 条聊天都到达 C");
 
     burst(&c, room, 3).await;
     let board = c.handle.call(move |c, _| stacks(c, &room)).await.unwrap();
@@ -204,6 +212,7 @@ async fn lan_pair_keeps_chat_off_the_relay() {
     let (da, db) = (temp_db(), temp_db());
     let quiet = |me| NodeConfig {
         relay_have_period: Duration::from_secs(60),
+        background_relay_have_period: Duration::from_secs(60),
         ..relay_config(me, Some(&addrs), &relay.url)
     };
     let a = start_with(&da, 1, quiet(addrs[0])).await;

@@ -56,6 +56,7 @@ pub fn run() {
             commands::rooms_members,
             commands::rooms_mark_read,
             commands::rooms_set_prefs,
+            commands::rooms_set_active,
             commands::heartsteel_leaderboard,
             commands::chat_send_text,
             commands::chat_list,

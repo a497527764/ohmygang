@@ -191,3 +191,25 @@ async fn dropping_the_pool_closes_connections() {
     drop(a);
     assert!(wait_until(|| relay.connections() == 0).await);
 }
+
+#[tokio::test]
+async fn reconnect_now_skips_the_backoff_wait() {
+    // 先占一个端口再关掉：连接池连不上，进入很长的退避等待
+    let addr = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let cfg = RelayConfig {
+        backoff: (Duration::from_secs(30), Duration::from_secs(60)),
+        ..fast()
+    };
+    let (a, _a_in) = RelayPool::start(vec![format!("ws://{addr}")], vec![R1], cfg);
+    sleep(Duration::from_millis(300)).await;
+    // 网络「恢复」：中继在同一地址上线，不叫醒的话要等 30 秒
+    let relay = FakeRelay::start_on(addr, Behavior::default()).await;
+    a.reconnect_now();
+    assert!(
+        wait_until(|| relay.subscribers(&R1) == 1).await,
+        "叫醒后立刻重连"
+    );
+}

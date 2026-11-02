@@ -76,6 +76,7 @@ function App() {
     async (roomId: string) => {
       activeRef.current = roomId;
       setActive(roomId);
+      api.setActiveRoom(roomId).catch(fail);
       setMessages([]);
       setMembers([]);
       setDrawerOpen(false);

@@ -11,7 +11,8 @@
 //!    - 发出的事件 25 秒内没从订阅里收到回显，就断开重连；
 //!    - 连接失败或断开后等待重连，退避 2 秒起、每次翻倍、最多 60 秒；收到过回显的连接断开后从 2 秒重新算；
 //!    - `OK` 回 `rate-limited`：保持连接继续收，但 30 秒内不往这个中继发；
-//!    - `OK` 或 `CLOSED` 回 `blocked` 等：本次运行不再使用这个中继。
+//!    - `OK` 或 `CLOSED` 回 `blocked` 等：本次运行不再使用这个中继；
+//!    - 网络恢复时节点调用 `reconnect_now`，正在等待重连的连接立刻重连，退避从头算。
 //! 6. 状态表放在共享的 `Mutex` 里，连接任务写、调度任务和 `status()` 读；中继变为可用时唤醒调度任务。
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -109,6 +110,7 @@ type Health = Arc<Mutex<Vec<RelayHealth>>>;
 pub struct RelayHandle {
     cmds: mpsc::Sender<Cmd>,
     health: Health,
+    wake: Arc<Notify>,
 }
 
 impl RelayHandle {
@@ -121,6 +123,11 @@ impl RelayHandle {
 
     pub fn set_rooms(&self, rooms: Vec<RoomId>) {
         let _ = self.cmds.try_send(Cmd::SetRooms(rooms));
+    }
+
+    /// 网络刚恢复：正在等待重连的连接不再等，立刻重连。
+    pub fn reconnect_now(&self) {
+        self.wake.notify_waiters();
     }
 
     pub fn status(&self) -> Vec<RelayHealth> {
@@ -151,6 +158,7 @@ impl RelayPool {
         let (from_tx, from_rx) = mpsc::channel(1024);
         let (rooms_tx, rooms_rx) = watch::channel(rooms.clone());
         let ready = Arc::new(Notify::new());
+        let wake = Arc::new(Notify::new());
         let mut relays = Vec::new();
         let mut tasks = Vec::new();
         for (index, url) in urls.into_iter().enumerate() {
@@ -162,6 +170,7 @@ impl RelayPool {
                 cfg: cfg.clone(),
                 health: health.clone(),
                 ready: ready.clone(),
+                wake: wake.clone(),
                 rooms: rooms_rx.clone(),
                 inbound: from_tx.clone(),
             };
@@ -189,6 +198,7 @@ impl RelayPool {
             RelayHandle {
                 cmds: cmd_tx,
                 health,
+                wake,
             },
             in_rx,
         )
@@ -359,6 +369,7 @@ struct Connection {
     cfg: RelayConfig,
     health: Health,
     ready: Arc<Notify>,
+    wake: Arc<Notify>,
     rooms: watch::Receiver<Vec<RoomId>>,
     inbound: mpsc::Sender<FromRelay>,
 }
@@ -383,8 +394,11 @@ impl Connection {
             }
             self.set(RelayState::Connecting);
             while out.try_recv().is_ok() {} // 断开期间积下的事件已经过时
-            sleep(backoff).await;
-            backoff = (backoff * 2).min(max);
+            let woken = tokio::select! {
+                _ = sleep(backoff) => false,
+                _ = self.wake.notified() => true,
+            };
+            backoff = if woken { min } else { (backoff * 2).min(max) };
         }
     }
 

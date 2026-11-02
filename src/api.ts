@@ -108,6 +108,8 @@ export const api = {
   /// 没给的项不改。
   setRoomPrefs: (roomId: string, prefs: { muted?: boolean; pinned?: boolean }) =>
     invoke<Room>("rooms_set_prefs", { roomId, muted: prefs.muted ?? null, pinned: prefs.pinned ?? null }),
+  /// 界面当前打开的房间，Rust 据此决定哪个房间同步得更勤。
+  setActiveRoom: (roomId: string | null) => invoke<void>("rooms_set_active", { roomId }),
   leaderboard: (roomId: string) => invoke<LeaderboardEntry[]>("heartsteel_leaderboard", { roomId }),
   send: (roomId: string, text: string) => invoke<Message>("chat_send_text", { roomId, text }),
   messages: (roomId: string, before: Cursor | null, limit: number) =>

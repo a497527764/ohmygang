@@ -550,6 +550,17 @@ pub async fn heartsteel_leaderboard(
     .await
 }
 
+/// 界面当前打开的房间（null 表示没打开）。这个房间同步得更勤，其余降频（架构 7.2）。
+#[tauri::command]
+pub async fn rooms_set_active(
+    node: State<'_, NodeHandle>,
+    room_id: Option<String>,
+) -> Result<(), String> {
+    let room = room_id.map(|r| unhex::<16>(&r)).transpose()?;
+    node.set_active_room(room).await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn rooms_mark_read(node: State<'_, NodeHandle>, room_id: String) -> Result<(), String> {
     let room = unhex::<16>(&room_id)?;

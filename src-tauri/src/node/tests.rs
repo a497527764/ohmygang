@@ -32,6 +32,8 @@ pub(super) fn fast_config(me: SocketAddr, all: &[SocketAddr]) -> NodeConfig {
             ..LanConfig::default()
         },
         have_period: Duration::from_millis(200),
+        background_have_period: Duration::from_millis(1000),
+        background_relay_have_period: Duration::from_millis(2000),
         live_have_delay: (Duration::from_millis(10), Duration::from_millis(50)),
         new_peer_have_delay: (Duration::from_millis(0), Duration::from_millis(20)),
         want_timeout: Duration::from_millis(300),
@@ -509,4 +511,28 @@ async fn new_member_only_gets_the_most_recent_chats() {
     drop((a, c));
     remove_db(&da);
     remove_db(&dc);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_active_room_uses_the_fast_have_period() {
+    let addrs = free_ports(1);
+    let da = temp_db();
+    let a = start(&da, 1, addrs[0], &addrs).await;
+    let (r1, _) = create(&a).await;
+    let (r2, _) = create(&a).await;
+    let periods = |room| a.handle.inspect(move |n| n.have_periods(&room));
+    let cfg = fast_config(addrs[0], &addrs);
+    let fast = (cfg.have_period, cfg.relay_have_period);
+    let slow = (cfg.background_have_period, cfg.background_relay_have_period);
+    assert_eq!(periods(r1).await, Some(slow), "界面没打开任何房间时都降频");
+
+    a.handle.set_active_room(Some(r1)).await;
+    assert_eq!(periods(r1).await, Some(fast));
+    assert_eq!(periods(r2).await, Some(slow));
+    a.handle.set_active_room(Some(r2)).await;
+    assert_eq!(periods(r1).await, Some(slow));
+    assert_eq!(periods(r2).await, Some(fast));
+
+    drop(a);
+    remove_db(&da);
 }

@@ -47,6 +47,18 @@ impl Default for LanConfig {
 }
 
 /// 本次广播要发往的地址。
+/// 本机已启用、非回环网卡的地址，排好序。节点定时比较它来发现「网络变了」（比如连上了别的 Wi-Fi）。
+pub fn interface_signature() -> Vec<std::net::IpAddr> {
+    let mut ips: Vec<std::net::IpAddr> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !i.is_loopback() && i.is_oper_up())
+        .map(|i| i.ip())
+        .collect();
+    ips.sort();
+    ips
+}
+
 pub fn broadcast_targets(cfg: &LanConfig) -> Vec<SocketAddr> {
     if let Some(fixed) = &cfg.fixed_targets {
         return fixed.clone();

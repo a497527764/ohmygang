@@ -10,7 +10,8 @@
 //! 3. 收包：两条路径的包走同一套处理，只是记下来源。按包头 room_id 找到房间密钥解密。Events 交给 Core 入库；
 //!    Have 记下同伴（局域网地址、向量、每条路径的出现时间和周期），再做抑制、补齐和激活检查；
 //!    Want 把对方要的事件放进回应队列，从哪条路径来就从哪条路径回：局域网每秒 50 包，中继每秒 3 包。
-//! 4. 定时器：局域网 Have 每 5 秒、中继 Have 每 30 秒（都有 ±20% 抖动）；延迟 Have（收到实时事件后 1–5 秒、
+//! 4. 定时器：当前打开的房间局域网 Have 每 5 秒、中继每 30 秒，其余房间降频到 30 秒、120 秒（都有 ±20% 抖动）；
+//!    每 5 秒看一次网卡有没有变，变了就当作网络恢复：所有房间 0–2 秒内发 Have，中继立刻重连；延迟 Have（收到实时事件后 1–5 秒、
 //!    发现新同伴后 0–2 秒，期间被别人的 Have 覆盖就取消），需要时也发一份到中继；Want 超时换人；
 //!    同伴在两条路径上都超过 3 个周期没消息视为离线；Joining 房间检查能否激活。
 //! 5. 送达（架构 7.1）：本人的新事件广播后排进重发计划，没被确认就在 6、15、30 秒各重发一次；
@@ -79,10 +80,12 @@ pub struct LanStatus {
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
     pub lan: LanConfig,
-    /// 局域网 Have 周期。
+    /// 当前打开的房间的 Have 周期：局域网、中继。
     pub have_period: Duration,
-    /// 中继 Have 周期。
     pub relay_have_period: Duration,
+    /// 其余房间（后台）的 Have 周期：局域网、中继。
+    pub background_have_period: Duration,
+    pub background_relay_have_period: Duration,
     pub live_have_delay: (Duration, Duration),
     pub new_peer_have_delay: (Duration, Duration),
     pub want_timeout: Duration,
@@ -105,6 +108,8 @@ impl Default for NodeConfig {
             lan: LanConfig::default(),
             have_period: path::LAN_HAVE_PERIOD,
             relay_have_period: path::RELAY_HAVE_PERIOD,
+            background_have_period: Duration::from_secs(30),
+            background_relay_have_period: Duration::from_secs(120),
             live_have_delay: (Duration::from_secs(1), Duration::from_secs(5)),
             new_peer_have_delay: (Duration::ZERO, Duration::from_secs(2)),
             want_timeout: Duration::from_secs(5),
@@ -162,6 +167,15 @@ impl NodeHandle {
         });
         self.jobs.send(job).await.ok()?;
         rx.await.ok()
+    }
+
+    /// 界面当前打开的房间（None 表示没打开任何房间）。这个房间用活跃周期发 Have，其余降频。
+    pub async fn set_active_room(&self, room: Option<RoomId>) {
+        let job: Job = Box::new(move |node| {
+            node.set_active_room(room);
+            Outbox::default()
+        });
+        let _ = self.jobs.send(job).await;
     }
 
     /// 在节点任务里读取节点自己的状态（成员路径、中继状态）。节点已停止时返回 None。
@@ -321,7 +335,13 @@ pub struct Node {
     /// 下一个中继补齐包最早什么时候发。
     relay_backfill_at: Instant,
     resend: ResendQueue<SignedEvent>,
+    active_room: Option<RoomId>,
+    net_signature: Vec<std::net::IpAddr>,
+    next_net_check: Instant,
 }
+
+/// 多久看一次网卡有没有变。
+const NET_CHECK: Duration = Duration::from_secs(5);
 
 /// 发给某位同伴的路径：在局域网上就单播，否则经中继（帧里带目标，其他人收到会忽略）。
 fn route_to(p: &Peer, now: Instant) -> Route {
@@ -359,6 +379,9 @@ impl Node {
             relay_backfill: VecDeque::new(),
             relay_backfill_at: Instant::now(),
             resend: ResendQueue::new(cfg_resend),
+            active_room: None,
+            net_signature: crate::transport::lan::interface_signature(),
+            next_net_check: Instant::now() + NET_CHECK,
         };
         node.refresh_rooms();
         node.apply_settings();
@@ -485,6 +508,52 @@ impl Node {
         }
     }
 
+    fn set_active_room(&mut self, room: Option<RoomId>) {
+        if self.active_room == room {
+            return;
+        }
+        self.active_room = room;
+        // 刚切到的房间可能还在后台周期里，马上报一次
+        if let Some(rs) = room.and_then(|r| self.rooms.get_mut(&r)) {
+            let now = Instant::now();
+            rs.next_have = now;
+            rs.next_relay_have = now;
+        }
+    }
+
+    /// 某个房间现在用的 Have 周期：(局域网, 中继)。
+    pub fn have_periods(&self, room: &RoomId) -> (Duration, Duration) {
+        if self.active_room.as_ref() == Some(room) {
+            (self.cfg.have_period, self.cfg.relay_have_period)
+        } else {
+            (
+                self.cfg.background_have_period,
+                self.cfg.background_relay_have_period,
+            )
+        }
+    }
+
+    /// 网卡变了，当作网络恢复：所有房间尽快发 Have，中继不再等退避。
+    fn check_network(&mut self, now: Instant) {
+        if now < self.next_net_check {
+            return;
+        }
+        self.next_net_check = now + NET_CHECK;
+        let sig = crate::transport::lan::interface_signature();
+        if sig == self.net_signature {
+            return;
+        }
+        self.net_signature = sig;
+        let rooms: Vec<RoomId> = self.rooms.keys().copied().collect();
+        let delay = self.cfg.new_peer_have_delay;
+        for room in rooms {
+            self.schedule_have(&room, delay);
+        }
+        if let Some(r) = &self.relay {
+            r.reconnect_now();
+        }
+    }
+
     /// 各中继的连接状态；关闭互联网时为 None。
     pub fn relay_status(&self) -> Option<Vec<RelayHealth>> {
         self.relay.as_ref().map(RelayHandle::status)
@@ -544,9 +613,10 @@ impl Node {
         let (Some(key), Ok(vector)) = (self.key_of(&room), self.core.have_vector(&room)) else {
             return;
         };
+        let (lan_period, relay_period) = self.have_periods(&room);
         let (period, route) = match via {
-            Via::Lan => (self.cfg.have_period, Route::Broadcast { relay: None }),
-            Via::Relay => (self.cfg.relay_have_period, Route::Relay(Priority::Control)),
+            Via::Lan => (lan_period, Route::Broadcast { relay: None }),
+            Via::Relay => (relay_period, Route::Relay(Priority::Control)),
         };
         let period_s = (period.as_millis() as u64).div_ceil(1000).max(1) as u16;
         let frame = Frame::Have {
@@ -958,8 +1028,10 @@ impl Node {
         let now = Instant::now();
         let relay_on = self.relay.is_some();
         let rooms: Vec<RoomId> = self.rooms.keys().copied().collect();
+        self.check_network(now);
         for room in rooms {
             let needs_relay = self.needs_relay(&room);
+            let (lan_period, relay_period) = self.have_periods(&room);
             let (mut lan_have, mut relay_have) = (false, false);
             if let Some(rs) = self.rooms.get_mut(&room) {
                 rs.peers
@@ -967,12 +1039,12 @@ impl Node {
                 if rs.status != RoomStatus::Dissolved {
                     let triggered = rs.pending_have.is_some_and(|t| now >= t);
                     if now >= rs.next_have || triggered {
-                        rs.next_have = now + jitter(self.cfg.have_period);
+                        rs.next_have = now + jitter(lan_period);
                         rs.pending_have = None;
                         lan_have = true;
                     }
                     if relay_on && (now >= rs.next_relay_have || (triggered && needs_relay)) {
-                        rs.next_relay_have = now + jitter(self.cfg.relay_have_period);
+                        rs.next_relay_have = now + jitter(relay_period);
                         relay_have = true;
                     }
                 }

@@ -66,7 +66,12 @@ fn hex(b: &[u8]) -> String {
 
 impl FakeRelay {
     pub async fn start(behavior: Behavior) -> FakeRelay {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        Self::start_on("127.0.0.1:0".parse().unwrap(), behavior).await
+    }
+
+    /// 在指定地址上线（测「网络恢复后立即重连」用）。
+    pub async fn start_on(addr: std::net::SocketAddr, behavior: Behavior) -> FakeRelay {
+        let listener = TcpListener::bind(addr).await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
         let state = Arc::new(Mutex::new(State::default()));
         let shared = state.clone();
