@@ -398,8 +398,13 @@ impl Node {
                 job = jobs.recv() => {
                     let Some(job) = job else { break };
                     let out = job(&mut self);
-                    // 导入备份会换身份
-                    self.me = self.core.identity().member_id;
+                    // 导入备份可能换了身份：原来记的同伴状态和重发计划都属于旧身份，全部丢掉重新同步
+                    let me = self.core.identity().member_id;
+                    if me != self.me {
+                        self.me = me;
+                        self.rooms.clear();
+                        self.resend = ResendQueue::new(self.cfg.resend_after);
+                    }
                     self.refresh_rooms();
                     if out.settings_changed {
                         self.apply_settings();

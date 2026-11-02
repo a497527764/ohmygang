@@ -536,3 +536,77 @@ async fn only_the_active_room_uses_the_fast_have_period() {
     drop(a);
     remove_db(&da);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn importing_another_identity_resets_room_sync() {
+    let addrs = free_ports(2);
+    let (da, db) = (temp_db(), temp_db());
+    let a = start(&da, 1, addrs[0], &addrs).await;
+    let b = start(&db, 2, addrs[1], &addrs).await;
+    let (room, code) = create(&a).await;
+    join(&b, &code).await;
+    assert!(eventually(&b, status_is(room, RoomStatus::Active)).await);
+
+    // 第三个人 C 也在这个群里（只用 Core 模拟），导出完整备份
+    let a_events = a
+        .handle
+        .call(move |c, _| c.room_events(&room).unwrap())
+        .await
+        .unwrap();
+    let mut c = Core::open(
+        storage::open_in_memory().unwrap(),
+        &MemoryKeyStore([3u8; 32]),
+    )
+    .unwrap();
+    c.join_room(&code, now_ms()).unwrap();
+    c.ingest_events(&room, &a_events, false, now_ms()).unwrap();
+    c.activate(&room, now_ms()).unwrap();
+    let c_id = c.identity().member_id;
+    let file = c
+        .export_backup(crate::backup::BackupKind::Full, "口令123456")
+        .unwrap();
+
+    // A 先下线，B 换成 C 的身份：B 原来记的 A 的状态不能沿用（否则马上用旧状态又激活了），房间停在 Joining
+    drop(a);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    b.handle
+        .call(move |core, _| {
+            core.import_backup(&file, "口令123456", true, now_ms())
+                .unwrap()
+        })
+        .await
+        .unwrap();
+    assert!(
+        b.handle
+            .inspect(move |n| n.member_paths(&room).is_empty())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        b.handle
+            .call(move |c, _| c.room_status(&room).unwrap())
+            .await,
+        Some(RoomStatus::Joining)
+    );
+    assert_eq!(
+        b.handle.call(|c, _| c.identity().member_id).await,
+        Some(c_id)
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        b.handle
+            .call(move |c, _| c.room_status(&room).unwrap())
+            .await,
+        Some(RoomStatus::Joining),
+        "没有同伴时不会激活"
+    );
+    let a = start(&da, 1, addrs[0], &addrs).await;
+    assert!(
+        eventually(&b, status_is(room, RoomStatus::Active)).await,
+        "A 回来、同步后重新激活"
+    );
+
+    drop((a, b));
+    remove_db(&da);
+    remove_db(&db);
+}
