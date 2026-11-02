@@ -333,3 +333,79 @@ async fn busy_lan_port_falls_back_to_a_random_port() {
     remove_db(&d1);
     remove_db(&d2);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unconfirmed_message_is_resent_and_then_marked_sent() {
+    let addrs = free_ports(2);
+    let (da, db) = (temp_db(), temp_db());
+    let quick_resend = NodeConfig {
+        resend_after: [
+            Duration::from_millis(300),
+            Duration::from_millis(600),
+            Duration::from_millis(1200),
+        ],
+        ..fast_config(addrs[0], &addrs)
+    };
+    let a = start_with(&da, 1, quick_resend).await;
+    let b = start(&db, 2, addrs[1], &addrs).await;
+    let (room, code) = create(&a).await;
+    join(&b, &code).await;
+    assert!(eventually(&b, status_is(room, RoomStatus::Active)).await);
+
+    // B 掉线期间 A 发言，第一次广播 B 收不到
+    drop(b);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let id = a
+        .handle
+        .call(move |core, out| {
+            let s = core.send_text(&room, "你在吗", now_ms()).unwrap();
+            out.broadcast(room, s.events);
+            s.message.event_id
+        })
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let b = start(&db, 2, addrs[1], &addrs).await;
+
+    let has_it = move |c: &mut Core| {
+        c.list_messages(&room, None, 50)
+            .unwrap()
+            .iter()
+            .filter(|i| matches!(i, crate::chat::TimelineItem::Chat(m) if m.event_id == id))
+            .count()
+            == 1
+    };
+    assert!(eventually(&b, has_it).await, "重发后 B 收到");
+    let sent = move |c: &mut Core| {
+        c.list_messages(&room, None, 50).unwrap().iter().any(|i| {
+            matches!(i, crate::chat::TimelineItem::Chat(m) if m.event_id == id && m.delivery == Some(crate::storage::events::Delivery::Sent))
+        })
+    };
+    assert!(
+        eventually(&a, sent).await,
+        "B 的 Have 确认后 A 标记为已发送"
+    );
+    assert!(
+        a.events.lock().unwrap().iter().any(|e| matches!(
+            e,
+            NodeEvent::Delivered { room_id, event_ids } if *room_id == room && event_ids.contains(&id)
+        )),
+        "通知界面已发送"
+    );
+
+    // 所有重发都过去后，B 仍然只有一条，界面也只收到一次
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(b.handle.call(move |c, _| has_it(c)).await, Some(true));
+    let shown = b
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| matches!(e, NodeEvent::Core(CoreEvent::TimelineItemAdded { item: crate::chat::TimelineItem::Chat(m), .. }) if m.event_id == id))
+        .count();
+    assert_eq!(shown, 1, "重复投递不产生重复气泡");
+
+    drop((a, b));
+    remove_db(&da);
+    remove_db(&db);
+}

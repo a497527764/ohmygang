@@ -90,7 +90,8 @@ export type HsEvent =
   | { type: "room"; roomId: string }
   | { type: "fork"; roomId: string; memberId: string }
   | { type: "status"; roomId: string; status: RoomStatus }
-  | { type: "mismatch"; roomId: string; remoteProto: number };
+  | { type: "mismatch"; roomId: string; remoteProto: number }
+  | { type: "delivered"; roomId: string; eventIds: string[] };
 
 export const api = {
   identity: () => invoke<Identity>("identity_get"),

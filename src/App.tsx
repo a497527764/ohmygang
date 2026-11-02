@@ -108,6 +108,10 @@ function App() {
         }
       }
       if (e.roomId === current) {
+        if (e.type === "delivered") {
+          const ids = new Set(e.eventIds);
+          setMessages((list) => list.map((m) => (ids.has(m.eventId) ? { ...m, delivery: "sent" } : m)));
+        }
         if (e.type === "timeline") {
           setMessages((list) => mergeMessages(list, [e.message]));
           api.markRead(e.roomId).then(loadRooms).catch(fail);
@@ -118,7 +122,7 @@ function App() {
         }
       }
       if (e.type === "mismatch") setError("有群友的版本和你不同，请双方更新到同一版本");
-      if (e.type !== "timeline" || e.roomId !== current) loadRooms();
+      if ((e.type !== "timeline" && e.type !== "delivered") || e.roomId !== current) loadRooms();
     });
     return () => {
       off.then((f) => f());

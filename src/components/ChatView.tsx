@@ -108,7 +108,12 @@ export function ChatView(p: Props) {
                   />
                   <div className="msg-body">
                     {!mine && <div className="msg-name">{displayName(m.authorId, p.members)}</div>}
-                    <div className="bubble">{m.text}</div>
+                    <div className="bubble-line">
+                      {mine && m.delivery === "pending" && (
+                        <span className="sending" title="发送中：还没有群友确认收到，会自动重发" aria-label="发送中" />
+                      )}
+                      <div className="bubble">{m.text}</div>
+                    </div>
                   </div>
                 </div>
               )}

@@ -328,6 +328,11 @@ pub enum EventDto {
         room_id: String,
         remote_proto: u8,
     },
+    /// 本人这些消息已被同伴确认持有。
+    Delivered {
+        room_id: String,
+        event_ids: Vec<String>,
+    },
 }
 
 impl From<NodeEvent> for EventDto {
@@ -373,6 +378,10 @@ impl From<NodeEvent> for EventDto {
             } => EventDto::Mismatch {
                 room_id: hex(&room_id),
                 remote_proto,
+            },
+            NodeEvent::Delivered { room_id, event_ids } => EventDto::Delivered {
+                room_id: hex(&room_id),
+                event_ids: event_ids.iter().map(|id| hex(id)).collect(),
             },
         }
     }

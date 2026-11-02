@@ -504,6 +504,27 @@ impl Core {
     }
 
     /// 房间里本机持有的全部事件（按入库顺序）。M1-3 的补齐从这里取数据；测试里用它模拟把事件交给另一个人。
+    /// 同伴的 Have 覆盖到的本人事件标记为已发送（架构 7.1），返回改了的事件 ID。
+    pub fn mark_delivered(&mut self, room: &RoomId, peer: &[HaveEntry]) -> AppResult<Vec<EventId>> {
+        let me = self.view.member_id;
+        let Some(e) = peer.iter().find(|e| e.author == short_id(&me)) else {
+            return Ok(Vec::new());
+        };
+        let tx = self.conn.transaction()?;
+        let mut ids = events::mark_sent(&tx, room, &me, Stream::State, e.state_max)?;
+        ids.extend(events::mark_sent(&tx, room, &me, Stream::Chat, e.chat_max)?);
+        tx.commit()?;
+        Ok(ids)
+    }
+
+    /// 本人还没被确认的事件（节点启动时排进重发计划）。
+    pub fn pending_events(&self, room: &RoomId) -> AppResult<Vec<SignedEvent>> {
+        Ok(events::pending_own(&self.conn, room, &self.view.member_id)?
+            .into_iter()
+            .map(|s| s.event)
+            .collect())
+    }
+
     pub fn room_events(&self, room: &RoomId) -> AppResult<Vec<SignedEvent>> {
         Ok(events::query_room(&self.conn, room)?
             .into_iter()

@@ -86,6 +86,61 @@ fn leaderboard_is_sorted_by_stacks_then_member_id() {
 }
 
 #[test]
+fn peer_have_confirms_my_events_up_to_its_contiguous_seq() {
+    let (mut a, room, _) = owner_with_room();
+    let me = a.identity().member_id;
+    let sent: Vec<_> = ["一", "二", "三"]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| a.send_text(&room, t, 10_000 + i as u64 * 10_000).unwrap())
+        .collect();
+    let pending = |c: &Core| {
+        c.list_messages(&room, None, 50)
+            .unwrap()
+            .iter()
+            .filter_map(|i| match i {
+                TimelineItem::Chat(m) if m.delivery == Some(Delivery::Pending) => {
+                    Some(m.text.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(pending(&a).len(), 3);
+
+    // 同伴连续持有我的前 2 条聊天、全部状态事件
+    let peer = vec![HaveEntry {
+        author: short_id(&me),
+        state_max: 99,
+        chat_max: 2,
+    }];
+    let confirmed = a.mark_delivered(&room, &peer).unwrap();
+    assert!(confirmed.contains(&sent[0].message.event_id));
+    assert!(confirmed.contains(&sent[1].message.event_id));
+    assert!(!confirmed.contains(&sent[2].message.event_id));
+    assert_eq!(pending(&a), vec!["三".to_string()]);
+    assert!(
+        a.pending_events(&room)
+            .unwrap()
+            .iter()
+            .all(|e| e.event.stream == Stream::Chat && e.event.seq == 3),
+        "状态事件也被确认了，只剩第 3 条聊天"
+    );
+    assert!(
+        a.mark_delivered(&room, &peer).unwrap().is_empty(),
+        "已确认的不再返回"
+    );
+
+    // 向量里没有我时什么都不变
+    let other = vec![HaveEntry {
+        author: [7u8; 8],
+        state_max: 99,
+        chat_max: 99,
+    }];
+    assert!(a.mark_delivered(&room, &other).unwrap().is_empty());
+}
+
+#[test]
 fn cooldown_blocks_then_restack_after() {
     let (mut a, room, _) = owner_with_room();
     let me = a.identity().member_id;

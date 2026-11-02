@@ -13,8 +13,10 @@
 //! 4. 定时器：局域网 Have 每 5 秒、中继 Have 每 30 秒（都有 ±20% 抖动）；延迟 Have（收到实时事件后 1–5 秒、
 //!    发现新同伴后 0–2 秒，期间被别人的 Have 覆盖就取消），需要时也发一份到中继；Want 超时换人；
 //!    同伴在两条路径上都超过 3 个周期没消息视为离线；Joining 房间检查能否激活。
-//! 5. 已解散的房间不主动发 Have；同伴的 Have 显示它还不知道解散时，回一次解散事件（同一同伴 1 分钟内最多一次）。
-//! 6. 通知通过 sink 交出去：测试里收集起来检查，界面层转发成 Tauri 事件。
+//! 5. 送达（架构 7.1）：本人的新事件广播后排进重发计划，没被确认就在 6、15、30 秒各重发一次；
+//!    同伴的 Have 覆盖到的本人事件标记为已发送并通知界面。启动时把仍未确认的本人事件重新排进计划。
+//! 6. 已解散的房间不主动发 Have；同伴的 Have 显示它还不知道解散时，回一次解散事件（同一同伴 1 分钟内最多一次）。
+//! 7. 通知通过 sink 交出去：测试里收集起来检查，界面层转发成 Tauri 事件。
 //!
 //! 注意：Core 里的 SQLite 连接不能被多线程共享，所以等待网络发送时不能借用着 Core；
 //! 发包的函数只拿传输层和密钥（`send_frame`），不借用整个节点。
@@ -28,12 +30,13 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
 
 use crate::app_core::{Core, CoreEvent, RoomStatus};
-use crate::crypto::{MemberId, RoomId, RoomKey};
+use crate::crypto::{EventId, MemberId, RoomId, RoomKey};
 use crate::protocol::event::SignedEvent;
 use crate::protocol::frame::{Frame, HaveEntry, ShortId, WantRange, WireEvent, short_id};
 use crate::protocol::packet::{PacketError, open_packet, peek_room_id, seal_packets};
 use crate::sync::path::{self, PathKind, PeerPaths, Via};
 use crate::sync::plan::{MAX_WANT_EVENTS, dominates, ready_to_activate, state_gaps};
+use crate::sync::resend::ResendQueue;
 use crate::transport::budget::Priority;
 use crate::transport::lan::{Inbox, LanConfig, LanTransport};
 use crate::transport::relay::{
@@ -44,8 +47,19 @@ use crate::transport::relay::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NodeEvent {
     Core(CoreEvent),
-    RoomStatusChanged { room_id: RoomId, status: RoomStatus },
-    ProtocolMismatch { room_id: RoomId, remote_proto: u8 },
+    RoomStatusChanged {
+        room_id: RoomId,
+        status: RoomStatus,
+    },
+    ProtocolMismatch {
+        room_id: RoomId,
+        remote_proto: u8,
+    },
+    /// 本人这些事件已被同伴确认持有（界面把「发送中」去掉）。
+    Delivered {
+        room_id: RoomId,
+        event_ids: Vec<EventId>,
+    },
 }
 
 pub type Sink = Arc<dyn Fn(NodeEvent) + Send + Sync>;
@@ -77,6 +91,8 @@ pub struct NodeConfig {
     pub relay: RelayConfig,
     /// 设置后不用本机设置里的中继列表（测试用）；空列表表示不连中继。
     pub relay_urls: Option<Vec<String>>,
+    /// 未确认的本人事件在首次发送后多久重发（架构 7.1：6、15、30 秒）。
+    pub resend_after: [Duration; 3],
 }
 
 impl Default for NodeConfig {
@@ -94,6 +110,11 @@ impl Default for NodeConfig {
             tick: Duration::from_millis(100),
             relay: RelayConfig::default(),
             relay_urls: None,
+            resend_after: [
+                Duration::from_secs(6),
+                Duration::from_secs(15),
+                Duration::from_secs(30),
+            ],
         }
     }
 }
@@ -286,6 +307,7 @@ pub struct Node {
     relay_backfill: VecDeque<(RoomId, Vec<u8>)>,
     /// 下一个中继补齐包最早什么时候发。
     relay_backfill_at: Instant,
+    resend: ResendQueue<SignedEvent>,
 }
 
 fn missing_count(gaps: &[WantRange]) -> u64 {
@@ -305,6 +327,7 @@ impl Node {
         };
         let (tx, rx) = mpsc::channel::<Job>(64);
         let me = core.identity().member_id;
+        let cfg_resend = cfg.resend_after;
         let mut node = Node {
             core,
             lan,
@@ -318,9 +341,11 @@ impl Node {
             backfill: VecDeque::new(),
             relay_backfill: VecDeque::new(),
             relay_backfill_at: Instant::now(),
+            resend: ResendQueue::new(cfg_resend),
         };
         node.refresh_rooms();
         node.apply_settings();
+        node.queue_pending();
         tokio::spawn(node.run(rx, inbox));
         Ok(NodeHandle { jobs: tx })
     }
@@ -459,8 +484,27 @@ impl Node {
         path::also_send_to_relay(self.relay.is_some(), peers)
     }
 
-    /// 本人新写的事件：实时广播，需要时也发到中继。
+    /// 启动时把仍未确认的本人事件排进重发计划。
+    fn queue_pending(&mut self) {
+        let now = Instant::now();
+        let rooms: Vec<RoomId> = self.rooms.keys().copied().collect();
+        for room in rooms {
+            for e in self.core.pending_events(&room).unwrap_or_default() {
+                self.resend.add(room, e.event_id, e, now);
+            }
+        }
+    }
+
+    /// 本人新写的事件：实时广播，需要时也发到中继；排进重发计划，等同伴确认。
     async fn send_events(&mut self, room: RoomId, events: Vec<SignedEvent>) {
+        let now = Instant::now();
+        for e in &events {
+            self.resend.add(room, e.event_id, e.clone(), now);
+        }
+        self.broadcast_events(room, events).await;
+    }
+
+    async fn broadcast_events(&mut self, room: RoomId, events: Vec<SignedEvent>) {
         let Some(key) = self.key_of(&room) else {
             return;
         };
@@ -600,6 +644,18 @@ impl Node {
         if let Source::Lan(addr) = source {
             peer.lan_addr = Some(addr);
         }
+        if let Ok(ids) = self.core.mark_delivered(&room, &vector)
+            && !ids.is_empty()
+        {
+            self.resend.confirm(&ids);
+            self.emit(NodeEvent::Delivered {
+                room_id: room,
+                event_ids: ids,
+            });
+        }
+        let Some(rs) = self.rooms.get_mut(&room) else {
+            return;
+        };
         if rs.pending_have.is_some() && dominates(&vector, &mine) {
             rs.pending_have = None; // 别人已经替我报了，不用再发（抑制）
         }
@@ -822,6 +878,13 @@ impl Node {
             self.lan.send_to(addr, &p).await;
         }
         self.drain_relay_backfill(now);
+        let mut due: HashMap<RoomId, Vec<SignedEvent>> = HashMap::new();
+        for (room, e) in self.resend.due(now) {
+            due.entry(room).or_default().push(e);
+        }
+        for (room, events) in due {
+            self.broadcast_events(room, events).await;
+        }
     }
 
     /// 中继补齐按固定间隔一个一个发；队列空着时不攒额度，免得来活时一下子发一大串。

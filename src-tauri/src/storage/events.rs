@@ -299,6 +299,36 @@ pub fn append_own(
     Ok(e)
 }
 
+/// 本人某个流上 seq 不超过 `upto` 且仍是 Pending 的事件改为 Sent，返回改了的事件 ID。
+pub fn mark_sent(
+    conn: &Connection,
+    room: &RoomId,
+    author: &MemberId,
+    stream: Stream,
+    upto: u64,
+) -> AppResult<Vec<EventId>> {
+    let mut stmt = conn.prepare(
+        "UPDATE events SET delivery = 1 WHERE room_id = ?1 AND author_id = ?2 AND stream = ?3 AND seq <= ?4 AND delivery = 0 RETURNING event_id",
+    )?;
+    let rows = stmt.query_map(params![room, author, stream as u8, upto], |r| r.get(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// 本人还没被确认的事件，按 local_seq 升序。
+pub fn pending_own(
+    conn: &Connection,
+    room: &RoomId,
+    author: &MemberId,
+) -> AppResult<Vec<StoredEvent>> {
+    collect(
+        conn,
+        &format!(
+            "{SELECT} WHERE room_id = ?1 AND author_id = ?2 AND delivery = 0 ORDER BY local_seq"
+        ),
+        params![room, author],
+    )
+}
+
 /// 房间里每条事件的 (作者, stream, seq)，用来算持有向量。
 pub fn holdings_rows(conn: &Connection, room: &RoomId) -> AppResult<Vec<(MemberId, u8, u64)>> {
     let mut stmt = conn.prepare("SELECT author_id, stream, seq FROM events WHERE room_id = ?1")?;
