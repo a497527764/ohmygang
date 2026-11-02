@@ -8,6 +8,8 @@ import { Avatar } from "./Avatar";
 import { Icon } from "./Icon";
 
 const GAP_MS = 5 * 60 * 1000;
+/// 对方时钟偏差超过 2 分钟时按本机收到时间显示（Rust 侧已处理），这里加一句提示（需求 3.3）。
+const SKEW_MS = 2 * 60 * 1000;
 
 /// undefined 表示还没查到。冷却中的中继也是连着的，算已连接。
 function relayText(relays: RelayHealth[] | null | undefined): string {
@@ -110,7 +112,16 @@ export function ChatView(p: Props) {
                     pulseKey={p.pulse?.memberId === m.authorId ? p.pulse.key : undefined}
                   />
                   <div className="msg-body">
-                    {!mine && <div className="msg-name">{displayName(m.authorId, p.members)}</div>}
+                    {!mine && (
+                      <div className="msg-name">
+                        {displayName(m.authorId, p.members)}
+                        {Math.abs(m.tsMs - m.displayTs) > SKEW_MS && (
+                          <span className="skew" title={`对方电脑上的时间是 ${timeText(m.tsMs)}`}>
+                            对方时钟不准，按收到时间显示
+                          </span>
+                        )}
+                      </div>
+                    )}
                     <div className="bubble-line">
                       {mine && m.delivery === "pending" && (
                         <span className="sending" title="发送中：还没有群友确认收到，会自动重发" aria-label="发送中" />

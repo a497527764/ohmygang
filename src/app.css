@@ -535,6 +535,11 @@ input[role="switch"]:checked::before {
   color: var(--muted);
   margin: -2px 0 3px;
 }
+.skew {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--warn-ink);
+}
 .bubble {
   background: var(--panel);
   padding: 8px 12px;
