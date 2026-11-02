@@ -85,7 +85,10 @@ function App() {
     };
   }, [loadRooms, loadMembers]);
 
-  useEffect(() => bottomRef.current?.scrollIntoView({ block: "end" }), [messages.length]);
+  // 用花括号包住：新版 WebView2 的 scrollIntoView 会返回 Promise，直接返回会被 React 当成清理函数而崩溃
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [messages.length]);
   useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(null), 2000);
