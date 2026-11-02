@@ -2,10 +2,17 @@
 // 数据都从 api.ts 取；收到 hs://event 时只刷新受影响的部分。排行榜、音效、设置页、美化在 M1-5。
 import { useCallback, useEffect, useRef, useState } from "react";
 import heartsteel from "./assets/heartsteel.png";
+import heartsteelSound from "./assets/heartsteel.mp3";
 import { api, mergeMessages, type HsEvent, type Identity, type Member, type Message, type Room } from "./api";
 import "./app.css";
 
 const PAGE = 100;
+
+// 心之钢音效（内置）。只在收到 Rust 的实时叠层通知时播放：补齐回来的历史叠层不会发这个通知（架构 5.6）。
+// 每次新建一个播放器，两人几乎同时叠层时两声可以重叠，不会互相打断。
+function playHeartsteel() {
+  new Audio(heartsteelSound).play().catch((e) => console.warn("心之钢音效播放失败", e));
+}
 
 function displayName(id: string, members: Member[]): string {
   const m = members.find((x) => x.memberId === id);
@@ -69,6 +76,7 @@ function App() {
     loadRooms();
     const off = api.onEvent((e: HsEvent) => {
       const current = activeRef.current;
+      if (e.type === "live") playHeartsteel(); // 任何房间的实时叠层都响
       if (e.roomId === current) {
         if (e.type === "timeline") {
           setMessages((list) => mergeMessages(list, [e.message]));

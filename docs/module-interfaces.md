@@ -337,13 +337,13 @@ fn export_room_bundle(room_id) / import_room_bundle(...)
 ```text
 fn get_settings() -> LocalSettings
 fn update_settings(patch: LocalSettingsPatch) -> LocalSettings
-fn set_sound_file(path: String) -> ()      # 校验格式和大小（上限 2 MB），复制进应用数据目录
-fn get_sound_url() -> Option<String>       # 前端只能播放这一份
 ```
+
+心之钢音效内置在前端（2026-11-02 所有者决定），不再提供选择音效文件的接口。
 
 ```text
 LocalSettings {
-  sound_enabled, volume, has_sound_file,
+  sound_enabled, volume,
   internet_allowed, relays: Vec<String>,
   history_limit_lan,      # 默认 5000
   history_limit_relay,    # 默认 500
