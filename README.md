@@ -16,3 +16,15 @@ pnpm install
 pnpm tauri dev
 cd src-tauri && cargo test --lib
 ```
+
+第一次运行时 Windows 防火墙会询问是否允许联网，请勾选「专用网络」并允许，否则收不到局域网里其他人的消息。
+
+### 单机双开（开发用）
+
+一台电脑上开两个实例互相测试：先用 `pnpm tauri dev` 开第一个，再在另一个 PowerShell 窗口里运行：
+
+```powershell
+$env:LOLGANG_INSTANCE = '2'; & '.\src-tauri\target\debug\lolgang.exe'
+```
+
+第二个实例使用独立的数据目录、凭据条目和 UDP 端口（47481）。开发版的广播同时发往两个端口，所以两个实例能互相发现。
