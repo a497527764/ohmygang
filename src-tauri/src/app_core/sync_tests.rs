@@ -97,3 +97,24 @@ fn dissolve_event_is_the_owners_earliest() {
         Some(4)
     );
 }
+
+#[test]
+fn only_the_owner_can_dissolve() {
+    let mut a = new_core();
+    let created = a.create_room("开黑", DEFAULT_PARAMS, 1000).unwrap();
+    let room = created.summary.room_id;
+    let mut b = new_core();
+    b.join_room(&created.code, 2000).unwrap();
+    room_store::set_status(&b.conn, &room, RoomStatus::Active).unwrap();
+    assert!(matches!(
+        b.dissolve_room(&room, 3000),
+        Err(AppError::NotOwner)
+    ));
+    let written = a.dissolve_room(&room, 4000).unwrap();
+    assert_eq!(written[0].event.kind, kind::DISSOLVE);
+    assert_eq!(a.room_status(&room).unwrap(), RoomStatus::Dissolved);
+    assert!(matches!(
+        a.send_text(&room, "还能说话吗", 5000),
+        Err(AppError::RoomNotActive)
+    ));
+}

@@ -328,6 +328,31 @@ impl Core {
         Ok(written)
     }
 
+    /// 房主解散房间（需求 3.2，不可撤销）。解散后的叠层无效，所以重算全房层数。返回新写的解散事件。
+    pub fn dissolve_room(&mut self, room: &RoomId, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
+        let tx = self.conn.transaction()?;
+        let row = rooms::get(&tx, room)?;
+        if crate::protocol::room_code::owner_tag_of(&self.view.member_id) != row.owner_tag {
+            return Err(AppError::NotOwner);
+        }
+        if row.status != RoomStatus::Active {
+            return Err(AppError::RoomNotActive);
+        }
+        let e = events::append_own(
+            &tx,
+            &self.me,
+            room,
+            Stream::State,
+            kind::DISSOLVE,
+            vec![],
+            now_ms,
+        )?;
+        rooms::apply_state(&tx, room)?;
+        hs::recompute_room(&tx, room)?;
+        tx.commit()?;
+        Ok(vec![e])
+    }
+
     /// 房主最早的一条解散事件，用于告诉还不知道解散的同伴（架构 7.5）。
     pub fn dissolve_event(&self, room: &RoomId) -> AppResult<Option<SignedEvent>> {
         let Some(owner) = rooms::get(&self.conn, room)?.owner_id else {

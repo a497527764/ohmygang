@@ -6,6 +6,7 @@ pub mod error;
 pub mod heartsteel;
 pub mod identity;
 pub mod keystore;
+pub mod node;
 pub mod protocol;
 pub mod rooms;
 pub mod storage;

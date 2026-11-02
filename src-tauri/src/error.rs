@@ -9,6 +9,8 @@ pub enum AppError {
     InvalidRoomCode(#[from] RoomCodeError),
     #[error("房间不存在")]
     RoomNotFound,
+    #[error("只有房主能这样做")]
+    NotOwner,
     #[error("房间当前不能发言")]
     RoomNotActive,
     #[error("消息太长，最多 900 字节")]

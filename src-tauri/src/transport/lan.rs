@@ -5,7 +5,8 @@
 //! 2. `broadcast`：发往 255.255.255.255，以及每块「已启用、非回环、非点对点、有广播地址」网卡的定向广播地址。
 //!    这台机器开着 Clash TUN（点对点网卡）和 VMware 虚拟网卡，只发 255.255.255.255 可能走错网卡。
 //!    网卡列表每次广播时现查，换了网络也能跟上。
-//! 3. 接收循环在后台任务里：每个包先过洪水防护，再连同来源地址送进通道，交给节点处理。
+//! 3. 接收循环在后台任务里：每个包先过洪水防护，再连同来源地址送进通道，交给节点处理；
+//!    节点停止（通道接收端被丢弃）时接收循环随之退出，释放端口。
 //!    Windows 上发往无人监听的端口后，下一次接收会报「连接被重置」，这类错误直接忽略、继续接收。
 //! 4. 测试和单机双开时，可以绑定 127.0.0.1，并用固定的对端列表代替广播。
 
@@ -90,7 +91,12 @@ impl LanTransport {
             let started = Instant::now();
             let mut buf = vec![0u8; 2048];
             loop {
-                let Ok((n, from)) = recv_socket.recv_from(&mut buf).await else {
+                // 节点停止（通道接收端被丢弃）时立刻退出，释放 socket，端口才能被重新绑定
+                let received = tokio::select! {
+                    _ = tx.closed() => break,
+                    r = recv_socket.recv_from(&mut buf) => r,
+                };
+                let Ok((n, from)) = received else {
                     continue; // 包括 Windows 的「连接被重置」：忽略，继续收
                 };
                 if !guard.allow(from.ip(), started.elapsed().as_millis() as u64) {
