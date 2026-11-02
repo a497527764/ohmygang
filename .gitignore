@@ -1,0 +1,79 @@
+# 密钥与本地配置（.env.example 是模板，可以入库）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.local
+
+# Rust 编译产物与 rustfmt 备份
+/target/
+**/*.rs.bk
+
+# 前端依赖与构建产物
+node_modules/
+dist/
+dist-ssr/
+.vite/
+
+# Tauri 打包产物（src-tauri 下的 target 与仓库根目录的 /target/ 不是同一处）
+src-tauri/target/
+src-tauri/gen/
+
+# IDE 与系统文件
+# 保留 extensions.json：这是推荐扩展列表，方便换机器后编辑器提示要装什么
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 日志
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# 本地数据：数据库、用户备份样例
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+backups/
+*.backup
+
+# 测试文件（独立测试文件与测试目录；写在 .rs 源码里的 #[cfg(test)] 模块无法单独排除）
+tests/
+**/__tests__/
+**/*_test.rs
+**/*.test.ts
+**/*.test.tsx
+**/*.test.js
+**/*.test.jsx
+**/*.spec.ts
+**/*.spec.tsx
+**/*.spec.js
+**/*.spec.jsx
+
+# 测试运行产物（覆盖率、前端测试缓存与报告）
+coverage/
+.nyc_output/
+.vitest/
+test-results/
+playwright-report/
+blob-report/
+
+# ides
+.vscode/
+.idea/
+.cursor/
