@@ -323,7 +323,7 @@ Floors { vector: Vec<(作者短 ID, floor_seq)> }
 - Nostr 事件用**每个房间、每次运行各生成一把的密钥**签名，绝不用身份密钥，否则中继能跨房关联同一个人。
 - 每个包发给所有健康的中继，收到后按 Nostr 事件 ID 去重，再按 `event_id` 去重。
 - 中继列表：内置默认列表加用户配置。默认列表只收在中国大陆不开代理时直连通过实测的中继（标准见需求 4.1「国内直连」）。以后改默认列表时至少保留 3 个旧中继，否则新旧版本互相找不到。
-- 默认列表（2026-11-02 定，只在四川电信的 3 个网络上实测）：`wss://relay.nostrfeed.com`、`wss://relay.ditto.pub`、`wss://purplerelay.com`、`wss://relay.mostro.network`、`wss://relay.wisp.talk`、`wss://data-space.world/r/relais-public-2`、`wss://relay.dreamith.to`、`wss://relay.gulugulu.moe`。移动、联通尚未实测，并入 M1 跨网验收。
+- 默认列表（2026-11-02 定，只在四川电信的 3 个网络上实测）：`wss://relay.nostrfeed.com`、`wss://relay.ditto.pub`、`wss://purplerelay.com`、`wss://relay.mostro.network`、`wss://relay.wisp.talk`、`wss://data-space.world/r/relais-public-2`、`wss://relay.dreamith.to`、`wss://relay.gulugulu.moe`。2026-11-03 M1-4 跨网验收时，用移动或联通手机热点、关闭代理直连，能经默认中继完成联机；逐个中继在该网络上的测试结果待记录。
 - 健康判断沿用 lolPing：25 秒收不到自己事件的回显就重连（退避 2 秒到 60 秒）；`rate-limited` 冷却 30 秒；`blocked`、`restricted`、`auth-required`、`pow`、`invalid` 则本次运行不再使用该中继。
 - **显式约束**：临时事件没有存储保证，不能当历史数据库，也不能指望它转交给离线成员。
 
@@ -348,7 +348,7 @@ Floors { vector: Vec<(作者短 ID, floor_seq)> }
 | 经中继补齐 500 条聊天 | — | 125 包，3 包/秒，约 42 秒 |
 | 经中继补齐 5000 条聊天 | 逐条约 17 分钟 | 1250 包，约 7 分钟，因此默认不走中继 |
 
-**实现状态（M1-4，6.4–6.6）**：已按上述规则实现。中继连接用 WebSocket + 系统证书（Windows SChannel），和浏览器一样能通过会检查加密流量的杀毒软件或公司代理。收到的中继事件只看 kind 和 `x` 标签，不验 Nostr 层签名：包本身已用房间密钥认证加密，中继也会验签。中继 Have 每 30 秒；经中继回应 Want 每秒 3 包。「允许互联网」开关和中继列表存在本机设置里（默认开启、默认 8 个中继），改了之后整个连接池重建；设置页界面在 M1-5。界面在成员旁显示「局域网 / 中继 / 离线」，房间标题旁显示中继连接数。跨网验收（含移动、联通补测）待做。
+**实现状态（M1-4，6.4–6.6）**：已按上述规则实现。中继连接用 WebSocket + 系统证书（Windows SChannel），和浏览器一样能通过会检查加密流量的杀毒软件或公司代理。收到的中继事件只看 kind 和 `x` 标签，不验 Nostr 层签名：包本身已用房间密钥认证加密，中继也会验签。中继 Have 每 30 秒；经中继回应 Want 每秒 3 包。「允许互联网」开关和中继列表存在本机设置里（默认开启、默认 8 个中继），改了之后整个连接池重建；设置页界面在 M1-5。界面在成员旁显示「局域网 / 中继 / 离线」，房间标题旁显示中继连接数。2026-11-03 跨网两机验收通过（release 版 exe，一台家里宽带、一台移动或联通手机热点，都关闭代理）：进房、实时聊天、连发叠层两边层数一致、成员显示「中继」、关掉重开后数据还在。
 
 ### 6.7 防灌水
 
