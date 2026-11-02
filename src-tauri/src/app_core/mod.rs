@@ -358,3 +358,6 @@ mod send_tests;
 
 #[cfg(test)]
 mod timeline_tests;
+
+#[cfg(test)]
+mod restart_tests;

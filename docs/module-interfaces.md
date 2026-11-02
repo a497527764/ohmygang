@@ -420,3 +420,4 @@ transport、crypto、storage → 不依赖其他业务模块
 - 2026-11-02 按设计审查修订：合并 `reliability` 到 `sync`，新增 `core`、`protocol`、`settings`，移除 `friends` 和打洞接口，补齐缺失的接口。
 - 原文引用的 `design-review.md` 未入库，相关引用已移除。
 - 2026-11-02 M1-1 已实现：`crypto`、`protocol`（房间码、事件、事件内容）、`heartsteel`（判定与重放）、`rooms`（状态推导），共 44 个单元测试。包与帧、存储、网络和界面尚未实现。
+- 2026-11-02 M1-2 已实现：`storage`（SQLite）、`identity`（主密钥存 Windows 凭据管理器）、`rooms` 建房与进房、`chat`（发言、消息列表、未读）、`heartsteel` 重算与层数缓存、`core` 的入站处理。`core` 在代码里叫 `app_core`（Rust 标准库已有 `core`），对外是 `Core` 结构体，事件通知为 `CoreEvent`。共 80 个单元测试（另有 1 个读写真实凭据管理器的测试，默认不跑，用 `cargo test --lib keystore -- --ignored` 手动验证）。网络（`sync`、`transport`、`protocol` 的包与帧）、`settings` 和界面尚未实现；进房后 Joining 转 Active 在 M1-3。

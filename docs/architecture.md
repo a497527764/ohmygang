@@ -474,6 +474,8 @@ Joining ──同步完成──▶ Active ──leave──▶ Left ──重�
 
 `events` 需要索引：`(room_id, author_id, stream, seq)`、`(room_id, display_ts, event_id)`、`(room_id, local_seq)`。
 
+实现状态（M1-2）：已建 `identity`、`rooms`（另含 `dissolve_ts` 缓存列）、`room_rules`、`members`、`events`（另含 `format` 列，还原事件验签要用）、`read_state`；`sync_state`、`settings` 尚未建，分别在 M2、M1-5 以新版本升级加入。表结构版本记在 `PRAGMA user_version`。
+
 路径和在线状态只放内存，不落盘。
 
 ### 9.2 缓存与权威
