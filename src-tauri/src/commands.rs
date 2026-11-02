@@ -162,6 +162,8 @@ impl From<&RelayHealth> for RelayHealthDto {
 pub struct SettingsDto {
     pub internet_allowed: bool,
     pub relays: Vec<String>,
+    pub sound_enabled: bool,
+    pub volume: u8,
 }
 
 impl From<&LocalSettings> for SettingsDto {
@@ -169,6 +171,8 @@ impl From<&LocalSettings> for SettingsDto {
         SettingsDto {
             internet_allowed: s.internet_allowed,
             relays: s.relays.clone(),
+            sound_enabled: s.sound_enabled,
+            volume: s.volume,
         }
     }
 }
@@ -179,6 +183,8 @@ impl From<&LocalSettings> for SettingsDto {
 pub struct SettingsPatchDto {
     pub internet_allowed: Option<bool>,
     pub relays: Option<Vec<String>>,
+    pub sound_enabled: Option<bool>,
+    pub volume: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -503,12 +509,16 @@ pub async fn settings_update(
     node: State<'_, NodeHandle>,
     patch: SettingsPatchDto,
 ) -> Result<SettingsDto, String> {
+    let net_changed = patch.internet_allowed.is_some() || patch.relays.is_some();
     on_node(&node, move |core, out| {
         let s = core.update_settings(SettingsPatch {
             internet_allowed: patch.internet_allowed,
             relays: patch.relays,
+            sound_enabled: patch.sound_enabled,
+            volume: patch.volume,
         })?;
-        out.settings_changed = true;
+        // 只有网络相关的项变了才需要重建中继连接池
+        out.settings_changed = net_changed;
         Ok(SettingsDto::from(&s))
     })
     .await

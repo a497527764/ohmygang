@@ -231,7 +231,7 @@ async fn turning_internet_off_drops_relay_only_members() {
         .call(|core, out| {
             core.update_settings(SettingsPatch {
                 internet_allowed: Some(false),
-                relays: None,
+                ..SettingsPatch::default()
             })
             .unwrap();
             out.settings_changed = true;
