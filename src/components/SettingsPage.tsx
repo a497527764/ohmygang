@@ -1,8 +1,9 @@
-// 设置页（需求 3.6 的本机部分）：昵称、心之钢音效、网络（允许互联网、中继列表）、局域网提示。
-// 每项改动立即保存；中继地址不合格时显示 Rust 返回的中文错误，列表不变。备份和聊天历史上限在 M2。
+// 设置页（需求 3.6 的本机部分）：昵称、心之钢音效、网络（允许互联网、中继列表）、聊天记录条数、备份与恢复、局域网提示。
+// 每项改动立即保存；中继地址不合格时显示 Rust 返回的中文错误，列表不变。
 import { useState } from "react";
 import type { Identity, NetworkStatus, RelayHealth, Settings } from "../api";
 import { Avatar } from "./Avatar";
+import { BackupSection } from "./BackupSection";
 import { Icon } from "./Icon";
 
 const STATE_TEXT: Record<RelayHealth["state"], string> = {
@@ -210,6 +211,8 @@ export function SettingsPage(p: Props) {
             </label>
           </div>
         </section>
+
+        <BackupSection />
 
         <section className="settings-section">
           <h3>局域网</h3>

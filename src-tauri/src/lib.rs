@@ -1,4 +1,5 @@
 pub mod app_core;
+pub mod backup;
 pub mod base32;
 pub mod chat;
 pub mod commands;
@@ -63,6 +64,8 @@ pub fn run() {
             commands::settings_get,
             commands::settings_update,
             commands::relay_status,
+            commands::backup_export,
+            commands::backup_import,
             commands::network_status,
         ])
         .run(tauri::generate_context!())

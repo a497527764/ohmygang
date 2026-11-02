@@ -398,6 +398,8 @@ impl Node {
                 job = jobs.recv() => {
                     let Some(job) = job else { break };
                     let out = job(&mut self);
+                    // 导入备份会换身份
+                    self.me = self.core.identity().member_id;
                     self.refresh_rooms();
                     if out.settings_changed {
                         self.apply_settings();
@@ -1008,7 +1010,7 @@ impl Node {
         else {
             return;
         };
-        if !ready_to_activate(owner_known, &holdings, &peers) {
+        if !ready_to_activate(owner_known, &holdings, &peers, short_id(&self.me)) {
             return;
         }
         let Ok(written) = self.core.activate(&room, now_ms()) else {

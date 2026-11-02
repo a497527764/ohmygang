@@ -32,6 +32,15 @@ pub fn open_in_memory() -> AppResult<Connection> {
     Ok(conn)
 }
 
+/// 恢复备份前清空本机的身份、房间和全部事件（设置保留）。由调用方放进事务。
+pub fn clear_local_data(conn: &Connection) -> AppResult<()> {
+    conn.execute_batch(
+        "DELETE FROM identity; DELETE FROM rooms; DELETE FROM room_rules; DELETE FROM members;
+         DELETE FROM events; DELETE FROM read_state; DELETE FROM sync_state;",
+    )?;
+    Ok(())
+}
+
 fn migrate(conn: &Connection) -> AppResult<()> {
     let version: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     for (i, sql) in schema::MIGRATIONS.iter().enumerate().skip(version as usize) {

@@ -11,21 +11,24 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use crate::backup::{self, BackupData, BackupRoom};
 use crate::chat;
 use crate::crypto::{EventId, Identity, MemberId, RoomId, RoomKey};
 use crate::error::AppResult;
 use crate::heartsteel::service::{self as hs, Replayed};
 use crate::identity::{self, IdentityView};
 use crate::keystore::KeyStore;
+use crate::keystore::{PURPOSE_IDENTITY, encrypt_local};
 use crate::protocol::body::{self, ProfileBody, Rule};
 use crate::protocol::event::{SignedEvent, Stream, kind, verify_stateless};
 use crate::protocol::frame::{FloorEntry, HaveEntry, ShortId, WantRange, short_id};
 use crate::rooms::service as rooms;
 use crate::settings;
 use crate::storage::events::{self, PutResult, StoredEvent};
-use crate::storage::{Connection, rooms as room_store, sync_state};
+use crate::storage::{self, Connection, identity as id_store, rooms as room_store, sync_state};
 use crate::sync::plan::Holdings;
 
+pub use crate::backup::BackupKind;
 pub use crate::chat::{ChatMessage, TimelineCursor, TimelineItem};
 pub use crate::error::AppError;
 pub use crate::rooms::service::{MemberView, RoomSummary, RuleParams};
@@ -247,6 +250,66 @@ impl Core {
             &self.view.member_id,
             &rooms::get(&self.conn, room)?,
         )
+    }
+
+    /// 导出备份（架构 8.3）。完整备份带上每个房间的房间码和全部事件。
+    pub fn export_backup(&self, kind: BackupKind, passphrase: &str) -> AppResult<Vec<u8>> {
+        let rooms = match kind {
+            BackupKind::IdentityOnly => Vec::new(),
+            BackupKind::Full => room_store::list_rooms(&self.conn)?
+                .iter()
+                .map(|r| {
+                    Ok(BackupRoom {
+                        code: self.room_code(&r.room_id)?,
+                        events: self.room_events(&r.room_id)?,
+                    })
+                })
+                .collect::<AppResult<Vec<_>>>()?,
+        };
+        backup::encode(
+            &BackupData {
+                kind,
+                secret: self.me.secret(),
+                nickname: self.view.nickname.clone(),
+                rooms,
+            },
+            passphrase,
+        )
+    }
+
+    /// 导入备份：本机已有房间时必须确认覆盖（`overwrite`），覆盖会先清空本机的身份、房间和事件。
+    /// 带来的房间都进入 Joining，事件按非实时入库（不会触发叠层），和同伴同步后才能发言。
+    pub fn import_backup(
+        &mut self,
+        bytes: &[u8],
+        passphrase: &str,
+        overwrite: bool,
+        now_ms: u64,
+    ) -> AppResult<IdentityView> {
+        let data = backup::decode(bytes, passphrase)?;
+        if !overwrite && !room_store::list_rooms(&self.conn)?.is_empty() {
+            return Err(AppError::IdentityExists);
+        }
+        let restored = Identity::from_secret(&data.secret);
+        let tx = self.conn.transaction()?;
+        storage::clear_local_data(&tx)?;
+        id_store::insert(
+            &tx,
+            &id_store::IdentityRow {
+                member_id: restored.member_id(),
+                nickname: data.nickname.clone(),
+                secret_cipher: encrypt_local(&self.master, PURPOSE_IDENTITY, &data.secret)?,
+            },
+        )?;
+        tx.commit()?;
+        let (me, view) = identity::bootstrap(&self.conn, &self.master)?;
+        self.me = me;
+        self.view = view;
+        for r in &data.rooms {
+            let summary = self.join_room(&r.code, now_ms)?;
+            self.ingest_events(&summary.room_id, &r.events, false, now_ms)?;
+        }
+        Ok(self.view.clone())
     }
 
     pub fn settings(&self) -> AppResult<LocalSettings> {
@@ -578,3 +641,6 @@ mod restart_tests;
 
 #[cfg(test)]
 mod sync_tests;
+
+#[cfg(test)]
+mod backup_tests;

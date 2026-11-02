@@ -9,7 +9,8 @@
 //!    `chat_gaps`：聊天同理，但每位作者从分界（chat_floor，新成员只要最近 n 条）开始，没有分界的从 1 开始。
 //! 3. `dominates`：别人的 Have 已覆盖我的全部序号，我待发的 Have 就可以取消（抑制），避免所有人同时回应。
 //! 4. `ready_to_activate`：已拿到能对上 owner_tag 的建房事件、至少见过一个同伴、
-//!    且本机的状态事件不少于任何一个同伴报的数，才从 Joining 转 Active。
+//!    本机的状态事件不少于任何一个同伴报的数，且本人自己的聊天也不少于同伴报的（恢复备份后，
+//!    否则新消息的序号会和同伴那里的旧消息重复），才从 Joining 转 Active。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -179,12 +180,24 @@ pub fn dominates(theirs: &[HaveEntry], mine: &[HaveEntry]) -> bool {
     })
 }
 
-pub fn ready_to_activate(owner_known: bool, mine: &Holdings, peers: &[Vec<HaveEntry>]) -> bool {
+pub fn ready_to_activate(
+    owner_known: bool,
+    mine: &Holdings,
+    peers: &[Vec<HaveEntry>],
+    me: ShortId,
+) -> bool {
+    let my_chat = mine
+        .vector()
+        .iter()
+        .find(|e| e.author == me)
+        .map_or(0, |e| e.chat_max);
     owner_known
         && !peers.is_empty()
         && peers.iter().all(|v| {
-            v.iter()
-                .all(|e| mine.contiguous(&e.author, 0) >= e.state_max)
+            v.iter().all(|e| {
+                mine.contiguous(&e.author, 0) >= e.state_max
+                    && (e.author != me || my_chat >= e.chat_max)
+            })
         })
 }
 
@@ -322,14 +335,33 @@ mod tests {
         let mine = holdings(&[(A, &[1, 2, 3], &[])]);
         let peers = vec![vec![have(A, 3, 10)]];
         assert!(
-            !ready_to_activate(false, &mine, &peers),
+            !ready_to_activate(false, &mine, &peers, OTHER),
             "还没拿到能对上的建房事件"
         );
-        assert!(!ready_to_activate(true, &mine, &[]), "还没见到同伴");
+        assert!(!ready_to_activate(true, &mine, &[], OTHER), "还没见到同伴");
         assert!(
-            !ready_to_activate(true, &mine, &[vec![have(A, 4, 0)]]),
+            !ready_to_activate(true, &mine, &[vec![have(A, 4, 0)]], OTHER),
             "状态事件还有缺口"
         );
-        assert!(ready_to_activate(true, &mine, &peers), "聊天落后不影响激活");
+        assert!(
+            ready_to_activate(true, &mine, &peers, OTHER),
+            "别人的聊天落后不影响激活"
+        );
+    }
+
+    const OTHER: ShortId = [9u8; 8];
+
+    #[test]
+    fn activation_waits_for_my_own_latest_chat() {
+        // 恢复备份后：同伴那里有我更新的聊天，本机要先补回来，否则新消息的序号会和旧的重复
+        let mine = holdings(&[(A, &[1, 2], &[1, 2])]);
+        assert!(ready_to_activate(true, &mine, &[vec![have(A, 2, 2)]], A));
+        assert!(!ready_to_activate(true, &mine, &[vec![have(A, 2, 5)]], A));
+        assert!(ready_to_activate(
+            true,
+            &mine,
+            &[vec![have(A, 2, 2), have(B, 0, 9)]],
+            A
+        ));
     }
 }

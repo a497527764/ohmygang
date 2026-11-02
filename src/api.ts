@@ -119,6 +119,12 @@ export const api = {
   updateSettings: (patch: Partial<Omit<Settings, "defaultRelays">>) => invoke<Settings>("settings_update", { patch }),
   /// 关闭「允许互联网」时为 null。
   relayStatus: () => invoke<RelayHealth[] | null>("relay_status"),
+  /// 返回备份文件的完整路径。stamp：本地时间，如 20261103-1530。
+  exportBackup: (kind: "identity" | "full", passphrase: string, stamp: string) =>
+    invoke<string>("backup_export", { kind, passphrase, stamp }),
+  /// data：文件内容的 Base64。本机已有房间时要 overwrite = true。
+  importBackup: (data: string, passphrase: string, overwrite: boolean) =>
+    invoke<Identity>("backup_import", { data, passphrase, overwrite }),
   networkStatus: () => invoke<NetworkStatus>("network_status"),
   onEvent: (cb: (e: HsEvent) => void): Promise<UnlistenFn> =>
     listen<HsEvent>("hs://event", (e) => cb(e.payload)),

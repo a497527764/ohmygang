@@ -1001,6 +1001,53 @@ input[role="switch"]:checked::before {
   width: 96px;
   height: 32px;
 }
+.backup-block {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.radio-row {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.radio-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.radio-row input {
+  accent-color: var(--heart);
+  margin: 0;
+}
+.pass-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.pass-row input:not([type="checkbox"]):not([type="range"]):not([type="file"]) {
+  flex: 1;
+  height: 34px;
+}
+.pass-row input[type="file"] {
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+}
+.settings-ok {
+  margin: 0;
+  font-size: 13px;
+  color: var(--on);
+  overflow-wrap: anywhere;
+}
+.warn-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
 .settings-warn {
   margin: 0;
   padding: 10px 12px;

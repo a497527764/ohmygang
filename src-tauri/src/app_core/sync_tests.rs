@@ -78,7 +78,8 @@ fn joining_member_catches_up_then_activates() {
     assert!(ready_to_activate(
         true,
         &b.holdings(&room).unwrap(),
-        &[a_vector]
+        &[a_vector],
+        short_id(&b.identity().member_id)
     ));
     let written = b.activate(&room, 4000).unwrap();
     assert_eq!(

@@ -12,8 +12,11 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use tauri::Manager;
+
 use crate::app_core::{
-    Core, CoreEvent, LocalSettings, MemberView, RoomStatus, RoomSummary, RuleParams, SettingsPatch,
+    BackupKind, Core, CoreEvent, LocalSettings, MemberView, RoomStatus, RoomSummary, RuleParams,
+    SettingsPatch,
 };
 use crate::chat::{NoticeKind, TimelineCursor, TimelineItem};
 use crate::crypto::MemberId;
@@ -605,6 +608,55 @@ pub async fn chat_list(
             .iter()
             .map(MessageDto::from)
             .collect())
+    })
+    .await
+}
+
+/// 导出备份，写到「文档\心之钢群聊备份」，返回完整路径。`stamp` 是界面给的本地时间（如 20261103-1530），只用来起文件名。
+/// 写文件在 Rust 侧做，不需要给前端开文件系统权限。
+#[tauri::command]
+pub async fn backup_export(
+    app: tauri::AppHandle,
+    node: State<'_, NodeHandle>,
+    kind: String,
+    passphrase: String,
+    stamp: String,
+) -> Result<String, String> {
+    let (kind, label) = match kind.as_str() {
+        "identity" => (BackupKind::IdentityOnly, "身份"),
+        "full" => (BackupKind::Full, "完整"),
+        _ => return Err("备份种类不对".into()),
+    };
+    if stamp.is_empty() || !stamp.chars().all(|c| c.is_ascii_digit() || c == '-') {
+        return Err("时间格式不对".into());
+    }
+    let bytes = on_node(&node, move |core, _| core.export_backup(kind, &passphrase)).await?;
+    let dir = app
+        .path()
+        .document_dir()
+        .map_err(|e| format!("找不到文档目录：{e}"))?
+        .join("心之钢群聊备份");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("无法创建备份目录：{e}"))?;
+    let path = dir.join(format!("心之钢备份-{label}-{stamp}.hsbk"));
+    std::fs::write(&path, bytes).map_err(|e| format!("写入备份文件失败：{e}"))?;
+    Ok(path.display().to_string())
+}
+
+/// 导入备份。`data` 是文件内容的 Base64（界面用文件选择框读出来）。本机已有房间时需要 `overwrite` 确认。
+#[tauri::command]
+pub async fn backup_import(
+    node: State<'_, NodeHandle>,
+    data: String,
+    passphrase: String,
+    overwrite: bool,
+) -> Result<IdentityDto, String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|_| "读取备份文件失败".to_string())?;
+    on_node(&node, move |core, _| {
+        let view = core.import_backup(&bytes, &passphrase, overwrite, now_ms())?;
+        Ok(IdentityDto::from(&view))
     })
     .await
 }

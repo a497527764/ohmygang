@@ -27,6 +27,14 @@ pub enum AppError {
     InvalidVolume,
     #[error("聊天同步条数最多 100000")]
     InvalidHistoryLimit,
+    #[error("备份口令至少 6 个字符")]
+    BackupPassphraseTooShort,
+    #[error("口令不对，或者这不是心之钢群聊的备份文件、文件已损坏")]
+    BackupInvalid,
+    #[error("这个备份来自更新版本的心之钢群聊，请先升级")]
+    BackupUnsupported,
+    #[error("本机已有身份和房间，导入会把它们清空，请确认覆盖后再导入")]
+    IdentityExists,
     #[error("本机密钥不可用：{0}")]
     KeyStore(String),
     #[error("本机数据解密失败，可能是本机主密钥被更换")]
