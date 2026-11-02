@@ -2,3 +2,4 @@
 
 pub mod flood;
 pub mod lan;
+pub mod nostr;
