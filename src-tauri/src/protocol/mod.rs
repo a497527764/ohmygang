@@ -4,4 +4,5 @@
 pub mod body;
 pub mod event;
 pub mod frame;
+pub mod packet;
 pub mod room_code;
