@@ -59,11 +59,22 @@ pub fn evaluate_emit(
     if t[n - 1].ts_ms - t[0].ts_ms > u64::from(current.window_ms) {
         return None;
     }
-    Some(t.iter().map(|c| Trigger { event_id: c.event_id, ts_ms: c.ts_ms }).collect())
+    Some(
+        t.iter()
+            .map(|c| Trigger {
+                event_id: c.event_id,
+                ts_ms: c.ts_ms,
+            })
+            .collect(),
+    )
 }
 
 /// 架构 5.4。返回有效事件（按 seq 升序），层数 = 返回的条数。
-pub fn replay_author<'a>(events: &'a [HsEvent], rules: &Rules, dissolve_ts: Option<u64>) -> Vec<&'a HsEvent> {
+pub fn replay_author<'a>(
+    events: &'a [HsEvent],
+    rules: &Rules,
+    dissolve_ts: Option<u64>,
+) -> Vec<&'a HsEvent> {
     let mut sorted: Vec<&HsEvent> = events.iter().collect();
     sorted.sort_by_key(|h| (h.seq, h.event_id));
 

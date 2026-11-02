@@ -16,7 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::crypto::MemberId;
 use crate::heartsteel::Rules;
-use crate::protocol::body::{self, ConfigNoticeBody, ProfileBody, RenameBody, RoomCreateBody, Rule};
+use crate::protocol::body::{
+    self, ConfigNoticeBody, ProfileBody, RenameBody, RoomCreateBody, Rule,
+};
 use crate::protocol::event::{SignedEvent, Stream, kind};
 use crate::protocol::room_code::owner_tag_of;
 
@@ -121,11 +123,26 @@ mod tests {
     }
 
     fn create(me: &Identity, seq: u64, title: &str) -> SignedEvent {
-        state(me, seq, seq * 1000, kind::ROOM_CREATE, encode(&RoomCreateBody { title: title.into(), rule: Rule::DEFAULT }))
+        state(
+            me,
+            seq,
+            seq * 1000,
+            kind::ROOM_CREATE,
+            encode(&RoomCreateBody {
+                title: title.into(),
+                rule: Rule::DEFAULT,
+            }),
+        )
     }
 
     fn config(me: &Identity, seq: u64, rule: Rule) -> SignedEvent {
-        state(me, seq, seq * 1000, kind::CONFIG_NOTICE, encode(&ConfigNoticeBody { rule }))
+        state(
+            me,
+            seq,
+            seq * 1000,
+            kind::CONFIG_NOTICE,
+            encode(&ConfigNoticeBody { rule }),
+        )
     }
 
     #[test]
@@ -133,20 +150,46 @@ mod tests {
         let owner = person(1);
         let bob = person(2);
         let tag = owner_tag_of(&owner.member_id());
-        let r1 = Rule { rule_epoch: 1, threshold: 4, ..Rule::DEFAULT };
+        let r1 = Rule {
+            rule_epoch: 1,
+            threshold: 4,
+            ..Rule::DEFAULT
+        };
         let events = vec![
             create(&owner, 1, "开黑"),
             state(&owner, 2, 2000, kind::JOIN, vec![]),
-            state(&owner, 3, 3000, kind::PROFILE, encode(&ProfileBody { nickname: "房主".into() })),
+            state(
+                &owner,
+                3,
+                3000,
+                kind::PROFILE,
+                encode(&ProfileBody {
+                    nickname: "房主".into(),
+                }),
+            ),
             state(&bob, 1, 1500, kind::JOIN, vec![]),
-            state(&owner, 4, 4000, kind::RENAME, encode(&RenameBody { title: "开黑 2".into() })),
+            state(
+                &owner,
+                4,
+                4000,
+                kind::RENAME,
+                encode(&RenameBody {
+                    title: "开黑 2".into(),
+                }),
+            ),
             config(&owner, 5, r1),
         ];
         let st = derive_room_state(&tag, &events);
         assert_eq!(st.owner, Some(owner.member_id()));
         assert_eq!(st.title.as_deref(), Some("开黑 2"));
-        assert_eq!(st.members, [owner.member_id(), bob.member_id()].into_iter().collect());
-        assert_eq!(st.nicknames.get(&owner.member_id()).map(String::as_str), Some("房主"));
+        assert_eq!(
+            st.members,
+            [owner.member_id(), bob.member_id()].into_iter().collect()
+        );
+        assert_eq!(
+            st.nicknames.get(&owner.member_id()).map(String::as_str),
+            Some("房主")
+        );
         assert_eq!(st.rules.len(), 2);
         assert_eq!(st.current_rule, Some(r1));
         assert_eq!(st.dissolve_ts, None);
@@ -160,8 +203,24 @@ mod tests {
         let events = vec![
             create(&owner, 1, "开黑"),
             create(&mallory, 1, "被劫持"),
-            state(&mallory, 2, 2000, kind::RENAME, encode(&RenameBody { title: "被改名".into() })),
-            config(&mallory, 3, Rule { rule_epoch: 9, threshold: 2, ..Rule::DEFAULT }),
+            state(
+                &mallory,
+                2,
+                2000,
+                kind::RENAME,
+                encode(&RenameBody {
+                    title: "被改名".into(),
+                }),
+            ),
+            config(
+                &mallory,
+                3,
+                Rule {
+                    rule_epoch: 9,
+                    threshold: 2,
+                    ..Rule::DEFAULT
+                },
+            ),
             state(&mallory, 4, 4000, kind::DISSOLVE, vec![]),
         ];
         let st = derive_room_state(&tag, &events);
@@ -175,15 +234,36 @@ mod tests {
     fn rule_epochs_must_increase_and_be_in_range() {
         let owner = person(1);
         let tag = owner_tag_of(&owner.member_id());
-        let r2 = Rule { rule_epoch: 2, ..Rule::DEFAULT };
+        let r2 = Rule {
+            rule_epoch: 2,
+            ..Rule::DEFAULT
+        };
         let events = vec![
             create(&owner, 1, "开黑"),
             config(&owner, 2, r2),
-            config(&owner, 3, Rule { rule_epoch: 1, ..Rule::DEFAULT }), // epoch 回退，无效
-            config(&owner, 4, Rule { rule_epoch: 5, threshold: 11, ..Rule::DEFAULT }), // 超范围，无效
+            config(
+                &owner,
+                3,
+                Rule {
+                    rule_epoch: 1,
+                    ..Rule::DEFAULT
+                },
+            ), // epoch 回退，无效
+            config(
+                &owner,
+                4,
+                Rule {
+                    rule_epoch: 5,
+                    threshold: 11,
+                    ..Rule::DEFAULT
+                },
+            ), // 超范围，无效
         ];
         let st = derive_room_state(&tag, &events);
-        assert_eq!(st.rules.keys().copied().collect::<BTreeSet<u32>>(), [0, 2].into_iter().collect());
+        assert_eq!(
+            st.rules.keys().copied().collect::<BTreeSet<u32>>(),
+            [0, 2].into_iter().collect()
+        );
         assert_eq!(st.current_rule, Some(r2));
     }
 
@@ -211,9 +291,29 @@ mod tests {
     fn fork_takes_smallest_event_id() {
         let owner = person(1);
         let tag = owner_tag_of(&owner.member_id());
-        let a = state(&owner, 2, 2000, kind::RENAME, encode(&RenameBody { title: "甲".into() }));
-        let b = state(&owner, 2, 2001, kind::RENAME, encode(&RenameBody { title: "乙".into() }));
-        let expected = if a.event_id < b.event_id { "甲" } else { "乙" };
+        let a = state(
+            &owner,
+            2,
+            2000,
+            kind::RENAME,
+            encode(&RenameBody {
+                title: "甲".into()
+            }),
+        );
+        let b = state(
+            &owner,
+            2,
+            2001,
+            kind::RENAME,
+            encode(&RenameBody {
+                title: "乙".into()
+            }),
+        );
+        let expected = if a.event_id < b.event_id {
+            "甲"
+        } else {
+            "乙"
+        };
         let st = derive_room_state(&tag, &[create(&owner, 1, "开黑"), a, b]);
         assert_eq!(st.title.as_deref(), Some(expected));
     }

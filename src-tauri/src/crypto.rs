@@ -58,14 +58,31 @@ pub fn derive_room_keys(room_secret: &[u8; 16], owner_tag: &[u8; 10]) -> (RoomKe
 pub fn seal(key: &RoomKey, nonce: &[u8; 24], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
     let cipher = XChaCha20Poly1305::new(&Key::from(*key));
     cipher
-        .encrypt(&XNonce::from(*nonce), Payload { msg: plaintext, aad })
+        .encrypt(
+            &XNonce::from(*nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .expect("明文远小于算法上限，加密不会失败")
 }
 
-pub fn open(key: &RoomKey, nonce: &[u8; 24], aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+pub fn open(
+    key: &RoomKey,
+    nonce: &[u8; 24],
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
     let cipher = XChaCha20Poly1305::new(&Key::from(*key));
     cipher
-        .decrypt(&XNonce::from(*nonce), Payload { msg: ciphertext, aad })
+        .decrypt(
+            &XNonce::from(*nonce),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map_err(|_| CryptoError::Open)
 }
 
@@ -80,7 +97,9 @@ impl Identity {
     }
 
     pub fn from_secret(secret: &[u8; 32]) -> Self {
-        Self { sk: SigningKey::from_bytes(secret) }
+        Self {
+            sk: SigningKey::from_bytes(secret),
+        }
     }
 
     pub fn secret(&self) -> [u8; 32] {
@@ -105,7 +124,8 @@ pub fn verify_event_sig(member_id: &MemberId, event_id: &EventId, sig: &[u8; 64]
     let Ok(vk) = VerifyingKey::from_bytes(member_id) else {
         return false;
     };
-    vk.verify_strict(&sig_message(event_id), &Signature::from_bytes(sig)).is_ok()
+    vk.verify_strict(&sig_message(event_id), &Signature::from_bytes(sig))
+        .is_ok()
 }
 
 /// 指纹摘要：SHA-256(公钥) 前 8 字节的 Base32，共 13 个字符。
@@ -149,7 +169,10 @@ mod tests {
         let mut bad = ct.clone();
         bad[0] ^= 1;
         assert_eq!(open(&key, &nonce, b"header", &bad), Err(CryptoError::Open));
-        assert_eq!(open(&[8u8; 32], &nonce, b"header", &ct), Err(CryptoError::Open));
+        assert_eq!(
+            open(&[8u8; 32], &nonce, b"header", &ct),
+            Err(CryptoError::Open)
+        );
     }
 
     #[test]
@@ -168,7 +191,10 @@ mod tests {
         let a = Identity::generate().unwrap();
         let b = Identity::generate().unwrap();
         assert_ne!(a.member_id(), b.member_id());
-        assert_eq!(Identity::from_secret(&a.secret()).member_id(), a.member_id());
+        assert_eq!(
+            Identity::from_secret(&a.secret()).member_id(),
+            a.member_id()
+        );
     }
 
     #[test]
@@ -178,6 +204,7 @@ mod tests {
     }
 
     // 由本实现算出、用于防止以后无意中改变派生方式
-    const GOLDEN_ROOM_KEY: &str = "3ab2cad702090aabb1bb3ffbbac39488b2d5b4dd0a815deb969a84b30e2e04d8";
+    const GOLDEN_ROOM_KEY: &str =
+        "3ab2cad702090aabb1bb3ffbbac39488b2d5b4dd0a815deb969a84b30e2e04d8";
     const GOLDEN_ROOM_ID: &str = "914010ee40e2e6d197fcf5dfba50856b";
 }

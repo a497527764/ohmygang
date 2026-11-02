@@ -69,7 +69,9 @@ impl RoomCode {
             .filter(|c| *c != '-' && !c.is_whitespace())
             .collect::<String>()
             .to_ascii_uppercase();
-        let rest = cleaned.strip_prefix(PREFIX).ok_or(RoomCodeError::BadPrefix)?;
+        let rest = cleaned
+            .strip_prefix(PREFIX)
+            .ok_or(RoomCodeError::BadPrefix)?;
         let data = crate::base32::decode(rest, NBITS).ok_or(RoomCodeError::BadEncoding)?;
         let mut payload = [0u8; PAYLOAD_LEN];
         payload.copy_from_slice(&data[..PAYLOAD_LEN]);
@@ -77,7 +79,10 @@ impl RoomCode {
         if check != check_bits(&payload) {
             return Err(RoomCodeError::BadCheck);
         }
-        let mut code = RoomCode { room_secret: [0; 16], owner_tag: [0; 10] };
+        let mut code = RoomCode {
+            room_secret: [0; 16],
+            owner_tag: [0; 10],
+        };
         code.room_secret.copy_from_slice(&payload[..16]);
         code.owner_tag.copy_from_slice(&payload[16..]);
         Ok(code)
@@ -93,7 +98,10 @@ mod tests {
     use super::*;
 
     fn sample() -> RoomCode {
-        RoomCode { room_secret: [0x11; 16], owner_tag: [0x22; 10] }
+        RoomCode {
+            room_secret: [0x11; 16],
+            owner_tag: [0x22; 10],
+        }
     }
 
     #[test]
@@ -115,8 +123,14 @@ mod tests {
     #[test]
     fn rejects_prefix_length_and_check() {
         let s = sample().format();
-        assert_eq!(RoomCode::parse(&s.replacen("HS1", "HS2", 1)), Err(RoomCodeError::BadPrefix));
-        assert_eq!(RoomCode::parse(&s[..s.len() - 1]), Err(RoomCodeError::BadEncoding));
+        assert_eq!(
+            RoomCode::parse(&s.replacen("HS1", "HS2", 1)),
+            Err(RoomCodeError::BadPrefix)
+        );
+        assert_eq!(
+            RoomCode::parse(&s[..s.len() - 1]),
+            Err(RoomCodeError::BadEncoding)
+        );
         // 把第 10 个字符换成别的字符
         let mut chars: Vec<char> = s.chars().collect();
         chars[10] = if chars[10] == 'A' { 'B' } else { 'A' };
@@ -147,7 +161,10 @@ mod tests {
     #[test]
     fn owner_tag_changes_room() {
         let a = sample();
-        let b = RoomCode { owner_tag: [0x23; 10], ..a };
+        let b = RoomCode {
+            owner_tag: [0x23; 10],
+            ..a
+        };
         assert_ne!(a.keys().1, b.keys().1);
     }
 

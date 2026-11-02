@@ -26,14 +26,22 @@ fn simulate(sends: &[(u64, Rule)], rules: &Rules) -> Vec<HsEvent> {
     let mut chats = Vec::new();
     let mut events: Vec<HsEvent> = Vec::new();
     for (i, (ts, rule)) in sends.iter().enumerate() {
-        chats.push(ChatPoint { event_id: chat_id(i as u64), ts_ms: *ts });
-        let last = replay_author(&events, rules, None).last().map(|h| (*h).clone());
+        chats.push(ChatPoint {
+            event_id: chat_id(i as u64),
+            ts_ms: *ts,
+        });
+        let last = replay_author(&events, rules, None)
+            .last()
+            .map(|h| (*h).clone());
         if let Some(triggers) = evaluate_emit(&chats, last.as_ref(), rules, rule) {
             let seq = events.len() as u64 + 1;
             events.push(HsEvent {
                 seq,
                 event_id: hs_id(seq),
-                body: HeartsteelBody { rule_epoch: rule.rule_epoch, triggers },
+                body: HeartsteelBody {
+                    rule_epoch: rule.rule_epoch,
+                    triggers,
+                },
             });
         }
     }
@@ -46,8 +54,15 @@ fn run_vector(sends_ms: &[u64]) -> Vec<Vec<u64>> {
     let sends: Vec<(u64, Rule)> = sends_ms.iter().map(|t| (*t, RULE)).collect();
     let events = simulate(&sends, &rules);
     let valid = replay_author(&events, &rules, None);
-    assert_eq!(valid.len(), events.len(), "诚实作者的事件重放时必须全部有效");
-    valid.iter().map(|h| h.body.triggers.iter().map(|t| t.ts_ms).collect()).collect()
+    assert_eq!(
+        valid.len(),
+        events.len(),
+        "诚实作者的事件重放时必须全部有效"
+    );
+    valid
+        .iter()
+        .map(|h| h.body.triggers.iter().map(|t| t.ts_ms).collect())
+        .collect()
 }
 
 #[test]
@@ -67,12 +82,18 @@ fn v3_window_exceeded_by_1ms() {
 
 #[test]
 fn v4_no_stack_during_cooldown() {
-    assert_eq!(run_vector(&[0, 1000, 2000, 3000, 4000, 5000]), vec![vec![0, 1000, 2000]]);
+    assert_eq!(
+        run_vector(&[0, 1000, 2000, 3000, 4000, 5000]),
+        vec![vec![0, 1000, 2000]]
+    );
 }
 
 #[test]
 fn v5_cooldown_messages_do_not_count() {
-    assert_eq!(run_vector(&[0, 1000, 2000, 28_000, 29_000, 32_500]), vec![vec![0, 1000, 2000]]);
+    assert_eq!(
+        run_vector(&[0, 1000, 2000, 28_000, 29_000, 32_500]),
+        vec![vec![0, 1000, 2000]]
+    );
 }
 
 #[test]
@@ -93,7 +114,10 @@ fn v7_cooldown_end_inclusive() {
 
 #[test]
 fn v8_sliding_window() {
-    assert_eq!(run_vector(&[0, 10_000, 11_000, 12_000]), vec![vec![10_000, 11_000, 12_000]]);
+    assert_eq!(
+        run_vector(&[0, 10_000, 11_000, 12_000]),
+        vec![vec![10_000, 11_000, 12_000]]
+    );
 }
 
 #[test]
@@ -108,7 +132,13 @@ fn hs(seq: u64, epoch: u32, triggers: &[(u64, u64)]) -> HsEvent {
         event_id: hs_id(seq),
         body: HeartsteelBody {
             rule_epoch: epoch,
-            triggers: triggers.iter().map(|(n, ts)| Trigger { event_id: chat_id(*n), ts_ms: *ts }).collect(),
+            triggers: triggers
+                .iter()
+                .map(|(n, ts)| Trigger {
+                    event_id: chat_id(*n),
+                    ts_ms: *ts,
+                })
+                .collect(),
         },
     }
 }
@@ -120,36 +150,58 @@ fn stacks(events: &[HsEvent], rules: &Rules, dissolve_ts: Option<u64>) -> usize 
 #[test]
 fn r1_triggers_cannot_be_reused() {
     let t = [(0, 0), (1, 1000), (2, 2000)];
-    assert_eq!(stacks(&[hs(1, 0, &t), hs(2, 0, &t)], &rules_of(&[RULE]), None), 1);
+    assert_eq!(
+        stacks(&[hs(1, 0, &t), hs(2, 0, &t)], &rules_of(&[RULE]), None),
+        1
+    );
 }
 
 #[test]
 fn r2_second_within_cooldown() {
-    let e = [hs(1, 0, &[(0, 0), (1, 1000), (2, 2000)]), hs(2, 0, &[(3, 10_000), (4, 11_000), (5, 12_000)])];
+    let e = [
+        hs(1, 0, &[(0, 0), (1, 1000), (2, 2000)]),
+        hs(2, 0, &[(3, 10_000), (4, 11_000), (5, 12_000)]),
+    ];
     assert_eq!(stacks(&e, &rules_of(&[RULE]), None), 1);
 }
 
 #[test]
 fn r3_too_few_triggers() {
-    assert_eq!(stacks(&[hs(1, 0, &[(0, 0), (1, 1000)])], &rules_of(&[RULE]), None), 0);
+    assert_eq!(
+        stacks(&[hs(1, 0, &[(0, 0), (1, 1000)])], &rules_of(&[RULE]), None),
+        0
+    );
 }
 
 #[test]
 fn r4_window_exceeded() {
-    assert_eq!(stacks(&[hs(1, 0, &[(0, 0), (1, 1000), (2, 6000)])], &rules_of(&[RULE]), None), 0);
+    assert_eq!(
+        stacks(
+            &[hs(1, 0, &[(0, 0), (1, 1000), (2, 6000)])],
+            &rules_of(&[RULE]),
+            None
+        ),
+        0
+    );
 }
 
 #[test]
 fn r5_r6_unknown_epoch_then_rule_arrives() {
     let e = [hs(1, 7, &[(0, 0), (1, 1000), (2, 2000)])];
     assert_eq!(stacks(&e, &rules_of(&[RULE]), None), 0);
-    let epoch7 = Rule { rule_epoch: 7, ..RULE };
+    let epoch7 = Rule {
+        rule_epoch: 7,
+        ..RULE
+    };
     assert_eq!(stacks(&e, &rules_of(&[RULE, epoch7]), None), 1);
 }
 
 #[test]
 fn r7_after_dissolve_is_invalid() {
-    let e = [hs(1, 0, &[(0, 0), (1, 1000), (2, 2000)]), hs(2, 0, &[(3, 100_000), (4, 101_000), (5, 102_000)])];
+    let e = [
+        hs(1, 0, &[(0, 0), (1, 1000), (2, 2000)]),
+        hs(2, 0, &[(3, 100_000), (4, 101_000), (5, 102_000)]),
+    ];
     assert_eq!(stacks(&e, &rules_of(&[RULE]), None), 2);
     assert_eq!(stacks(&e, &rules_of(&[RULE]), Some(50_000)), 1);
 }
@@ -207,8 +259,15 @@ fn convergence_property() {
             sends.push((ts, if i < switch_at { r0 } else { r1 }));
         }
         let events = simulate(&sends, &rules);
-        let valid_ids: Vec<EventId> = replay_author(&events, &rules, None).iter().map(|h| h.event_id).collect();
-        assert_eq!(valid_ids.len(), events.len(), "诚实作者的事件重放时必须全部有效");
+        let valid_ids: Vec<EventId> = replay_author(&events, &rules, None)
+            .iter()
+            .map(|h| h.event_id)
+            .collect();
+        assert_eq!(
+            valid_ids.len(),
+            events.len(),
+            "诚实作者的事件重放时必须全部有效"
+        );
         total_stacks += valid_ids.len();
 
         // 打乱到达顺序，结果不变
@@ -217,8 +276,14 @@ fn convergence_property() {
             let j = rng.range(0, i as u64) as usize;
             shuffled.swap(i, j);
         }
-        let again: Vec<EventId> = replay_author(&shuffled, &rules, None).iter().map(|h| h.event_id).collect();
+        let again: Vec<EventId> = replay_author(&shuffled, &rules, None)
+            .iter()
+            .map(|h| h.event_id)
+            .collect();
         assert_eq!(again, valid_ids);
     }
-    assert!(total_stacks > 1000, "随机样本里应该有足够多的叠层，实际 {total_stacks}");
+    assert!(
+        total_stacks > 1000,
+        "随机样本里应该有足够多的叠层，实际 {total_stacks}"
+    );
 }

@@ -23,7 +23,12 @@ pub struct Rule {
 }
 
 impl Rule {
-    pub const DEFAULT: Rule = Rule { rule_epoch: 0, window_ms: 5000, threshold: 3, cooldown_ms: 30_000 };
+    pub const DEFAULT: Rule = Rule {
+        rule_epoch: 0,
+        window_ms: 5000,
+        threshold: 3,
+        cooldown_ms: 30_000,
+    };
 
     pub fn is_valid(&self) -> bool {
         (1000..=60_000).contains(&self.window_ms)
@@ -92,18 +97,34 @@ mod tests {
 
     #[test]
     fn roundtrip_all_bodies() {
-        let chat = ChatBody { text: "你好".into() };
+        let chat = ChatBody {
+            text: "你好".into(),
+        };
         assert_eq!(decode::<ChatBody>(&encode(&chat)), Ok(chat));
-        let create = RoomCreateBody { title: "开黑".into(), rule: Rule::DEFAULT };
+        let create = RoomCreateBody {
+            title: "开黑".into(),
+            rule: Rule::DEFAULT,
+        };
         assert_eq!(decode::<RoomCreateBody>(&encode(&create)), Ok(create));
-        let hs = HeartsteelBody { rule_epoch: 3, triggers: vec![Trigger { event_id: [9u8; 32], ts_ms: 42 }] };
+        let hs = HeartsteelBody {
+            rule_epoch: 3,
+            triggers: vec![Trigger {
+                event_id: [9u8; 32],
+                ts_ms: 42,
+            }],
+        };
         assert_eq!(decode::<HeartsteelBody>(&encode(&hs)), Ok(hs));
     }
 
     #[test]
     fn garbage_does_not_decode() {
         assert_eq!(decode::<ChatBody>(&[0xff, 0x00, 0x13]), Err(BodyError));
-        assert_eq!(decode::<ChatBody>(&encode(&ProfileBody { nickname: "x".into() })), Err(BodyError));
+        assert_eq!(
+            decode::<ChatBody>(&encode(&ProfileBody {
+                nickname: "x".into()
+            })),
+            Err(BodyError)
+        );
     }
 
     #[test]
@@ -111,23 +132,74 @@ mod tests {
         // 阈值 10 的叠层事件、900 字节的聊天都放得下
         let hs = HeartsteelBody {
             rule_epoch: u32::MAX,
-            triggers: (0..10).map(|i| Trigger { event_id: [0xab; 32], ts_ms: u64::MAX - i }).collect(),
+            triggers: (0..10)
+                .map(|i| Trigger {
+                    event_id: [0xab; 32],
+                    ts_ms: u64::MAX - i,
+                })
+                .collect(),
         };
         let n = encode(&hs).len();
         assert!(n <= MAX_BODY_LEN, "叠层 body {n} 字节");
-        let chat = ChatBody { text: "a".repeat(CHAT_TEXT_MAX_BYTES) };
+        let chat = ChatBody {
+            text: "a".repeat(CHAT_TEXT_MAX_BYTES),
+        };
         assert!(encode(&chat).len() <= MAX_BODY_LEN);
     }
 
     #[test]
     fn rule_ranges() {
         assert!(Rule::DEFAULT.is_valid());
-        assert!(!Rule { window_ms: 999, ..Rule::DEFAULT }.is_valid());
-        assert!(!Rule { window_ms: 60_001, ..Rule::DEFAULT }.is_valid());
-        assert!(!Rule { threshold: 1, ..Rule::DEFAULT }.is_valid());
-        assert!(!Rule { threshold: 11, ..Rule::DEFAULT }.is_valid());
-        assert!(!Rule { cooldown_ms: 999, ..Rule::DEFAULT }.is_valid());
-        assert!(!Rule { cooldown_ms: 3_600_001, ..Rule::DEFAULT }.is_valid());
-        assert!(Rule { window_ms: 1000, threshold: 10, cooldown_ms: 3_600_000, rule_epoch: 9 }.is_valid());
+        assert!(
+            !Rule {
+                window_ms: 999,
+                ..Rule::DEFAULT
+            }
+            .is_valid()
+        );
+        assert!(
+            !Rule {
+                window_ms: 60_001,
+                ..Rule::DEFAULT
+            }
+            .is_valid()
+        );
+        assert!(
+            !Rule {
+                threshold: 1,
+                ..Rule::DEFAULT
+            }
+            .is_valid()
+        );
+        assert!(
+            !Rule {
+                threshold: 11,
+                ..Rule::DEFAULT
+            }
+            .is_valid()
+        );
+        assert!(
+            !Rule {
+                cooldown_ms: 999,
+                ..Rule::DEFAULT
+            }
+            .is_valid()
+        );
+        assert!(
+            !Rule {
+                cooldown_ms: 3_600_001,
+                ..Rule::DEFAULT
+            }
+            .is_valid()
+        );
+        assert!(
+            Rule {
+                window_ms: 1000,
+                threshold: 10,
+                cooldown_ms: 3_600_000,
+                rule_epoch: 9
+            }
+            .is_valid()
+        );
     }
 }

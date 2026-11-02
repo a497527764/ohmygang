@@ -96,10 +96,23 @@ pub fn build_event(
     kind: u16,
     body: Vec<u8>,
 ) -> SignedEvent {
-    let event = UnsignedEvent { format: FORMAT_V1, room_id, author_id: me.member_id(), stream, seq, ts_ms, kind, body };
+    let event = UnsignedEvent {
+        format: FORMAT_V1,
+        room_id,
+        author_id: me.member_id(),
+        stream,
+        seq,
+        ts_ms,
+        kind,
+        body,
+    };
     let event_id = event.compute_id();
     let sig = me.sign_event_id(&event_id);
-    SignedEvent { event, event_id, sig }
+    SignedEvent {
+        event,
+        event_id,
+        sig,
+    }
 }
 
 /// 架构 4.3 的无状态校验。结果不依赖本机已有什么，所以不会造成成员间分歧。
@@ -144,7 +157,15 @@ mod tests {
 
     fn golden_event() -> SignedEvent {
         let me = Identity::from_secret(&[7u8; 32]);
-        build_event(&me, [1u8; 16], Stream::Chat, 1, 1_700_000_000_000, kind::CHAT, b"hello".to_vec())
+        build_event(
+            &me,
+            [1u8; 16],
+            Stream::Chat,
+            1,
+            1_700_000_000_000,
+            kind::CHAT,
+            b"hello".to_vec(),
+        )
     }
 
     #[test]
@@ -187,18 +208,51 @@ mod tests {
         let e = golden_event();
         assert_eq!(verify_stateless(&e, &[2u8; 16]), Err(EventError::WrongRoom));
 
-        let big = build_event(&me, [1u8; 16], Stream::Chat, 1, 1, kind::CHAT, vec![0; MAX_BODY_LEN + 1]);
-        assert_eq!(verify_stateless(&big, &[1u8; 16]), Err(EventError::BodyTooLarge(MAX_BODY_LEN + 1)));
+        let big = build_event(
+            &me,
+            [1u8; 16],
+            Stream::Chat,
+            1,
+            1,
+            kind::CHAT,
+            vec![0; MAX_BODY_LEN + 1],
+        );
+        assert_eq!(
+            verify_stateless(&big, &[1u8; 16]),
+            Err(EventError::BodyTooLarge(MAX_BODY_LEN + 1))
+        );
 
-        let seq = build_event(&me, [1u8; 16], Stream::State, MAX_STATE_SEQ + 1, 1, kind::JOIN, vec![]);
-        assert_eq!(verify_stateless(&seq, &[1u8; 16]), Err(EventError::StateSeqTooLarge(MAX_STATE_SEQ + 1)));
+        let seq = build_event(
+            &me,
+            [1u8; 16],
+            Stream::State,
+            MAX_STATE_SEQ + 1,
+            1,
+            kind::JOIN,
+            vec![],
+        );
+        assert_eq!(
+            verify_stateless(&seq, &[1u8; 16]),
+            Err(EventError::StateSeqTooLarge(MAX_STATE_SEQ + 1))
+        );
         // 聊天序号不受这个上限约束
-        let chat = build_event(&me, [1u8; 16], Stream::Chat, MAX_STATE_SEQ + 1, 1, kind::CHAT, vec![]);
+        let chat = build_event(
+            &me,
+            [1u8; 16],
+            Stream::Chat,
+            MAX_STATE_SEQ + 1,
+            1,
+            kind::CHAT,
+            vec![],
+        );
         assert_eq!(verify_stateless(&chat, &[1u8; 16]), Ok(()));
 
         let mut v2 = golden_event();
         v2.event.format = 2;
-        assert_eq!(verify_stateless(&v2, &[1u8; 16]), Err(EventError::UnsupportedFormat(2)));
+        assert_eq!(
+            verify_stateless(&v2, &[1u8; 16]),
+            Err(EventError::UnsupportedFormat(2))
+        );
     }
 
     #[test]
@@ -209,6 +263,7 @@ mod tests {
         assert_eq!(next_ts(900, Some(1000)), 1001); // 时钟回拨
     }
 
-    const GOLDEN_EVENT_ID: &str = "2ab3149a37d2651e1adfa67d95452b0806c8789a4e0212b86c64f14eda640d23";
+    const GOLDEN_EVENT_ID: &str =
+        "2ab3149a37d2651e1adfa67d95452b0806c8789a4e0212b86c64f14eda640d23";
     const GOLDEN_SIG: &str = "59918b58a3b9ae0074fbf412258816a68c324e08f3ac3045bee09b32e38b331ec6be8b9a21777bcdd514aeb8ed7619d106ecd5539c74c3c58a5e19b63933a20b";
 }
