@@ -12,16 +12,18 @@
 use std::collections::BTreeSet;
 
 use crate::chat;
-use crate::crypto::{EventId, Identity, MemberId, RoomId};
+use crate::crypto::{EventId, Identity, MemberId, RoomId, RoomKey};
 use crate::error::AppResult;
 use crate::heartsteel::service::{self as hs, Replayed};
 use crate::identity::{self, IdentityView};
 use crate::keystore::KeyStore;
 use crate::protocol::body::{self, ProfileBody, Rule};
 use crate::protocol::event::{SignedEvent, Stream, kind, verify_stateless};
+use crate::protocol::frame::{HaveEntry, WantRange, short_id};
 use crate::rooms::service as rooms;
 use crate::storage::events::{self, PutResult, StoredEvent};
 use crate::storage::{Connection, rooms as room_store};
+use crate::sync::plan::Holdings;
 
 pub use crate::chat::{ChatMessage, TimelineCursor, TimelineItem};
 pub use crate::error::AppError;
@@ -228,6 +230,117 @@ impl Core {
         chat::mark_read(&self.conn, room)
     }
 
+    // ---- 以下供同步（节点）使用 ----
+
+    pub fn room_key(&self, room: &RoomId) -> AppResult<RoomKey> {
+        rooms::room_key(&self.conn, &self.master, room)
+    }
+
+    pub fn room_status(&self, room: &RoomId) -> AppResult<RoomStatus> {
+        Ok(rooms::get(&self.conn, room)?.status)
+    }
+
+    /// 需要联网的房间：除了已退出的都要（架构 7.5）。
+    pub fn sync_rooms(&self) -> AppResult<Vec<(RoomId, RoomStatus)>> {
+        Ok(room_store::list_rooms(&self.conn)?
+            .into_iter()
+            .filter(|r| r.status != RoomStatus::Left)
+            .map(|r| (r.room_id, r.status))
+            .collect())
+    }
+
+    pub fn holdings(&self, room: &RoomId) -> AppResult<Holdings> {
+        let mut h = Holdings::default();
+        for (author, stream, seq) in events::holdings_rows(&self.conn, room)? {
+            h.add(short_id(&author), stream, seq);
+        }
+        Ok(h)
+    }
+
+    pub fn have_vector(&self, room: &RoomId) -> AppResult<Vec<HaveEntry>> {
+        Ok(self.holdings(room)?.vector())
+    }
+
+    /// 回应 Want：按短 ID 和序号区间取本机持有的事件。
+    pub fn events_for(&self, room: &RoomId, ranges: &[WantRange]) -> AppResult<Vec<SignedEvent>> {
+        let authors = events::room_authors(&self.conn, room)?;
+        let mut out = Vec::new();
+        for r in ranges {
+            let stream = if r.stream == 0 {
+                Stream::State
+            } else {
+                Stream::Chat
+            };
+            for a in authors.iter().filter(|a| short_id(a) == r.author) {
+                let found = events::query_range(&self.conn, room, a, stream, r.from_seq, r.to_seq)?;
+                out.extend(found.into_iter().map(|s| s.event));
+            }
+        }
+        Ok(out)
+    }
+
+    /// 已拿到能对上 owner_tag 的建房事件。
+    pub fn owner_known(&self, room: &RoomId) -> AppResult<bool> {
+        Ok(rooms::get(&self.conn, room)?.owner_id.is_some())
+    }
+
+    /// Joining 转 Active（架构 7.4）：写入本人的 Join（还不是成员时）和 Profile，已读游标移到当前最大值。
+    /// 不是 Joining 时什么都不做。返回新写的事件。
+    pub fn activate(&mut self, room: &RoomId, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
+        let tx = self.conn.transaction()?;
+        if rooms::get(&tx, room)?.status != RoomStatus::Joining {
+            return Ok(Vec::new());
+        }
+        room_store::set_status(&tx, room, RoomStatus::Active)?;
+        let me = self.view.member_id;
+        let already_in = room_store::members(&tx, room)?
+            .iter()
+            .any(|m| m.member_id == me && m.in_room);
+        let mut written = Vec::new();
+        if !already_in {
+            written.push(events::append_own(
+                &tx,
+                &self.me,
+                room,
+                Stream::State,
+                kind::JOIN,
+                vec![],
+                now_ms,
+            )?);
+        }
+        if !self.view.nickname.is_empty() {
+            let profile = body::encode(&ProfileBody {
+                nickname: self.view.nickname.clone(),
+            });
+            written.push(events::append_own(
+                &tx,
+                &self.me,
+                room,
+                Stream::State,
+                kind::PROFILE,
+                profile,
+                now_ms,
+            )?);
+        }
+        rooms::apply_state(&tx, room)?;
+        chat::mark_read(&tx, room)?;
+        tx.commit()?;
+        Ok(written)
+    }
+
+    /// 房主最早的一条解散事件，用于告诉还不知道解散的同伴（架构 7.5）。
+    pub fn dissolve_event(&self, room: &RoomId) -> AppResult<Option<SignedEvent>> {
+        let Some(owner) = rooms::get(&self.conn, room)?.owner_id else {
+            return Ok(None);
+        };
+        Ok(
+            events::query_kind_by_author(&self.conn, room, &owner, kind::DISSOLVE)?
+                .into_iter()
+                .find(|s| s.event.event.stream == Stream::State)
+                .map(|s| s.event),
+        )
+    }
+
     /// 处理收到的一批事件。`is_live` 表示来自实时帧（会影响显示时间和是否播放音效）。
     pub fn ingest_events(
         &mut self,
@@ -361,3 +474,6 @@ mod timeline_tests;
 
 #[cfg(test)]
 mod restart_tests;
+
+#[cfg(test)]
+mod sync_tests;

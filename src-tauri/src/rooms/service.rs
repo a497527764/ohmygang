@@ -239,3 +239,14 @@ pub fn current_rule(conn: &Connection, room: &RoomId) -> AppResult<Option<Rule>>
     let rules = room_store::get_rules(conn, room)?;
     Ok(rules.keys().max().and_then(|e| rules.get(e)).copied())
 }
+
+/// 这个房间的包加密密钥（由房间码派生）。
+pub fn room_key(
+    conn: &Connection,
+    master: &[u8; 32],
+    room: &RoomId,
+) -> AppResult<crate::crypto::RoomKey> {
+    let row = get(conn, room)?;
+    let code = code_from_bytes(&decrypt_local(master, PURPOSE_ROOM_CODE, &row.code_cipher)?)?;
+    Ok(code.keys().0)
+}

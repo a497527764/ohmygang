@@ -298,3 +298,35 @@ pub fn append_own(
     crate::storage::rooms::touch(conn, room, ts)?;
     Ok(e)
 }
+
+/// 房间里每条事件的 (作者, stream, seq)，用来算持有向量。
+pub fn holdings_rows(conn: &Connection, room: &RoomId) -> AppResult<Vec<(MemberId, u8, u64)>> {
+    let mut stmt = conn.prepare("SELECT author_id, stream, seq FROM events WHERE room_id = ?1")?;
+    let rows = stmt.query_map([room], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// 房间里出现过的所有作者。
+pub fn room_authors(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberId>> {
+    let mut stmt = conn.prepare("SELECT DISTINCT author_id FROM events WHERE room_id = ?1")?;
+    let rows = stmt.query_map([room], |r| r.get(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// 某作者某 stream 序号在 [from, to] 之间的事件（含分叉），按 (seq, event_id) 升序。
+pub fn query_range(
+    conn: &Connection,
+    room: &RoomId,
+    author: &MemberId,
+    stream: Stream,
+    from: u64,
+    to: u64,
+) -> AppResult<Vec<StoredEvent>> {
+    collect(
+        conn,
+        &format!(
+            "{SELECT} WHERE room_id = ?1 AND author_id = ?2 AND stream = ?3 AND seq BETWEEN ?4 AND ?5 ORDER BY seq, event_id"
+        ),
+        params![room, author, stream as u8, from, to],
+    )
+}
