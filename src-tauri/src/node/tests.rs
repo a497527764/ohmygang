@@ -10,21 +10,21 @@ use crate::app_core::{CoreEvent, RoomStatus, RuleParams};
 use crate::keystore::MemoryKeyStore;
 use crate::storage;
 
-const PARAMS: RuleParams = RuleParams {
+pub(super) const PARAMS: RuleParams = RuleParams {
     window_ms: 5000,
     threshold: 3,
     cooldown_ms: 30_000,
 };
 
 /// 先占几个空闲端口再释放，让每个节点事先知道彼此的地址。
-fn free_ports(n: usize) -> Vec<SocketAddr> {
+pub(super) fn free_ports(n: usize) -> Vec<SocketAddr> {
     let socks: Vec<UdpSocket> = (0..n)
         .map(|_| UdpSocket::bind("127.0.0.1:0").unwrap())
         .collect();
     socks.iter().map(|s| s.local_addr().unwrap()).collect()
 }
 
-fn fast_config(me: SocketAddr, all: &[SocketAddr]) -> NodeConfig {
+pub(super) fn fast_config(me: SocketAddr, all: &[SocketAddr]) -> NodeConfig {
     NodeConfig {
         lan: LanConfig {
             bind: me,
@@ -38,38 +38,44 @@ fn fast_config(me: SocketAddr, all: &[SocketAddr]) -> NodeConfig {
         want_max_tries: 3,
         backfill_per_sec: 1000,
         tick: Duration::from_millis(20),
+        relay_urls: Some(Vec::new()),
+        ..NodeConfig::default()
     }
 }
 
-struct TestNode {
-    handle: NodeHandle,
-    events: Arc<Mutex<Vec<NodeEvent>>>,
+pub(super) struct TestNode {
+    pub(super) handle: NodeHandle,
+    pub(super) events: Arc<Mutex<Vec<NodeEvent>>>,
 }
 
-fn temp_db() -> PathBuf {
+pub(super) fn temp_db() -> PathBuf {
     let tag = crate::crypto::random_bytes::<8>()
         .map(u64::from_le_bytes)
         .unwrap();
     std::env::temp_dir().join(format!("lolgang-node-{tag}.db"))
 }
 
-fn remove_db(path: &Path) {
+pub(super) fn remove_db(path: &Path) {
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
 }
 
 async fn start(db: &Path, key: u8, me: SocketAddr, all: &[SocketAddr]) -> TestNode {
+    start_with(db, key, fast_config(me, all)).await
+}
+
+pub(super) async fn start_with(db: &Path, key: u8, cfg: NodeConfig) -> TestNode {
     let core = Core::open(storage::open(db).unwrap(), &MemoryKeyStore([key; 32])).unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink_events = events.clone();
     let sink: Sink = Arc::new(move |e| sink_events.lock().unwrap().push(e));
-    let handle = Node::spawn(core, fast_config(me, all), sink).await.unwrap();
+    let handle = Node::spawn(core, cfg, sink).await.unwrap();
     TestNode { handle, events }
 }
 
 /// 每 20 毫秒查一次，5 秒内条件成立就返回 true。
-async fn eventually<F>(node: &TestNode, check: F) -> bool
+pub(super) async fn eventually<F>(node: &TestNode, check: F) -> bool
 where
     F: Fn(&mut Core) -> bool + Send + Sync + Clone + 'static,
 {
@@ -83,11 +89,11 @@ where
     false
 }
 
-fn stacks(core: &mut Core, room: &RoomId) -> Vec<(MemberId, u32)> {
+pub(super) fn stacks(core: &mut Core, room: &RoomId) -> Vec<(MemberId, u32)> {
     core.leaderboard(room).unwrap()
 }
 
-async fn create(node: &TestNode) -> (RoomId, String) {
+pub(super) async fn create(node: &TestNode) -> (RoomId, String) {
     node.handle
         .call(|core, out| {
             let c = core.create_room("开黑", PARAMS, now_ms()).unwrap();
@@ -98,7 +104,7 @@ async fn create(node: &TestNode) -> (RoomId, String) {
         .unwrap()
 }
 
-async fn join(node: &TestNode, code: &str) {
+pub(super) async fn join(node: &TestNode, code: &str) {
     let code = code.to_string();
     node.handle
         .call(move |core, _| core.join_room(&code, now_ms()).unwrap())
@@ -106,7 +112,7 @@ async fn join(node: &TestNode, code: &str) {
         .unwrap();
 }
 
-async fn burst(node: &TestNode, room: RoomId, n: usize) {
+pub(super) async fn burst(node: &TestNode, room: RoomId, n: usize) {
     for i in 0..n {
         node.handle
             .call(move |core, out| {
@@ -119,7 +125,7 @@ async fn burst(node: &TestNode, room: RoomId, n: usize) {
     }
 }
 
-fn status_is(
+pub(super) fn status_is(
     room: RoomId,
     want: RoomStatus,
 ) -> impl Fn(&mut Core) -> bool + Send + Sync + Clone + 'static {

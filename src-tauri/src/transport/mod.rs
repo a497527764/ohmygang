@@ -7,6 +7,6 @@ pub mod nostr;
 pub mod relay;
 
 #[cfg(test)]
-mod fake_relay;
+pub(crate) mod fake_relay;
 #[cfg(test)]
 mod relay_tests;

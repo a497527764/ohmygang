@@ -450,11 +450,12 @@ pub async fn settings_update(
     node: State<'_, NodeHandle>,
     patch: SettingsPatchDto,
 ) -> Result<SettingsDto, String> {
-    on_node(&node, move |core, _| {
+    on_node(&node, move |core, out| {
         let s = core.update_settings(SettingsPatch {
             internet_allowed: patch.internet_allowed,
             relays: patch.relays,
         })?;
+        out.settings_changed = true;
         Ok(SettingsDto::from(&s))
     })
     .await
