@@ -207,9 +207,14 @@ function App() {
   }
 
   /// 群管理操作之后：刷新房间列表、当前房间的消息和成员、群资料。
+  /// 不用 openRoom：那会关掉群资料抽屉，改完群名或规则还要接着看。
   async function afterManage(roomId: string) {
     await loadRooms();
-    if (activeRef.current === roomId) await openRoom(roomId);
+    if (activeRef.current === roomId) {
+      const [list, people] = await Promise.all([api.messages(roomId, null, PAGE), api.members(roomId)]);
+      setMessages((old) => mergeMessages(old, list));
+      setMembers(people);
+    }
     setBoardKey((k) => k + 1);
   }
 
