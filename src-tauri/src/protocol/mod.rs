@@ -3,4 +3,5 @@
 
 pub mod body;
 pub mod event;
+pub mod frame;
 pub mod room_code;
