@@ -4,7 +4,8 @@
 //! 1. 只看 state stream 的事件；同一作者同一 seq 有多条（分叉）时，只取 event_id 最小的一条。
 //! 2. 房主：公钥摘要等于 owner_tag 的作者，且有能解码的 RoomCreate；取其 seq 最小的 RoomCreate。
 //!    其他人发的 RoomCreate、Rename、ConfigNotice、Dissolve 一律不生效（房主信任根）。
-//! 3. 成员：每位作者 seq 最大的 Join / Leave 决定是否在房；昵称取 seq 最大的 Profile。
+//! 3. 成员：每位作者 seq 最大的 Join / Leave 决定是否在房；昵称和头像取 seq 最大的 Profile
+//!    （这条 Profile 没带头像或头像不合格，就用自动生成的头像）。
 //! 4. 群名：房主 seq 最大的 RoomCreate / Rename。
 //! 5. 规则：房主第一条 RoomCreate 的规则（epoch 必须为 0），之后 epoch 严格递增的 ConfigNotice；
 //!    超出范围的规则无效。当前规则取最大 epoch。
@@ -17,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::crypto::MemberId;
 use crate::heartsteel::Rules;
 use crate::protocol::body::{
-    self, ConfigNoticeBody, ProfileBody, RenameBody, RoomCreateBody, Rule,
+    self, Avatar, ConfigNoticeBody, ProfileBody, RenameBody, RoomCreateBody, Rule,
 };
 use crate::protocol::event::{SignedEvent, Stream, kind};
 use crate::protocol::room_code::owner_tag_of;
@@ -28,6 +29,8 @@ pub struct RoomState {
     pub title: Option<String>,
     pub members: BTreeSet<MemberId>,
     pub nicknames: BTreeMap<MemberId, String>,
+    /// 只含最新 Profile 带了合格头像的人。
+    pub avatars: BTreeMap<MemberId, Avatar>,
     pub rules: Rules,
     pub current_rule: Option<Rule>,
     pub dissolve_ts: Option<u64>,
@@ -63,6 +66,10 @@ pub fn derive_room_state(owner_tag: &[u8; 10], events: &[SignedEvent]) -> RoomSt
             kind::PROFILE => {
                 if let Ok(p) = body::decode::<ProfileBody>(&ev.body) {
                     st.nicknames.insert(*author, p.nickname);
+                    match p.avatar.filter(Avatar::is_valid) {
+                        Some(a) => st.avatars.insert(*author, a),
+                        None => st.avatars.remove(author),
+                    };
                 }
             }
             kind::ROOM_CREATE if is_owner_key => {
@@ -165,6 +172,7 @@ mod tests {
                 kind::PROFILE,
                 encode(&ProfileBody {
                     nickname: "房主".into(),
+                    avatar: None,
                 }),
             ),
             state(&bob, 1, 1500, kind::JOIN, vec![]),
@@ -316,6 +324,36 @@ mod tests {
         };
         let st = derive_room_state(&tag, &[create(&owner, 1, "开黑"), a, b]);
         assert_eq!(st.title.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn latest_profile_decides_avatar() {
+        let owner = person(1);
+        let tag = owner_tag_of(&owner.member_id());
+        let profile = |seq: u64, avatar: Option<Avatar>| {
+            state(
+                &owner,
+                seq,
+                seq * 1000,
+                kind::PROFILE,
+                encode(&ProfileBody {
+                    nickname: format!("第{seq}版"),
+                    avatar,
+                }),
+            )
+        };
+        let preset = Avatar::Preset { icon: 1, color: 2 };
+        let me = owner.member_id();
+        let st = derive_room_state(&tag, &[profile(1, Some(preset.clone()))]);
+        assert_eq!(st.avatars.get(&me), Some(&preset));
+        // 后一条没带头像：恢复自动生成的头像，昵称照常更新
+        let st = derive_room_state(&tag, &[profile(1, Some(preset.clone())), profile(2, None)]);
+        assert_eq!(st.avatars.get(&me), None);
+        assert_eq!(st.nicknames.get(&me).map(String::as_str), Some("第2版"));
+        // 不合格的头像当作没有
+        let bad = Avatar::Image(b"<svg/>".to_vec());
+        let st = derive_room_state(&tag, &[profile(1, Some(preset)), profile(2, Some(bad))]);
+        assert_eq!(st.avatars.get(&me), None);
     }
 
     #[test]

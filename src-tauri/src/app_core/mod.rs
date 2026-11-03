@@ -19,7 +19,7 @@ use crate::heartsteel::service::{self as hs, Replayed};
 use crate::identity::{self, IdentityView};
 use crate::keystore::KeyStore;
 use crate::keystore::{PURPOSE_IDENTITY, encrypt_local};
-use crate::protocol::body::{self, ConfigNoticeBody, ProfileBody, RenameBody, Rule};
+use crate::protocol::body::{self, Avatar, ConfigNoticeBody, ProfileBody, RenameBody, Rule};
 use crate::protocol::event::{SignedEvent, Stream, kind, verify_stateless};
 use crate::protocol::frame::{FloorEntry, HaveEntry, ShortId, WantRange, short_id};
 use crate::rooms::service as rooms;
@@ -99,32 +99,46 @@ impl Core {
         &self.view
     }
 
-    /// 改全局昵称，并在每个 Active 房间写一条 Profile 事件（需求 3.1）。
-    pub fn set_nickname(&mut self, nickname: &str, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
+    /// 改全局昵称和头像，并在每个 Active 房间写一条 Profile 事件（需求 3.1）。头像为 None 表示用自动生成的头像。
+    pub fn set_profile(
+        &mut self,
+        nickname: &str,
+        avatar: Option<Avatar>,
+        now_ms: u64,
+    ) -> AppResult<Vec<SignedEvent>> {
         let tx = self.conn.transaction()?;
-        identity::set_nickname(&tx, nickname)?;
+        identity::set_profile(&tx, nickname, avatar.as_ref())?;
+        let profile = body::encode(&ProfileBody {
+            nickname: nickname.to_string(),
+            avatar: avatar.clone(),
+        });
         let mut written = Vec::new();
         for row in room_store::list_rooms(&tx)? {
             if row.status != RoomStatus::Active {
                 continue;
             }
-            let profile = body::encode(&ProfileBody {
-                nickname: nickname.to_string(),
-            });
             written.push(events::append_own(
                 &tx,
                 &self.me,
                 &row.room_id,
                 Stream::State,
                 kind::PROFILE,
-                profile,
+                profile.clone(),
                 now_ms,
             )?);
             rooms::apply_state(&tx, &row.room_id)?;
         }
         tx.commit()?;
         self.view.nickname = nickname.to_string();
+        self.view.avatar = avatar;
         Ok(written)
+    }
+
+    fn my_profile(&self) -> ProfileBody {
+        ProfileBody {
+            nickname: self.view.nickname.clone(),
+            avatar: self.view.avatar.clone(),
+        }
     }
 
     pub fn create_room(
@@ -133,16 +147,10 @@ impl Core {
         params: RuleParams,
         now_ms: u64,
     ) -> AppResult<CreatedRoom> {
+        let profile = self.my_profile();
         let tx = self.conn.transaction()?;
-        let (room, code, written) = rooms::create_room(
-            &tx,
-            &self.me,
-            &self.master,
-            &self.view.nickname,
-            title,
-            params,
-            now_ms,
-        )?;
+        let (room, code, written) =
+            rooms::create_room(&tx, &self.me, &self.master, &profile, title, params, now_ms)?;
         let summary = rooms::summary(&tx, &self.view.member_id, &rooms::get(&tx, &room)?)?;
         tx.commit()?;
         Ok(CreatedRoom {
@@ -271,6 +279,7 @@ impl Core {
                 kind,
                 secret: self.me.secret(),
                 nickname: self.view.nickname.clone(),
+                avatar: self.view.avatar.clone(),
                 rooms,
             },
             passphrase,
@@ -299,6 +308,7 @@ impl Core {
                 member_id: restored.member_id(),
                 nickname: data.nickname.clone(),
                 secret_cipher: encrypt_local(&self.master, PURPOSE_IDENTITY, &data.secret)?,
+                avatar: data.avatar.as_ref().map(body::encode),
             },
         )?;
         tx.commit()?;
@@ -405,6 +415,7 @@ impl Core {
     /// Joining 转 Active（架构 7.4）：写入本人的 Join（还不是成员时）和 Profile，已读游标移到当前最大值。
     /// 不是 Joining 时什么都不做。返回新写的事件。
     pub fn activate(&mut self, room: &RoomId, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
+        let profile = self.my_profile();
         let tx = self.conn.transaction()?;
         if rooms::get(&tx, room)?.status != RoomStatus::Joining {
             return Ok(Vec::new());
@@ -426,17 +437,14 @@ impl Core {
                 now_ms,
             )?);
         }
-        if !self.view.nickname.is_empty() {
-            let profile = body::encode(&ProfileBody {
-                nickname: self.view.nickname.clone(),
-            });
+        if profile.has_content() {
             written.push(events::append_own(
                 &tx,
                 &self.me,
                 room,
                 Stream::State,
                 kind::PROFILE,
-                profile,
+                body::encode(&profile),
                 now_ms,
             )?);
         }

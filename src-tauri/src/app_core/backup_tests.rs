@@ -28,7 +28,8 @@ fn my_stacks(c: &Core, room: &RoomId) -> u32 {
 /// 房主 A 建房并叠一层（3 条聊天 + 1 个叠层事件）。
 fn stacked_owner() -> (Core, RoomId, String) {
     let mut a = new_core();
-    a.set_nickname("阿钢", 500).unwrap();
+    a.set_profile("阿钢", Some(Avatar::Preset { icon: 1, color: 1 }), 500)
+        .unwrap();
     let created = a.create_room("开黑", DEFAULT_PARAMS, 1000).unwrap();
     let room = created.summary.room_id;
     for t in [10_000, 11_000, 12_000] {
@@ -48,6 +49,7 @@ fn identity_only_restore_does_not_restack_old_messages() {
     let view = a2.import_backup(&file, PASS, false, 50_000).unwrap();
     assert_eq!(view.member_id, a.identity().member_id);
     assert_eq!(view.nickname, "阿钢");
+    assert_eq!(view.avatar, Some(Avatar::Preset { icon: 1, color: 1 }));
     assert!(a2.list_rooms().unwrap().is_empty(), "只备份身份时不带房间");
     a2.join_room(&code, 50_000).unwrap();
 

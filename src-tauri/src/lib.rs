@@ -95,7 +95,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::identity_get,
-            commands::identity_set_nickname,
+            commands::identity_set_profile,
             commands::rooms_list,
             commands::rooms_create,
             commands::rooms_join,

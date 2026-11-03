@@ -1,7 +1,8 @@
 //! 表结构（架构 9.1）。每个元素是一次升级，下标 + 1 就是升级后的版本号，只能在末尾追加，不能改已有的。
-//! 第 2 版（M1-4）加入 `settings`；第 3 版（M2）加入 `sync_state`（每位作者的聊天补齐分界）。
+//! 第 2 版（M1-4）加入 `settings`；第 3 版（M2）加入 `sync_state`（每位作者的聊天补齐分界）；
+//! 第 4 版（V1.1）给本机身份和成员加头像（CBOR 编码的 `Avatar`，没有为 NULL）。
 
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
 
 const V1: &str = "
 CREATE TABLE identity (
@@ -82,4 +83,9 @@ CREATE TABLE sync_state (
     chat_floor INTEGER NOT NULL,
     PRIMARY KEY (room_id, author)
 );
+";
+
+const V4: &str = "
+ALTER TABLE identity ADD COLUMN avatar BLOB;
+ALTER TABLE members ADD COLUMN avatar BLOB;
 ";

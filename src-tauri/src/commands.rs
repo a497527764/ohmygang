@@ -23,6 +23,7 @@ use crate::crypto::MemberId;
 use crate::error::AppResult;
 use crate::identity::IdentityView;
 use crate::node::{NodeEvent, NodeHandle, Outbox, now_ms};
+use crate::protocol::body::{Avatar, image_mime};
 use crate::settings::DEFAULT_RELAYS;
 use crate::storage::events::Delivery;
 use crate::sync::path::PathKind;
@@ -59,12 +60,61 @@ fn status_name(s: RoomStatus) -> &'static str {
     }
 }
 
+fn base64(b: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(b)
+}
+
+fn unbase64(s: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map_err(|_| "数据格式不对".to_string())
+}
+
+/// 给界面的头像：内置的给下标，图片给能直接放进 <img> 的 data URL。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AvatarDto {
+    Preset { icon: u16, color: u8 },
+    Image { data_url: String },
+}
+
+fn avatar_dto(a: &Option<Avatar>) -> Option<AvatarDto> {
+    match a.as_ref()? {
+        Avatar::Preset { icon, color } => Some(AvatarDto::Preset {
+            icon: *icon,
+            color: *color,
+        }),
+        Avatar::Image(b) => Some(AvatarDto::Image {
+            data_url: format!("data:{};base64,{}", image_mime(b)?, base64(b)),
+        }),
+    }
+}
+
+/// 界面传来的头像：内置的给下标，图片给 Base64。
+#[derive(Clone, Debug, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AvatarInput {
+    Preset { icon: u16, color: u8 },
+    Image { data: String },
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityDto {
     pub member_id: String,
     pub nickname: String,
     pub fingerprint: String,
+    pub avatar: Option<AvatarDto>,
 }
 
 impl From<&IdentityView> for IdentityDto {
@@ -73,6 +123,7 @@ impl From<&IdentityView> for IdentityDto {
             member_id: hex(&v.member_id),
             nickname: v.nickname.clone(),
             fingerprint: v.fingerprint.clone(),
+            avatar: avatar_dto(&v.avatar),
         }
     }
 }
@@ -148,6 +199,7 @@ pub struct MemberDto {
     pub in_room: bool,
     /// 现在经哪条路径能联系上：lan、relay、offline（自己也是 offline，界面不显示）。
     pub path: &'static str,
+    pub avatar: Option<AvatarDto>,
 }
 
 impl MemberDto {
@@ -164,6 +216,7 @@ impl MemberDto {
                 PathKind::Relay => "relay",
                 PathKind::Unknown => "offline",
             },
+            avatar: avatar_dto(&m.avatar),
         }
     }
 }
@@ -413,13 +466,20 @@ pub async fn identity_get(node: State<'_, NodeHandle>) -> Result<IdentityDto, St
     on_node(&node, |core, _| Ok(IdentityDto::from(core.identity()))).await
 }
 
+/// 改昵称和头像（avatar 为 null 表示用自动生成的头像）。
 #[tauri::command]
-pub async fn identity_set_nickname(
+pub async fn identity_set_profile(
     node: State<'_, NodeHandle>,
     nickname: String,
+    avatar: Option<AvatarInput>,
 ) -> Result<IdentityDto, String> {
+    let avatar = match avatar {
+        None => None,
+        Some(AvatarInput::Preset { icon, color }) => Some(Avatar::Preset { icon, color }),
+        Some(AvatarInput::Image { data }) => Some(Avatar::Image(unbase64(&data)?)),
+    };
     on_node(&node, move |core, out| {
-        for e in core.set_nickname(nickname.trim(), now_ms())? {
+        for e in core.set_profile(nickname.trim(), avatar, now_ms())? {
             out.broadcast(e.event.room_id, vec![e]);
         }
         Ok(IdentityDto::from(core.identity()))
@@ -743,10 +803,7 @@ pub async fn backup_import(
     passphrase: String,
     overwrite: bool,
 ) -> Result<IdentityDto, String> {
-    use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data)
-        .map_err(|_| "读取备份文件失败".to_string())?;
+    let bytes = unbase64(&data).map_err(|_| "读取备份文件失败".to_string())?;
     on_node(&node, move |core, _| {
         let view = core.import_backup(&bytes, &passphrase, overwrite, now_ms())?;
         Ok(IdentityDto::from(&view))
@@ -829,6 +886,7 @@ mod tests {
             stacks: 2,
             is_owner: false,
             in_room: true,
+            avatar: None,
         };
         let names =
             [PathKind::Lan, PathKind::Relay, PathKind::Unknown].map(|p| MemberDto::new(&m, p).path);
@@ -842,6 +900,26 @@ mod tests {
         assert_eq!(h.state, "cooling");
         let json = serde_json::to_value(&h).unwrap();
         assert_eq!(json["lastEchoMs"], 120);
+    }
+
+    #[test]
+    fn avatars_become_dtos() {
+        assert_eq!(avatar_dto(&None), None);
+        assert_eq!(
+            avatar_dto(&Some(Avatar::Preset { icon: 3, color: 4 })),
+            Some(AvatarDto::Preset { icon: 3, color: 4 })
+        );
+        let png = b"\x89PNG\r\n".to_vec();
+        let Some(AvatarDto::Image { data_url }) = avatar_dto(&Some(Avatar::Image(png))) else {
+            panic!("应当是图片");
+        };
+        assert!(data_url.starts_with("data:image/png;base64,"));
+        // 认不出格式的图片不给界面
+        assert_eq!(avatar_dto(&Some(Avatar::Image(b"<svg>".to_vec()))), None);
+        let json = serde_json::to_value(AvatarDto::Preset { icon: 1, color: 2 }).unwrap();
+        assert_eq!(json["kind"], "preset");
+        let input: AvatarInput = serde_json::from_str(r#"{"kind":"image","data":"AAEC"}"#).unwrap();
+        assert!(matches!(input, AvatarInput::Image { data } if data == "AAEC"));
     }
 
     #[test]

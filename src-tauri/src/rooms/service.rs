@@ -11,7 +11,7 @@
 use crate::crypto::{self, Identity, MemberId, RoomId};
 use crate::error::{AppError, AppResult};
 use crate::keystore::{PURPOSE_ROOM_CODE, decrypt_local, encrypt_local};
-use crate::protocol::body::{self, ProfileBody, RoomCreateBody, Rule, TITLE_MAX_CHARS};
+use crate::protocol::body::{self, Avatar, ProfileBody, RoomCreateBody, Rule, TITLE_MAX_CHARS};
 use crate::protocol::event::{SignedEvent, Stream, kind};
 use crate::protocol::room_code::{RoomCode, owner_tag_of};
 use crate::rooms::state::{RoomState, derive_room_state};
@@ -47,6 +47,7 @@ pub struct MemberView {
     pub stacks: u32,
     pub is_owner: bool,
     pub in_room: bool,
+    pub avatar: Option<Avatar>,
 }
 
 fn code_bytes(code: &RoomCode) -> Vec<u8> {
@@ -75,7 +76,7 @@ pub fn create_room(
     conn: &Connection,
     me: &Identity,
     master: &[u8; 32],
-    nickname: &str,
+    profile: &ProfileBody,
     title: &str,
     params: RuleParams,
     now_ms: u64,
@@ -125,17 +126,14 @@ pub fn create_room(
         )?,
         events::append_own(conn, me, &room, Stream::State, kind::JOIN, vec![], now_ms)?,
     ];
-    if !nickname.is_empty() {
-        let profile = body::encode(&ProfileBody {
-            nickname: nickname.to_string(),
-        });
+    if profile.has_content() {
         written.push(events::append_own(
             conn,
             me,
             &room,
             Stream::State,
             kind::PROFILE,
-            profile,
+            body::encode(profile),
             now_ms,
         )?);
     }
@@ -188,7 +186,12 @@ pub fn apply_state(conn: &Connection, room: &RoomId) -> AppResult<RoomState> {
         st.dissolve_ts,
     )?;
     room_store::replace_rules(conn, room, &st.rules)?;
-    room_store::set_members(conn, room, &st.members, &st.nicknames)?;
+    let avatars = st
+        .avatars
+        .iter()
+        .map(|(m, a)| (*m, body::encode(a)))
+        .collect();
+    room_store::set_members(conn, room, &st.members, &st.nicknames, &avatars)?;
     if st.dissolve_ts.is_some() && matches!(row.status, RoomStatus::Joining | RoomStatus::Active) {
         room_store::set_status(conn, room, RoomStatus::Dissolved)?;
     }
@@ -221,6 +224,7 @@ pub fn list_members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberVie
             nickname: m.nickname,
             stacks: m.stacks,
             in_room: m.in_room,
+            avatar: m.avatar.and_then(|b| body::decode::<Avatar>(&b).ok()),
         })
         .collect())
 }

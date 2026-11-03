@@ -15,7 +15,7 @@ fn everything_survives_reopen() {
 
     let (me, room, code, before_msgs, before_board) = {
         let mut a = Core::open(storage::open(&path).unwrap(), &keys).unwrap();
-        a.set_nickname("阿钢", 500).unwrap();
+        a.set_profile("阿钢", None, 500).unwrap();
         let created = a.create_room("开黑", DEFAULT_PARAMS, 1000).unwrap();
         let room = created.summary.room_id;
         for t in [10_000, 11_000, 12_000, 13_000] {

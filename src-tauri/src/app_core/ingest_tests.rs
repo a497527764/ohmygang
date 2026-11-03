@@ -97,6 +97,7 @@ pub(super) fn founding(o: &Remote) -> Vec<SignedEvent> {
             kind::PROFILE,
             body::encode(&ProfileBody {
                 nickname: "房主".into(),
+                avatar: None,
             }),
         ),
     ]

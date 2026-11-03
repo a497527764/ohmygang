@@ -3,12 +3,13 @@
 //! 实现流程：
 //! 1. `bootstrap`：库里没有身份就生成一把 Ed25519 私钥，用本机主密钥加密后存进 identity 表；有就解密读出。
 //!    解密失败（比如主密钥被换了）直接报错，绝不悄悄生成新身份覆盖旧的，否则会变成另一个人、丢掉所有层数。
-//! 2. 昵称是全局的（各房间相同），上限 32 个字符；生成各房间 Profile 事件由 `Core` 负责。
+//! 2. 昵称和头像是全局的（各房间相同）：昵称上限 32 个字符，头像必须合格（`Avatar::is_valid`）；
+//!    头像以 CBOR 字节存进 identity 表，读出时解不开就当作没有。生成各房间 Profile 事件由 `Core` 负责。
 
 use crate::crypto::{self, Identity, MemberId};
 use crate::error::{AppError, AppResult};
 use crate::keystore::{PURPOSE_IDENTITY, decrypt_local, encrypt_local};
-use crate::protocol::body::NICKNAME_MAX_CHARS;
+use crate::protocol::body::{self, Avatar, NICKNAME_MAX_CHARS};
 use crate::storage::{Connection, identity as id_store};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,10 +17,11 @@ pub struct IdentityView {
     pub member_id: MemberId,
     pub nickname: String,
     pub fingerprint: String,
+    pub avatar: Option<Avatar>,
 }
 
 pub fn bootstrap(conn: &Connection, master: &[u8; 32]) -> AppResult<(Identity, IdentityView)> {
-    let (me, nickname) = match id_store::load(conn)? {
+    let (me, nickname, avatar) = match id_store::load(conn)? {
         Some(row) => {
             let secret: [u8; 32] = decrypt_local(master, PURPOSE_IDENTITY, &row.secret_cipher)?
                 .try_into()
@@ -28,7 +30,8 @@ pub fn bootstrap(conn: &Connection, master: &[u8; 32]) -> AppResult<(Identity, I
             if me.member_id() != row.member_id {
                 return Err(AppError::Decrypt);
             }
-            (me, row.nickname)
+            let avatar = row.avatar.and_then(|b| body::decode::<Avatar>(&b).ok());
+            (me, row.nickname, avatar)
         }
         None => {
             let me = Identity::generate()?;
@@ -39,24 +42,29 @@ pub fn bootstrap(conn: &Connection, master: &[u8; 32]) -> AppResult<(Identity, I
                     member_id: me.member_id(),
                     nickname: String::new(),
                     secret_cipher,
+                    avatar: None,
                 },
             )?;
-            (me, String::new())
+            (me, String::new(), None)
         }
     };
     let view = IdentityView {
         member_id: me.member_id(),
         fingerprint: crypto::fingerprint(&me.member_id()),
         nickname,
+        avatar,
     };
     Ok((me, view))
 }
 
-pub fn set_nickname(conn: &Connection, nickname: &str) -> AppResult<()> {
+pub fn set_profile(conn: &Connection, nickname: &str, avatar: Option<&Avatar>) -> AppResult<()> {
     if nickname.chars().count() > NICKNAME_MAX_CHARS {
         return Err(AppError::NicknameTooLong);
     }
-    id_store::set_nickname(conn, nickname)
+    if avatar.is_some_and(|a| !a.is_valid()) {
+        return Err(AppError::InvalidAvatar);
+    }
+    id_store::set_profile(conn, nickname, avatar.map(body::encode).as_deref())
 }
 
 #[cfg(test)]
@@ -103,10 +111,26 @@ mod tests {
         let c = storage::open_in_memory().unwrap();
         bootstrap(&c, &KEY).unwrap();
         assert!(matches!(
-            set_nickname(&c, &"长".repeat(33)),
+            set_profile(&c, &"长".repeat(33), None),
             Err(AppError::NicknameTooLong)
         ));
-        set_nickname(&c, &"长".repeat(32)).unwrap();
+        set_profile(&c, &"长".repeat(32), None).unwrap();
         assert_eq!(bootstrap(&c, &KEY).unwrap().1.nickname, "长".repeat(32));
+    }
+
+    #[test]
+    fn avatar_is_checked_and_saved() {
+        let c = storage::open_in_memory().unwrap();
+        bootstrap(&c, &KEY).unwrap();
+        let bad = Avatar::Image(b"GIF89a".to_vec());
+        assert!(matches!(
+            set_profile(&c, "阿钢", Some(&bad)),
+            Err(AppError::InvalidAvatar)
+        ));
+        let preset = Avatar::Preset { icon: 5, color: 1 };
+        set_profile(&c, "阿钢", Some(&preset)).unwrap();
+        assert_eq!(bootstrap(&c, &KEY).unwrap().1.avatar, Some(preset));
+        set_profile(&c, "阿钢", None).unwrap();
+        assert_eq!(bootstrap(&c, &KEY).unwrap().1.avatar, None);
     }
 }

@@ -58,6 +58,8 @@ pub struct MemberRow {
     pub nickname: Option<String>,
     pub in_room: bool,
     pub stacks: u32,
+    /// CBOR 编码的头像。
+    pub avatar: Option<Vec<u8>>,
 }
 
 const SELECT_ROOM: &str = "SELECT room_id, code_cipher, owner_tag, status, title, owner_id, dissolve_ts, last_active, muted, pinned FROM rooms";
@@ -203,12 +205,14 @@ pub fn get_rules(conn: &Connection, room: &RoomId) -> AppResult<Rules> {
     Ok(rules)
 }
 
-/// 按推导结果刷新成员：先全部标为不在房，再把当前成员标回在房；昵称按推导结果覆盖。层数不动。
+/// 按推导结果刷新成员：先全部标为不在房，再把当前成员标回在房；昵称和头像按推导结果覆盖
+/// （有 Profile 的人头像以 `avatars` 为准，不在里面的清空）。层数不动。
 pub fn set_members(
     conn: &Connection,
     room: &RoomId,
     in_room: &BTreeSet<MemberId>,
     nicknames: &BTreeMap<MemberId, String>,
+    avatars: &BTreeMap<MemberId, Vec<u8>>,
 ) -> AppResult<()> {
     conn.execute("UPDATE members SET in_room = 0 WHERE room_id = ?1", [room])?;
     for m in in_room {
@@ -220,9 +224,9 @@ pub fn set_members(
     }
     for (m, nick) in nicknames {
         conn.execute(
-            "INSERT INTO members (room_id, member_id, nickname) VALUES (?1, ?2, ?3)
-             ON CONFLICT (room_id, member_id) DO UPDATE SET nickname = excluded.nickname",
-            params![room, m, nick],
+            "INSERT INTO members (room_id, member_id, nickname, avatar) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (room_id, member_id) DO UPDATE SET nickname = excluded.nickname, avatar = excluded.avatar",
+            params![room, m, nick, avatars.get(m)],
         )?;
     }
     Ok(())
@@ -256,7 +260,7 @@ pub fn stacks_of(conn: &Connection, room: &RoomId, member: &MemberId) -> AppResu
 /// 按层数降序。
 pub fn members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberRow>> {
     let mut stmt = conn.prepare(
-        "SELECT member_id, nickname, in_room, stacks FROM members WHERE room_id = ?1 ORDER BY stacks DESC, member_id",
+        "SELECT member_id, nickname, in_room, stacks, avatar FROM members WHERE room_id = ?1 ORDER BY stacks DESC, member_id",
     )?;
     let rows = stmt.query_map([room], |r| {
         Ok(MemberRow {
@@ -264,6 +268,7 @@ pub fn members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberRow>> {
             nickname: r.get(1)?,
             in_room: r.get(2)?,
             stacks: r.get(3)?,
+            avatar: r.get(4)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)

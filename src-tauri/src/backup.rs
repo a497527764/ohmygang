@@ -3,7 +3,8 @@
 //! 实现流程：
 //! 1. 文件 = `HSBK` ‖ 版本 1 ‖ Argon2id 参数（内存 KiB、轮数，各 4 字节小端；并行度 1 字节）‖ 盐 16 ‖ nonce 24 ‖ 密文。
 //!    整个文件头作为附加认证数据，改了参数或盐也解不开。
-//! 2. 明文是 CBOR：种类、私钥、昵称、房间列表（房间码，加上可选的全部事件；事件用线上格式，room_id 由房间码算出）。
+//! 2. 明文是 CBOR：种类、私钥、昵称、头像（V1.1 新增，旧备份没有）、房间列表（房间码，加上可选的全部事件；
+//!    事件用线上格式，room_id 由房间码算出）。
 //! 3. 口令至少 6 个字符。口令错、文件坏、不是备份文件统一报同一个错，不给猜口令的人多余信息；
 //!    只有「版本比本程序新」单独报，提示升级。
 //! 4. 参数写在文件里，以后调高强度旧文件照样能读；读文件时限制参数上限，防止恶意文件把内存吃光。
@@ -14,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::crypto;
 use crate::error::{AppError, AppResult};
+use crate::protocol::body::Avatar;
 use crate::protocol::event::SignedEvent;
 use crate::protocol::frame::WireEvent;
 use crate::protocol::room_code::RoomCode;
@@ -49,6 +51,7 @@ pub struct BackupData {
     pub kind: BackupKind,
     pub secret: [u8; 32],
     pub nickname: String,
+    pub avatar: Option<Avatar>,
     pub rooms: Vec<BackupRoom>,
 }
 
@@ -60,6 +63,8 @@ struct Body {
     secret: [u8; 32],
     #[serde(rename = "n")]
     nickname: String,
+    #[serde(rename = "a", default, skip_serializing_if = "Option::is_none")]
+    avatar: Option<Avatar>,
     #[serde(rename = "r")]
     rooms: Vec<RoomBody>,
 }
@@ -92,6 +97,7 @@ pub fn encode(data: &BackupData, passphrase: &str) -> AppResult<Vec<u8>> {
         },
         secret: data.secret,
         nickname: data.nickname.clone(),
+        avatar: data.avatar.clone(),
         rooms: data
             .rooms
             .iter()
@@ -165,6 +171,7 @@ pub fn decode(bytes: &[u8], passphrase: &str) -> AppResult<BackupData> {
         kind,
         secret: body.secret,
         nickname: body.nickname,
+        avatar: body.avatar.filter(Avatar::is_valid),
         rooms,
     })
 }
@@ -178,6 +185,7 @@ mod tests {
             kind: BackupKind::IdentityOnly,
             secret: [7u8; 32],
             nickname: "阿钢".into(),
+            avatar: Some(Avatar::Preset { icon: 2, color: 3 }),
             rooms: Vec::new(),
         }
     }

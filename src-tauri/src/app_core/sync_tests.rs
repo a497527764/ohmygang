@@ -58,11 +58,11 @@ fn floors_mark_where_the_last_n_chats_begin() {
 #[test]
 fn joining_member_catches_up_then_activates() {
     let mut a = new_core();
-    a.set_nickname("房主", 1).unwrap();
+    a.set_profile("房主", None, 1).unwrap();
     let created = a.create_room("开黑", DEFAULT_PARAMS, 1000).unwrap();
     let room = created.summary.room_id;
     let mut b = new_core();
-    b.set_nickname("新人", 2).unwrap();
+    b.set_profile("新人", None, 2).unwrap();
     b.join_room(&created.code, 2000).unwrap();
     assert!(!b.owner_known(&room).unwrap());
 

@@ -58,7 +58,7 @@ fn room_prefs_change_only_given_fields_and_pinned_rooms_come_first() {
 #[test]
 fn create_room_makes_me_owner_with_default_rule() {
     let mut a = new_core();
-    a.set_nickname("阿钢", 500).unwrap();
+    a.set_profile("阿钢", None, 500).unwrap();
     let created = a.create_room("开黑", DEFAULT_PARAMS, 1000).unwrap();
     let room = created.summary.room_id;
 
@@ -141,7 +141,7 @@ fn nickname_change_emits_profile_in_active_rooms() {
     let mut a = new_core();
     let created = a.create_room("开黑", DEFAULT_PARAMS, 1000).unwrap();
     let room = created.summary.room_id;
-    let events = a.set_nickname("新名字", 5000).unwrap();
+    let events = a.set_profile("新名字", None, 5000).unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event.kind, kind::PROFILE);
     assert!(events[0].event.ts_ms > created.events.last().unwrap().event.ts_ms);
@@ -150,4 +150,52 @@ fn nickname_change_emits_profile_in_active_rooms() {
         a.list_members(&room).unwrap()[0].nickname.as_deref(),
         Some("新名字")
     );
+}
+
+#[test]
+fn avatar_reaches_other_members_and_new_rooms() {
+    let mut a = new_core();
+    let created = a.create_room("开黑", DEFAULT_PARAMS, 1000).unwrap();
+    let room = created.summary.room_id;
+    let preset = Avatar::Preset { icon: 7, color: 2 };
+    let events = a.set_profile("阿钢", Some(preset.clone()), 5000).unwrap();
+    assert_eq!(a.identity().avatar, Some(preset.clone()));
+
+    // 另一个人拿到这些事件后，成员列表里能看到头像
+    let mut b = new_core();
+    b.join_room(&created.code, 6000).unwrap();
+    let mut all = created.events.clone();
+    all.extend(events);
+    b.ingest_events(&room, &all, false, 7000).unwrap();
+    let me = a.identity().member_id;
+    let seen = b.list_members(&room).unwrap();
+    let m = seen.iter().find(|m| m.member_id == me).unwrap();
+    assert_eq!(m.avatar, Some(preset.clone()));
+
+    // 之后新建的房间，建房时的 Profile 就带着头像
+    let second = a.create_room("第二个群", DEFAULT_PARAMS, 8000).unwrap();
+    let mut c = new_core();
+    c.join_room(&second.code, 9000).unwrap();
+    c.ingest_events(&second.summary.room_id, &second.events, false, 9500)
+        .unwrap();
+    assert_eq!(
+        c.list_members(&second.summary.room_id).unwrap()[0].avatar,
+        Some(preset)
+    );
+
+    // 换回默认头像
+    a.set_profile("阿钢", None, 10_000).unwrap();
+    assert_eq!(a.list_members(&room).unwrap()[0].avatar, None);
+}
+
+#[test]
+fn invalid_avatar_is_rejected_without_writing() {
+    let mut a = new_core();
+    a.create_room("开黑", DEFAULT_PARAMS, 1000).unwrap();
+    let big = Avatar::Image(vec![0xff; 2000]);
+    assert!(matches!(
+        a.set_profile("阿钢", Some(big), 5000),
+        Err(AppError::InvalidAvatar)
+    ));
+    assert_eq!(a.identity().nickname, "");
 }

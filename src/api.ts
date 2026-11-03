@@ -5,10 +5,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+/// 头像：内置的是图标和底色的下标（见 avatars.ts），上传的图片是 data URL。没有时界面按指纹自动生成。
+export type Avatar = { kind: "preset"; icon: number; color: number } | { kind: "image"; dataUrl: string };
+
+/// 改头像时传给 Rust 的：图片给 Base64（不超过 800 字节）。
+export type AvatarInput = { kind: "preset"; icon: number; color: number } | { kind: "image"; data: string };
+
 export interface Identity {
   memberId: string;
   nickname: string;
   fingerprint: string;
+  avatar: Avatar | null;
 }
 
 export type RoomStatus = "joining" | "active" | "left" | "dissolved";
@@ -35,6 +42,7 @@ export interface Member {
   isOwner: boolean;
   inRoom: boolean;
   path: MemberPath;
+  avatar: Avatar | null;
 }
 
 export interface RoomRule {
@@ -105,7 +113,9 @@ export type HsEvent =
 
 export const api = {
   identity: () => invoke<Identity>("identity_get"),
-  setNickname: (nickname: string) => invoke<Identity>("identity_set_nickname", { nickname }),
+  /// avatar 为 null 表示用自动生成的头像。
+  setProfile: (nickname: string, avatar: AvatarInput | null) =>
+    invoke<Identity>("identity_set_profile", { nickname, avatar }),
   rooms: () => invoke<Room[]>("rooms_list"),
   createRoom: (title: string) => invoke<{ room: Room; code: string }>("rooms_create", { title }),
   joinRoom: (code: string) => invoke<Room>("rooms_join", { code }),

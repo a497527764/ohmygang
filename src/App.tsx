@@ -200,7 +200,7 @@ function App() {
       await api.renameRoom(active, value);
       await afterManage(active);
     } else {
-      setMe(await api.setNickname(value));
+      setMe(await api.setProfile(value, null));
       if (active) loadMembers(active);
     }
     setDialog(null);

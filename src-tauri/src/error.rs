@@ -21,6 +21,8 @@ pub enum AppError {
     InvalidTitle,
     #[error("昵称太长，最多 32 个字符")]
     NicknameTooLong,
+    #[error("头像图片太大或格式不对，请换一张")]
+    InvalidAvatar,
     #[error("心之钢规则超出范围")]
     InvalidRule,
     #[error("中继地址必须是 wss:// 开头的完整地址：{0}")]

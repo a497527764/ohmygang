@@ -152,6 +152,7 @@ fn rooms_rules_members_and_read_cursor() {
         &ROOM,
         &[id].into_iter().collect(),
         &[(id, "我".to_string())].into_iter().collect(),
+        &[(id, vec![1u8, 2, 3])].into_iter().collect(),
     )
     .unwrap();
     rooms::set_stacks(&c, &ROOM, &id, 3).unwrap();
@@ -161,8 +162,26 @@ fn rooms_rules_members_and_read_cursor() {
         (ms[0].in_room, ms[0].stacks, ms[0].nickname.as_deref()),
         (true, 3, Some("我"))
     );
+    assert_eq!(ms[0].avatar, Some(vec![1, 2, 3]));
+    // 新的 Profile 没带头像：头像清空
+    rooms::set_members(
+        &c,
+        &ROOM,
+        &[id].into_iter().collect(),
+        &[(id, "我".to_string())].into_iter().collect(),
+        &Default::default(),
+    )
+    .unwrap();
+    assert_eq!(rooms::members(&c, &ROOM).unwrap()[0].avatar, None);
     // 退出后不在房，层数保留
-    rooms::set_members(&c, &ROOM, &Default::default(), &Default::default()).unwrap();
+    rooms::set_members(
+        &c,
+        &ROOM,
+        &Default::default(),
+        &Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
     let ms = rooms::members(&c, &ROOM).unwrap();
     assert_eq!((ms[0].in_room, ms[0].stacks), (false, 3));
 

@@ -29,6 +29,7 @@ fn same_person_new_device(a: &Core) -> Core {
         member_id: a.me.member_id(),
         nickname: String::new(),
         secret_cipher: encrypt_local(&MASTER, PURPOSE_IDENTITY, &a.me.secret()).unwrap(),
+        avatar: None,
     };
     id_store::insert(&conn, &row).unwrap();
     Core::open(conn, &MemoryKeyStore(MASTER)).unwrap()
