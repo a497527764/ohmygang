@@ -1,0 +1,406 @@
+//! 透明窗口（架构第 3 节）：每个显示器一个透明、鼠标穿透、不拿焦点、始终置顶的窗口，画轮盘和信号。
+//! 窗口管理的做法移植自 lolPing `src/main/overlayManager.ts`（MIT，© 2026 Danrui Meng）。
+//!
+//! 实现流程：
+//! 1. 一个专门的线程拥有全部状态，别处只往它的通道里发消息（`Msg`），所以不需要锁，也不会和主线程互相等。
+//!    窗口操作和查显示器都由 Tauri 转到主线程执行，这个线程等结果；主线程从不等这个线程。
+//! 2. 显示器：每次要画新东西（开轮盘、单击信号、预览、提示）前先查一遍，另外每 3 秒查一遍；
+//!    和上次不一样（插拔、改分辨率、改缩放、游戏切了显示模式）就重建：多的窗口关掉、少的补上、其余挪到新位置。
+//! 3. 手势事件进来是物理像素：开轮盘时记下中心和所在的显示器，之后每次移动都按那块屏幕的缩放算出偏移、选出高亮的格子，
+//!    只在格子变了时通知页面；松开时按同样的算法定格，在中心放那一格的信号。页面只管画，不算规则。
+//! 4. 空闲时挪开：页面没东西画 250 毫秒后报告空闲，就把窗口挪到显示器外只留一点（截图工具就不会把它当成要截的窗口）；
+//!    要画新东西前先挪回来，并重新置顶（Windows 10 偶尔会把置顶窗口压到普通窗口下面）。
+
+pub mod displays;
+pub mod geometry;
+
+use std::collections::HashMap;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
+
+use serde_json::json;
+use tauri::{
+    AppHandle, Emitter, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
+
+use crate::input::{Emit, WheelKind};
+use crate::settings2::OverlaySettings;
+use displays::{Display, Rect};
+
+/// 所有 WebView2 窗口必须用同一串启动参数（同一数据目录下参数不同会建不起来），主窗口在 `tauri.conf.json` 里写同一串：
+/// wry 默认关掉的几项，加上「不要求用户手势就能出声」——透明窗口永远收不到点击。
+pub const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required";
+
+const POLL: Duration = Duration::from_secs(3);
+
+/// 发给透明窗口线程的消息。
+pub enum Msg {
+    Input(Emit),
+    /// 某个透明窗口报告自己有没有东西在画。
+    Idle {
+        label: String,
+        idle: bool,
+    },
+    Settings(OverlaySettings),
+    /// 设置页的预览：在主显示器中间放一个信号。
+    Preview(String),
+    /// 主显示器右下角的提示。
+    Toast {
+        title: String,
+        body: String,
+    },
+    Poll,
+}
+
+/// 透明窗口线程的把手，可以随便复制。
+#[derive(Clone)]
+pub struct Overlays {
+    tx: Sender<Msg>,
+}
+
+impl Overlays {
+    /// 启动透明窗口线程。`on_toggled` 在暂停快捷键切换开关时调用（在这个线程上）。
+    pub fn start(
+        app: &AppHandle,
+        settings: OverlaySettings,
+        on_toggled: Box<dyn Fn(bool) + Send>,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let actor = Actor {
+            app: app.clone(),
+            settings,
+            on_toggled,
+            displays: Vec::new(),
+            windows: HashMap::new(),
+            next_id: 0,
+            wheel: None,
+        };
+        std::thread::Builder::new()
+            .name("overlays".into())
+            .spawn(move || actor.run(rx))
+            .expect("能开线程");
+        let poll = tx.clone();
+        std::thread::Builder::new()
+            .name("overlays-poll".into())
+            .spawn(move || {
+                while poll.send(Msg::Poll).is_ok() {
+                    std::thread::sleep(POLL);
+                }
+            })
+            .expect("能开线程");
+        Self { tx }
+    }
+
+    pub fn send(&self, m: Msg) {
+        let _ = self.tx.send(m);
+    }
+}
+
+struct Win {
+    label: String,
+    window: WebviewWindow,
+    display: Display,
+    idle: bool,
+}
+
+/// 开着的轮盘：在哪块显示器、中心在窗口里的哪儿、当前高亮哪格。
+struct OpenWheel {
+    key: String,
+    center: (f64, f64),
+    hot: Option<usize>,
+}
+
+struct Actor {
+    app: AppHandle,
+    settings: OverlaySettings,
+    on_toggled: Box<dyn Fn(bool) + Send>,
+    /// 按编号排好的显示器（第 0 个是 1 号，主显示器）。
+    displays: Vec<Display>,
+    windows: HashMap<String, Win>,
+    next_id: u32,
+    wheel: Option<OpenWheel>,
+}
+
+impl Actor {
+    fn run(mut self, rx: Receiver<Msg>) {
+        while let Ok(m) = rx.recv() {
+            match m {
+                Msg::Input(e) => self.input(e),
+                Msg::Idle { label, idle } => self.idle(&label, idle),
+                Msg::Settings(s) => {
+                    self.settings = s;
+                    for w in self.windows.values() {
+                        let _ =
+                            w.window
+                                .emit_to(w.label.as_str(), "overlay:settings", &self.settings);
+                    }
+                }
+                Msg::Preview(id) => {
+                    self.refresh();
+                    if let Some(d) = self.displays.first().cloned() {
+                        let (w, h) = (
+                            f64::from(d.rect.width) / d.scale,
+                            f64::from(d.rect.height) / d.scale,
+                        );
+                        self.show(
+                            &d.key,
+                            "ping:spawn",
+                            json!({ "id": id, "x": w / 2.0, "y": h / 2.0 }),
+                        );
+                    }
+                }
+                Msg::Toast { title, body } => {
+                    self.refresh();
+                    if let Some(d) = self.displays.first().cloned() {
+                        self.show(
+                            &d.key,
+                            "toast:show",
+                            json!({ "title": title, "body": body }),
+                        );
+                    }
+                }
+                Msg::Poll => self.refresh(),
+            }
+        }
+    }
+
+    fn input(&mut self, e: Emit) {
+        match e {
+            // 表情轮盘在 M4 才做；M1 的配置里表情触发键是关的，这里只是不画。
+            Emit::WheelOpen {
+                wheel: WheelKind::Emote,
+                ..
+            }
+            | Emit::Click {
+                wheel: WheelKind::Emote,
+                ..
+            } => {}
+            Emit::WheelOpen { x, y, .. } => {
+                self.refresh();
+                let Some(d) = self.display_at(x, y) else {
+                    return;
+                };
+                let center = displays::to_local(&d, x, y);
+                self.wheel = Some(OpenWheel {
+                    key: d.key.clone(),
+                    center,
+                    hot: None,
+                });
+                self.show(
+                    &d.key,
+                    "wheel:open",
+                    json!({ "x": center.0, "y": center.1 }),
+                );
+            }
+            Emit::WheelMove { x, y, .. } => {
+                let Some(slot) = self.slot_at(x, y) else {
+                    return;
+                };
+                let Some(w) = self.wheel.as_mut() else { return };
+                if w.hot != slot {
+                    w.hot = slot;
+                    let key = w.key.clone();
+                    self.emit(&key, "wheel:hot", json!({ "slot": slot }));
+                }
+            }
+            Emit::WheelRelease { x, y, .. } => {
+                let slot = self.slot_at(x, y).flatten();
+                let Some(w) = self.wheel.take() else { return };
+                self.emit(&w.key, "wheel:close", json!(null));
+                if let Some(id) = slot.and_then(|i| self.settings.wheel.get(i)).cloned() {
+                    self.emit(
+                        &w.key,
+                        "ping:spawn",
+                        json!({ "id": id, "x": w.center.0, "y": w.center.1 }),
+                    );
+                }
+            }
+            Emit::Click { x, y, .. } => {
+                self.refresh();
+                let Some(d) = self.display_at(x, y) else {
+                    return;
+                };
+                let (lx, ly) = displays::to_local(&d, x, y);
+                let id = self.settings.click_ping_id.clone();
+                self.show(&d.key, "ping:spawn", json!({ "id": id, "x": lx, "y": ly }));
+            }
+            Emit::Cancel => self.cancel_wheel(),
+            Emit::Toggled { enabled } => {
+                if !enabled {
+                    self.cancel_wheel();
+                }
+                (self.on_toggled)(enabled);
+            }
+        }
+    }
+
+    /// 开着的轮盘里，物理像素的点对应哪格。外层 None 表示没有开着的轮盘，内层 None 表示在中心的死区里。
+    fn slot_at(&self, x: i32, y: i32) -> Option<Option<usize>> {
+        let w = self.wheel.as_ref()?;
+        let d = self.displays.iter().find(|d| d.key == w.key)?;
+        let (lx, ly) = displays::to_local(d, x, y);
+        let dead = geometry::dead_zone(f64::from(self.settings.wheel_size_px));
+        Some(geometry::pick_slice(lx - w.center.0, ly - w.center.1, dead))
+    }
+
+    fn display_at(&self, x: i32, y: i32) -> Option<Display> {
+        displays::display_at(&self.displays, x, y).map(|i| self.displays[i].clone())
+    }
+
+    fn cancel_wheel(&mut self) {
+        if let Some(w) = self.wheel.take() {
+            self.emit(&w.key, "wheel:close", json!(null));
+        }
+    }
+
+    fn emit(&self, key: &str, event: &str, payload: serde_json::Value) {
+        if let Some(w) = self.windows.get(key) {
+            let _ = w.window.emit_to(w.label.as_str(), event, payload);
+        }
+    }
+
+    /// 画新东西：先把窗口挪回显示器上、重新置顶，再通知页面。
+    fn show(&mut self, key: &str, event: &str, payload: serde_json::Value) {
+        if let Some(w) = self.windows.get_mut(key) {
+            if w.idle {
+                w.idle = false;
+                place(w, &self.displays);
+            }
+            // tao 在已经置顶时不会再调 SetWindowPos，先取消再设，等于重新放到所有置顶窗口的最上面。
+            let _ = w.window.set_always_on_top(false);
+            let _ = w.window.set_always_on_top(true);
+        }
+        self.emit(key, event, payload);
+    }
+
+    fn idle(&mut self, label: &str, idle: bool) {
+        if let Some(w) = self.windows.values_mut().find(|w| w.label == label)
+            && w.idle != idle
+        {
+            w.idle = idle;
+            place(w, &self.displays);
+        }
+    }
+
+    /// 查一遍显示器，变了就重建窗口。
+    fn refresh(&mut self) {
+        let Some(now) = current_displays(&self.app) else {
+            return;
+        };
+        if now == self.displays {
+            return;
+        }
+        self.cancel_wheel();
+        self.displays = now;
+        let keys: Vec<String> = self.displays.iter().map(|d| d.key.clone()).collect();
+        self.windows.retain(|k, w| {
+            let keep = keys.contains(k);
+            if !keep {
+                let _ = w.window.destroy();
+            }
+            keep
+        });
+        for d in self.displays.clone() {
+            if let Some(w) = self.windows.get_mut(&d.key) {
+                w.display = d;
+                place(w, &self.displays);
+                continue;
+            }
+            let label = format!("overlay-{}", self.next_id);
+            self.next_id += 1;
+            match create_window(&self.app, &label) {
+                Ok(window) => {
+                    let mut w = Win {
+                        label,
+                        window,
+                        display: d.clone(),
+                        idle: false,
+                    };
+                    place(&mut w, &self.displays);
+                    let _ = w.window.show();
+                    place(&mut w, &self.displays); // 再放一次：不同缩放的屏幕上第一次可能算错大小
+                    self.windows.insert(d.key, w);
+                }
+                Err(e) => eprintln!("透明窗口建不起来：{e}"),
+            }
+        }
+    }
+}
+
+fn create_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
+    let w = WebviewWindowBuilder::new(app, label, WebviewUrl::App("overlay.html".into()))
+        .title("钢一下 overlay")
+        .transparent(true)
+        .decorations(false)
+        .shadow(false)
+        .resizable(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .focusable(false)
+        .focused(false)
+        .visible(false)
+        .additional_browser_args(BROWSER_ARGS)
+        .build()?;
+    w.set_ignore_cursor_events(true)?;
+    Ok(w)
+}
+
+/// 把窗口放到它该在的位置：有东西画时盖住显示器，空闲时挪开（没地方挪就隐藏）。
+fn place(w: &mut Win, all: &[Display]) {
+    let target = if w.idle {
+        let others: Vec<Rect> = all
+            .iter()
+            .filter(|d| d.key != w.display.key)
+            .map(|d| d.rect)
+            .collect();
+        displays::parked_rect(&w.display, &others)
+    } else {
+        Some(displays::overlay_rect(&w.display))
+    };
+    match target {
+        Some(r) => {
+            let _ = w.window.set_position(PhysicalPosition::new(r.x, r.y));
+            let _ = w.window.set_size(PhysicalSize::new(
+                r.width.max(1) as u32,
+                r.height.max(1) as u32,
+            ));
+            if !w.idle && !w.window.is_visible().unwrap_or(true) {
+                let _ = w.window.show();
+            }
+        }
+        None => {
+            let _ = w.window.hide();
+        }
+    }
+}
+
+/// 系统现在的显示器，按编号排好。查不到时返回 None（保持原样）。
+fn current_displays(app: &AppHandle) -> Option<Vec<Display>> {
+    let monitors = app.available_monitors().ok()?;
+    let primary = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .and_then(|m| m.name().cloned());
+    let list: Vec<Display> = monitors
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let key = m.name().cloned().unwrap_or_else(|| format!("display-{i}"));
+            let (p, s) = (m.position(), m.size());
+            Display {
+                primary: primary.as_ref() == Some(&key),
+                key,
+                rect: Rect {
+                    x: p.x,
+                    y: p.y,
+                    width: s.width as i32,
+                    height: s.height as i32,
+                },
+                scale: m.scale_factor(),
+            }
+        })
+        .collect();
+    Some(displays::numbered(&list))
+}

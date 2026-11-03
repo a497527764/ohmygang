@@ -1,3 +1,5 @@
+// 1.x 的模块：2.0-M1 起程序不再启动它们（聊天界面已删），M2 做队伍时连同聊天代码一起删改。
+// 见 docs/superpowers/plans/2026-11-03-v2-m1-plan.md「决定」第 1 条。
 pub mod app_core;
 pub mod attention;
 pub mod backup;
@@ -17,55 +19,24 @@ pub mod storage;
 pub mod sync;
 pub mod transport;
 
-use std::sync::Arc;
+// 2.0
+pub mod api;
+pub mod input;
+pub mod overlay;
+pub mod settings2;
+pub mod store;
+pub mod tray;
 
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, WindowEvent};
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 
-use transport::lan::LAN_PORT;
+use tauri::{Manager, WindowEvent};
 
-/// 把主窗口调到前面（托盘点击、托盘菜单、再次打开程序都用它）。
-fn show_main(app: &tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
-}
+use api::AppState;
+use overlay::{Msg, Overlays};
+use settings2::Hotkey;
 
-/// 托盘常驻（需求 2.4 的 M3）：单击托盘图标显示主窗口，菜单只有「显示主窗口」「退出」。只在 Rust 侧，不给前端开权限。
-fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
-    let mut tray = TrayIconBuilder::with_id(attention::TRAY_ID)
-        .tooltip(attention::TOOLTIP)
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, e| match e.id.as_ref() {
-            "show" => show_main(app),
-            "quit" => app.exit(0),
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, e| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = e
-            {
-                show_main(tray.app_handle());
-            }
-        });
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
-    }
-    tray.build(app)?;
-    Ok(())
-}
-
-/// 开发用的单机双开：环境变量 `LOLGANG_INSTANCE=2` 表示第二实例。
+/// 开发用的单机双开：环境变量 `LOLGANG_INSTANCE=2` 表示第二实例，数据目录换一套。
 fn is_second_instance() -> bool {
     std::env::var("LOLGANG_INSTANCE").is_ok_and(|v| v == "2")
 }
@@ -73,114 +44,106 @@ fn is_second_instance() -> bool {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
-    // 再次打开程序时不起新进程，而是把已经打开的窗口调到前面。
+    // 再次打开程序时不起新进程，而是把已经打开的控制面板调到前面。
     // 第二实例不注册，单机双开不受影响。这个插件只在 Rust 侧检查，不给前端任何权限。
     if !is_second_instance() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main(app)
+            tray::show_main(app)
         }));
     }
     builder
         .setup(|app| {
-            setup_tray(app)?;
-            let node = start_node(app.handle())?;
-            // 标题栏按上次选的主题上色
-            let theme = tauri::async_runtime::block_on(
-                node.call(|core, _| core.settings().map(|s| s.theme)),
-            );
-            if let Some(Ok(theme)) = theme {
-                commands::apply_window_theme(app.handle(), &theme);
-            }
-            app.manage(node);
+            start(app)?;
             Ok(())
         })
-        // 点窗口的关闭按钮只收进托盘，程序继续收消息；真正退出用托盘菜单的「退出」。
-        // 窗口回到前台时清掉新消息提醒（托盘红点、任务栏闪烁）。
-        .on_window_event(|window, event| match event {
-            WindowEvent::CloseRequested { api, .. } => {
+        // 点控制面板的关闭按钮只收进托盘，信号照常工作；真正退出用托盘菜单的「退出」。
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == "main"
+            {
                 let _ = window.hide();
                 api.prevent_close();
             }
-            WindowEvent::Focused(true) => attention::clear(window.app_handle()),
-            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
-            commands::identity_get,
-            commands::identity_set_profile,
-            commands::rooms_list,
-            commands::rooms_create,
-            commands::rooms_join,
-            commands::rooms_get_code,
-            commands::rooms_members,
-            commands::rooms_mark_read,
-            commands::rooms_set_prefs,
-            commands::rooms_set_active,
-            commands::rooms_rule,
-            commands::rooms_rename,
-            commands::rooms_set_rule,
-            commands::rooms_leave,
-            commands::rooms_dissolve,
-            commands::rooms_cancel_join,
-            commands::heartsteel_leaderboard,
-            commands::chat_send,
-            commands::chat_send_image,
-            commands::chat_image,
-            commands::chat_search,
-            commands::rooms_clear_history,
-            commands::rooms_delete_chat,
-            commands::chat_list,
-            commands::settings_get,
-            commands::settings_update,
-            commands::relay_status,
-            commands::backup_export,
-            commands::backup_import,
-            commands::network_status,
+            api::settings_read,
+            api::settings_write,
+            api::status_get,
+            api::pings_set_enabled,
+            api::input_suspend,
+            api::ping_preview,
+            api::overlay_hello,
+            api::overlay_idle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-/// 启动流程：在应用数据目录打开数据库 → 从凭据管理器取本机主密钥、读出身份 → 启动节点，
-/// 节点的通知转发成 Tauri 事件 `hs://event`；要提醒的新消息另外交给 `attention`（在主线程上处理）。
-///
-/// 单机双开（开发用）：环境变量 `LOLGANG_INSTANCE=2` 时，数据目录、凭据条目、UDP 端口都换一套；
-/// 开发版的广播同时发往两个端口，两个实例就能在一台电脑上互相发现。
-fn start_node(app: &tauri::AppHandle) -> Result<node::NodeHandle, Box<dyn std::error::Error>> {
-    let second = is_second_instance();
+/// 启动流程：在应用数据目录打开 `gang2.db`、读设置 → 启动透明窗口线程 → 启动键鼠监听（把手势事件交给透明窗口线程）
+/// → 交给 Tauri 管理 → 托盘 → 控制面板的主题。键鼠监听起不来时程序照常打开，控制面板显示原因。
+fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let mut dir = app.path().app_data_dir()?;
-    if second {
+    if is_second_instance() {
         dir.push("instance-2");
     }
     std::fs::create_dir_all(&dir)?;
-    let conn = storage::open(&dir.join("lolgang.db"))?;
-    let keystore = if second {
-        keystore::SystemKeyStore {
-            service: "lolgang-2",
-        }
-    } else {
-        keystore::APP_KEYSTORE
-    };
-    let core = app_core::Core::open(conn, &keystore)?;
+    let db = store::open(&dir.join("gang2.db"))?;
+    let settings = store::load_settings(&db)?;
 
-    let mut cfg = node::NodeConfig::default();
-    if second {
-        cfg.lan.bind.set_port(LAN_PORT + 1);
-    }
-    if cfg!(debug_assertions) {
-        cfg.lan.broadcast_ports = vec![LAN_PORT, LAN_PORT + 1];
-    }
-    let handle = app.clone();
-    let sink: node::Sink = Arc::new(move |e| {
-        if matches!(
-            &e,
-            node::NodeEvent::Core(app_core::CoreEvent::TimelineItemAdded { alert: true, .. })
-        ) {
-            let app = handle.clone();
-            let _ = handle.run_on_main_thread(move || attention::alert(&app));
+    let handle = app.handle().clone();
+    let on_toggled = Box::new(move |on: bool| {
+        api::after_toggle(&handle, on);
+        if let Some(state) = handle.try_state::<AppState>() {
+            let hotkey = state.settings.lock().map(|s| s.toggle_hotkey).ok();
+            let body = hotkey
+                .map(|h| format!("按 {} 切换", hotkey_label(h)))
+                .unwrap_or_default();
+            let title = if on {
+                "信号已恢复"
+            } else {
+                "信号已暂停"
+            };
+            state.overlays.send(Msg::Toast {
+                title: title.into(),
+                body,
+            });
         }
-        let _ = handle.emit("hs://event", commands::EventDto::from(e));
     });
-    Ok(tauri::async_runtime::block_on(node::Node::spawn(
-        core, cfg, sink,
-    ))?)
+    let overlays = Overlays::start(app.handle(), settings.overlay(), on_toggled);
+    let sink_to = overlays.clone();
+    let (input, input_error) = match input::start(
+        settings.gesture_config(true),
+        Box::new(move |e| sink_to.send(Msg::Input(e))),
+    ) {
+        Ok(h) => (Some(h), None),
+        Err(e) => (None, Some(e)),
+    };
+    let theme = settings.theme.clone();
+    app.manage(AppState {
+        db: Mutex::new(db),
+        settings: Mutex::new(settings),
+        enabled: AtomicBool::new(true),
+        input,
+        input_error,
+        overlays,
+    });
+    tray::setup(app, true)?;
+    api::apply_window_theme(app.handle(), &theme);
+    Ok(())
+}
+
+/// 「Ctrl + Alt + P」这样的快捷键文字（提示里用）。
+fn hotkey_label(h: Hotkey) -> String {
+    let mut parts: Vec<String> = [(1, "Ctrl"), (2, "Alt"), (4, "Shift"), (8, "Win")]
+        .iter()
+        .filter(|(bit, _)| h.mods & bit != 0)
+        .map(|(_, name)| (*name).to_string())
+        .collect();
+    let key = match h.vk {
+        0x30..=0x39 | 0x41..=0x5A => char::from_u32(h.vk).map(String::from).unwrap_or_default(),
+        0x70..=0x87 => format!("F{}", h.vk - 0x6F),
+        vk => format!("键 0x{vk:02X}"),
+    };
+    parts.push(key);
+    parts.join(" + ")
 }

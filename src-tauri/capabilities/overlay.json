@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "透明窗口只需要收 Rust 发来的画面消息",
+  "windows": ["overlay-*"],
+  "permissions": [
+    "core:event:default"
+  ]
+}
