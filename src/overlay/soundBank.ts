@@ -26,6 +26,18 @@ export class SoundBank {
     return results.filter((r): r is string => r !== null);
   }
 
+  /** 第一次放时才加载（表情音效 44 个，不在开窗口时全部解码）。 */
+  async playLazy(key: string, url: string, volume01: number): Promise<void> {
+    if (volume01 <= 0) return;
+    if (!this.buffers.has(key)) await this.load([{ key, url }]);
+    this.play(key, volume01);
+  }
+
+  /** 忘掉这些声音，下次放时重新加载。 */
+  forget(match: (key: string) => boolean): void {
+    for (const key of [...this.buffers.keys()]) if (match(key)) this.buffers.delete(key);
+  }
+
   play(key: string, volume01: number): void {
     const buffer = this.buffers.get(key);
     if (!buffer || volume01 <= 0 || this.voices >= MAX_VOICES) return;

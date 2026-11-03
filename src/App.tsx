@@ -1,20 +1,23 @@
-// 控制面板（2.0）：左边是分页，右边是当前页：「队伍」「信号」「外观」「关于」。
-// 数据流：启动时读设置和状态 → 改设置时先更新界面，停手 300 毫秒后整份交给 Rust 存（Rust 修正后的值再回填）；
+// 控制面板（2.0）：左边是分页，右边是当前页：「队伍」「信号」「表情」「外观」「关于」。
+// 数据流：启动时读设置和状态 → 改设置时先更新界面，停手 300 毫秒后把最新的整份设置交给 Rust 存（Rust 修正后的值再回填）；
+// 导入、删除表情由 Rust 直接存，返回的设置换上（还有没存的改动时只换表情那几项，改动随后一起存）；
 // 信号开关在托盘或暂停快捷键那边变了，Rust 推送过来，这里跟着变。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getStatus, onEnabled, onLaning, readSettings, setEnabled, setLaning, writeSettings, type Settings, type Status } from "./api";
 import { AboutPage } from "./components/AboutPage";
 import { AppearancePage } from "./components/AppearancePage";
+import { EmotesPage } from "./components/EmotesPage";
 import { Icon, type IconName } from "./components/Icon";
 import { PingsPage } from "./components/PingsPage";
 import { TeamPage } from "./components/TeamPage";
 import { textureUrl } from "./shared/pings";
 import "./app.css";
 
-type Page = "team" | "pings" | "appearance" | "about";
+type Page = "team" | "pings" | "emotes" | "appearance" | "about";
 const PAGES: { id: Page; label: string; icon: IconName }[] = [
   { id: "team", label: "队伍", icon: "users" },
   { id: "pings", label: "信号", icon: "target" },
+  { id: "emotes", label: "表情", icon: "smile" },
   { id: "appearance", label: "外观", icon: "sun" },
   { id: "about", label: "关于", icon: "info" },
 ];
@@ -27,9 +30,17 @@ export default function App() {
   const [page, setPage] = useState<Page>("team");
   const [error, setError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 最新的设置（包括还没存的改动），定时保存时存它。 */
+  const latest = useRef<Settings | null>(null);
 
   useEffect(() => {
-    readSettings().then(setSettings, (e) => setError(String(e)));
+    readSettings().then(
+      (s) => {
+        latest.current = s;
+        setSettings(s);
+      },
+      (e) => setError(String(e)),
+    );
     getStatus().then(setStatus, (e) => setError(String(e)));
     const off = onEnabled((on) => setStatus((s) => (s ? { ...s, enabled: on } : s)));
     const offLaning = onLaning((on) => setStatus((s) => (s ? { ...s, laning: on } : s)));
@@ -47,21 +58,31 @@ export default function App() {
   }, [settings?.theme]);
 
   const change = useCallback((patch: Partial<Settings>) => {
-    setSettings((s) => {
-      if (!s) return s;
-      const next = { ...s, ...patch };
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => {
-        writeSettings(next).then(
-          (saved) => {
-            setSettings(saved);
-            setError(null);
-          },
-          (e) => setError(`设置没存上：${String(e)}`),
-        );
-      }, SAVE_DELAY_MS);
-      return next;
-    });
+    if (!latest.current) return;
+    latest.current = { ...latest.current, ...patch };
+    setSettings(latest.current);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      if (!latest.current) return;
+      writeSettings(latest.current).then(
+        (saved) => {
+          if (saveTimer.current) return; // 又改了，等下一次保存的结果
+          latest.current = saved;
+          setSettings(saved);
+          setError(null);
+        },
+        (e) => setError(`设置没存上：${String(e)}`),
+      );
+    }, SAVE_DELAY_MS);
+  }, []);
+
+  const saved = useCallback((s: Settings) => {
+    const pending = saveTimer.current !== null && latest.current;
+    latest.current = pending
+      ? { ...pending, customEmotes: s.customEmotes, emoteWheel: s.emoteWheel, clickEmote: s.clickEmote }
+      : s;
+    setSettings(latest.current);
   }, []);
 
   const toggle = (on: boolean) => {
@@ -112,6 +133,7 @@ export default function App() {
             {page === "pings" && (
               <PingsPage settings={settings} status={status} onChange={change} onToggle={toggle} />
             )}
+            {page === "emotes" && <EmotesPage settings={settings} onChange={change} onSaved={saved} />}
             {page === "appearance" && <AppearancePage settings={settings} onChange={change} />}
             {page === "about" && <AboutPage />}
           </>

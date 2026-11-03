@@ -6,7 +6,7 @@ import { ALL_PINGS, type PingId } from "../shared/pings";
 import { KeyCapture } from "./KeyCapture";
 import { WheelEditor } from "./WheelEditor";
 
-const TRIGGERS: { value: NamedTrigger; label: string }[] = [
+export const TRIGGERS: { value: NamedTrigger; label: string }[] = [
   { value: "alt", label: "Alt" },
   { value: "ctrl", label: "Ctrl" },
   { value: "shift", label: "Shift" },
@@ -18,13 +18,13 @@ const TRIGGERS: { value: NamedTrigger; label: string }[] = [
 const CUSTOM = "custom";
 
 /** 「按住 Alt 用左键拖动」这样的一句用法说明。 */
-function howTo(t: TriggerKey): string {
+export function howTo(t: TriggerKey): string {
   if (t === "mouse4" || t === "mouse5") return "按住鼠标侧键拖动";
   const name = typeof t === "object" ? `${hotkeyParts({ mods: 0, vk: t.vk })[0]} 键` : TRIGGERS.find((x) => x.value === t)?.label;
   return `按住 ${name} 用左键拖动`;
 }
 
-function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+export function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div className="row">
       <div className="row-text">
@@ -36,11 +36,11 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
   );
 }
 
-function Switch({ checked, onChange, label }: { checked: boolean; onChange: (on: boolean) => void; label: string }) {
+export function Switch({ checked, onChange, label }: { checked: boolean; onChange: (on: boolean) => void; label: string }) {
   return <input type="checkbox" role="switch" aria-label={label} checked={checked} onChange={(e) => onChange(e.target.checked)} />;
 }
 
-function Slider(props: { label: string; value: number; min: number; max: number; step: number; unit: string; onChange: (v: number) => void }) {
+export function Slider(props: { label: string; value: number; min: number; max: number; step: number; unit: string; onChange: (v: number) => void }) {
   const { label, value, min, max, step, unit, onChange } = props;
   return (
     <Row label={label}>

@@ -1,5 +1,5 @@
-//! 2.0 的设置（架构第 8 节）：信号轮盘部分来自 lolPing 设计文档 8.1 节和 `src/shared/settings.ts`（MIT，© 2026 Danrui Meng），
-//! 加上 1.x 的主题。M2 以后的队伍、对线、表情、更新设置到时再加。
+//! 2.0 的设置（架构第 8 节）：信号轮盘和表情部分来自 lolPing 设计文档 8.1 节和 `src/shared/settings.ts`
+//! （MIT，© 2026 Danrui Meng），加上 1.x 的主题、队伍的网络和对线快捷键。
 //!
 //! 实现流程：
 //! 1. 存的是一份 JSON（`store` 负责读写）。读出来先过 `normalize`：缺的字段补默认，类型不对或不合法的换默认，
@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::emotes::{self, CustomEmote};
 use crate::input::gesture::{self, MOD_ALT, MOD_CTRL, MOD_WIN};
 
 /// 全部信号的 id，和前端 `src/shared/pings.ts` 一致。
@@ -74,6 +75,24 @@ pub enum TriggerKey {
     Custom { vk: u32 },
 }
 
+/// 表情触发键：和信号触发键一样，或者 `"off"`（表情轮盘关掉）。
+mod emote_key {
+    use super::TriggerKey;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(t: &Option<TriggerKey>, s: S) -> Result<S::Ok, S::Error> {
+        match t {
+            Some(k) => k.serialize(s),
+            None => s.serialize_str("off"),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<TriggerKey>, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        Ok(serde_json::from_value(v).ok())
+    }
+}
+
 /// 快捷键：修饰键位（Ctrl 1、Alt 2、Shift 4、Win 8）加一个虚拟键码。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkey {
@@ -107,6 +126,20 @@ pub struct Settings {
     pub allow_internet: bool,
     /// 自己填的中继；空表示用默认列表（以后默认列表更新了，没改过的人自动用上新的）。
     pub relays: Vec<String>,
+    /// 按住它拖动开表情轮盘；None（存成 "off"）表示不用表情。不会和信号触发键、暂停和对线快捷键的键相同。
+    #[serde(with = "emote_key")]
+    pub emote_trigger: Option<TriggerKey>,
+    /// 表情触发键加单击放 `click_emote`。
+    pub emote_click: bool,
+    /// 表情轮盘的 8 格：内置表情的 slug 或导入表情的 `c:` 加哈希，从正上方顺时针。
+    pub emote_wheel: Vec<String>,
+    pub click_emote: String,
+    pub emote_size_px: u32,
+    pub emote_sound: bool,
+    /// 导入的表情，最多 24 个，文件在数据目录的 `emotes/`。
+    pub custom_emotes: Vec<CustomEmote>,
+    /// 显示队友导入的表情（要传图）；关掉就不收也不发，队友的导入表情显示成问号。
+    pub friend_emotes: bool,
 }
 
 impl Default for Settings {
@@ -135,6 +168,14 @@ impl Default for Settings {
             theme: THEMES[0].into(),
             allow_internet: true,
             relays: Vec::new(),
+            emote_trigger: Some(TriggerKey::Named(NamedTrigger::Ctrl)),
+            emote_click: false,
+            emote_wheel: emotes::DEFAULT_WHEEL.map(String::from).to_vec(),
+            click_emote: emotes::DEFAULT_CLICK.into(),
+            emote_size_px: 150,
+            emote_sound: true,
+            custom_emotes: Vec::new(),
+            friend_emotes: true,
         }
     }
 }
@@ -151,6 +192,12 @@ pub struct OverlaySettings {
     pub tick_sound: bool,
     pub wheel: Vec<String>,
     pub click_ping_id: String,
+    pub emote_wheel: Vec<String>,
+    pub click_emote: String,
+    pub emote_size_px: u32,
+    pub emote_sound: bool,
+    pub custom_emotes: Vec<CustomEmote>,
+    pub friend_emotes: bool,
 }
 
 /// 数字设置的范围和步长（同 lolPing 的 LIMITS）。
@@ -184,6 +231,11 @@ const VOLUME: Limit = Limit {
     max: 100.0,
     step: 1.0,
 };
+const EMOTE_SIZE: Limit = Limit {
+    min: 80.0,
+    max: 300.0,
+    step: 1.0,
+};
 
 /// 自定义触发键不能用的键：触发键在全系统被拦下，这些键会弄坏打字、提交表单、切换焦点、移动光标。
 const UNSAFE_TRIGGER_VKS: [u32; 9] = [0x0D, 0x09, 0x08, 0x20, 0x1B, 0x25, 0x26, 0x27, 0x28];
@@ -210,7 +262,10 @@ fn bool_or(raw: Option<&Value>, default: bool) -> bool {
 }
 
 fn trigger(raw: Option<&Value>) -> TriggerKey {
-    let default = Settings::default().trigger;
+    trigger_or(raw, Settings::default().trigger)
+}
+
+fn trigger_or(raw: Option<&Value>, default: TriggerKey) -> TriggerKey {
     let Some(t) = raw.and_then(|v| serde_json::from_value::<TriggerKey>(v.clone()).ok()) else {
         return default;
     };
@@ -224,6 +279,26 @@ fn trigger(raw: Option<&Value>) -> TriggerKey {
         }
         t => t,
     }
+}
+
+/// 表情触发键：`"off"` 是关，其余按触发键的规矩（不合法的换成 Ctrl）。和信号触发键相同、
+/// 或者是自定义键、Caps Lock 而键码撞上快捷键的键时关掉：同一个键不能两用。
+fn emote_trigger(
+    raw: Option<&Value>,
+    ping: TriggerKey,
+    hotkeys: [Hotkey; 2],
+) -> Option<TriggerKey> {
+    if raw.and_then(Value::as_str) == Some("off") {
+        return None;
+    }
+    let t = trigger_or(raw, TriggerKey::Named(NamedTrigger::Ctrl));
+    let vk = match t {
+        TriggerKey::Custom { vk } => Some(vk),
+        TriggerKey::Named(NamedTrigger::CapsLock) => Some(0x14),
+        _ => None,
+    };
+    let clash = t == ping || vk.is_some_and(|vk| hotkeys.iter().any(|h| h.vk == vk));
+    (!clash).then_some(t)
 }
 
 fn hotkey(raw: Option<&Value>, default: Hotkey) -> Hotkey {
@@ -289,8 +364,12 @@ fn one_of(raw: Option<&Value>, ok: impl Fn(&str) -> bool, default: &str) -> Stri
 pub fn normalize(raw: &Value) -> Settings {
     let d = Settings::default();
     let get = |k: &str| raw.get(k);
+    let trigger = trigger(get("trigger"));
+    let toggle_hotkey = hotkey(get("toggleHotkey"), d.toggle_hotkey);
+    let laning_hotkey = hotkey(get("laningHotkey"), d.laning_hotkey);
+    let custom = emotes::normalize_custom(get("customEmotes"));
     Settings {
-        trigger: trigger(get("trigger")),
+        trigger,
         drag_threshold_px: num(
             get("dragThresholdPx"),
             &DRAG,
@@ -301,8 +380,8 @@ pub fn normalize(raw: &Value) -> Settings {
         game_check: bool_or(get("gameCheck"), d.game_check),
         wheel: wheel(get("wheel")),
         wheel_size_px: num(get("wheelSizePx"), &WHEEL_SIZE, f64::from(d.wheel_size_px)) as u32,
-        toggle_hotkey: hotkey(get("toggleHotkey"), d.toggle_hotkey),
-        laning_hotkey: hotkey(get("laningHotkey"), d.laning_hotkey),
+        toggle_hotkey,
+        laning_hotkey,
         ping_size_px: num(get("pingSizePx"), &PING_SIZE, f64::from(d.ping_size_px)) as u32,
         ping_duration_s: num(get("pingDurationS"), &DURATION, d.ping_duration_s),
         volume: num(get("volume"), &VOLUME, f64::from(d.volume)) as u32,
@@ -311,6 +390,14 @@ pub fn normalize(raw: &Value) -> Settings {
         theme: one_of(get("theme"), |t| THEMES.contains(&t), THEMES[0]),
         allow_internet: bool_or(get("allowInternet"), d.allow_internet),
         relays: relays(get("relays")),
+        emote_trigger: emote_trigger(get("emoteTrigger"), trigger, [toggle_hotkey, laning_hotkey]),
+        emote_click: bool_or(get("emoteClick"), d.emote_click),
+        emote_wheel: emotes::normalize_wheel(get("emoteWheel"), &custom),
+        click_emote: emotes::normalize_click(get("clickEmote"), &custom),
+        emote_size_px: num(get("emoteSizePx"), &EMOTE_SIZE, f64::from(d.emote_size_px)) as u32,
+        emote_sound: bool_or(get("emoteSound"), d.emote_sound),
+        custom_emotes: custom,
+        friend_emotes: bool_or(get("friendEmotes"), d.friend_emotes),
     }
 }
 
@@ -335,22 +422,14 @@ impl Settings {
 
     /// 手势状态机的配置。`enabled` 是当前的信号开关（托盘、暂停快捷键），不存在设置里。
     pub fn gesture_config(&self, enabled: bool) -> gesture::Config {
-        let trigger = match self.trigger {
-            TriggerKey::Named(NamedTrigger::Alt) => gesture::Trigger::Alt,
-            TriggerKey::Named(NamedTrigger::Ctrl) => gesture::Trigger::Ctrl,
-            TriggerKey::Named(NamedTrigger::Shift) => gesture::Trigger::Shift,
-            TriggerKey::Named(NamedTrigger::Win) => gesture::Trigger::Win,
-            TriggerKey::Named(NamedTrigger::CapsLock) => gesture::Trigger::CapsLock,
-            TriggerKey::Named(NamedTrigger::Mouse4) => gesture::Trigger::Mouse4,
-            TriggerKey::Named(NamedTrigger::Mouse5) => gesture::Trigger::Mouse5,
-            TriggerKey::Custom { vk } => gesture::Trigger::Custom(vk),
-        };
         gesture::Config {
-            trigger,
+            trigger: gesture_trigger(self.trigger),
             click_ping: self.click_ping,
             game_check: self.game_check,
-            emote_trigger: gesture::Trigger::None,
-            emote_click: false,
+            emote_trigger: self
+                .emote_trigger
+                .map_or(gesture::Trigger::None, gesture_trigger),
+            emote_click: self.emote_click,
             drag_threshold_px: self.drag_threshold_px as i32,
             toggle_mods: self.toggle_hotkey.mods,
             toggle_vk: self.toggle_hotkey.vk,
@@ -373,7 +452,34 @@ impl Settings {
             tick_sound: self.tick_sound,
             wheel: self.wheel.clone(),
             click_ping_id: self.click_ping_id.clone(),
+            emote_wheel: self.emote_wheel.clone(),
+            click_emote: self.click_emote.clone(),
+            emote_size_px: self.emote_size_px,
+            emote_sound: self.emote_sound,
+            custom_emotes: self.custom_emotes.clone(),
+            friend_emotes: self.friend_emotes,
         }
+    }
+
+    /// 在线状态里报的导入表情哈希（关了「显示队友的表情」就不报，也就没人来要）。
+    pub fn announced_emotes(&self) -> Vec<String> {
+        if self.emote_trigger.is_none() || !self.friend_emotes {
+            return Vec::new();
+        }
+        emotes::announced(&self.emote_wheel, &self.click_emote)
+    }
+}
+
+fn gesture_trigger(t: TriggerKey) -> gesture::Trigger {
+    match t {
+        TriggerKey::Named(NamedTrigger::Alt) => gesture::Trigger::Alt,
+        TriggerKey::Named(NamedTrigger::Ctrl) => gesture::Trigger::Ctrl,
+        TriggerKey::Named(NamedTrigger::Shift) => gesture::Trigger::Shift,
+        TriggerKey::Named(NamedTrigger::Win) => gesture::Trigger::Win,
+        TriggerKey::Named(NamedTrigger::CapsLock) => gesture::Trigger::CapsLock,
+        TriggerKey::Named(NamedTrigger::Mouse4) => gesture::Trigger::Mouse4,
+        TriggerKey::Named(NamedTrigger::Mouse5) => gesture::Trigger::Mouse5,
+        TriggerKey::Custom { vk } => gesture::Trigger::Custom(vk),
     }
 }
 

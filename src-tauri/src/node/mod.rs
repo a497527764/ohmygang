@@ -333,7 +333,10 @@ async fn recv_relay(inbox: &mut Option<RelayInbox>) -> Option<RelayPacket> {
 fn live_priority(body: &LiveBody) -> Priority {
     match body {
         LiveBody::Presence { .. } => Priority::Control,
-        LiveBody::Ping { .. } | LiveBody::Bye => Priority::Live,
+        LiveBody::Ping { .. } | LiveBody::Emote { .. } | LiveBody::Bye => Priority::Live,
+        // 要图和在线状态一样；图的分块最后发，不挤占信号
+        LiveBody::Want { .. } => Priority::Control,
+        LiveBody::Chunk { .. } => Priority::Backfill,
         // 充能和在线状态一样；鼠标位置在中继上另有节流（见 send_live）
         LiveBody::Charge { .. } | LiveBody::Cursor { .. } => Priority::Control,
     }

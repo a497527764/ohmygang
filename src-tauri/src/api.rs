@@ -20,7 +20,7 @@ use crate::node::NodeHandle;
 use crate::overlay::{Msg, Overlays};
 use crate::settings2::{self, OverlaySettings, Settings};
 use crate::team::{self, TeamState};
-use crate::{storage, tray};
+use crate::{emotes, storage, tray};
 
 pub struct AppState {
     pub db: Mutex<Connection>,
@@ -36,6 +36,9 @@ pub struct AppState {
     pub team: TeamState,
     /// 对线模式。
     pub lane: crate::lane::Lane,
+    /// 导入的表情和收到的队友表情。
+    pub emotes: std::sync::Arc<crate::emotes::store::Store>,
+    pub emote_net: crate::emotes::net::EmoteNet,
 }
 
 impl AppState {
@@ -100,7 +103,12 @@ pub fn settings_write(
     state: State<'_, AppState>,
     settings: Value,
 ) -> Result<Settings, String> {
-    let s = settings2::normalize(&settings);
+    apply_settings(&app, &state, &settings)
+}
+
+/// 整份设置过 `normalize` → 存库 → 交给各线程（见文件头第 2 条）。
+fn apply_settings(app: &AppHandle, state: &AppState, settings: &Value) -> Result<Settings, String> {
+    let s = settings2::normalize(settings);
     let old_relays = state.settings().active_relays();
     storage::settings::save(&state.db.lock().expect("数据库锁没有中毒"), &s)
         .map_err(|e| e.to_string())?;
@@ -111,7 +119,8 @@ pub fn settings_write(
         ));
     }
     state.overlays.send(Msg::Settings(s.overlay()));
-    apply_window_theme(&app, &s.theme);
+    apply_window_theme(app, &s.theme);
+    team::refresh_presence(app); // 轮盘上的导入表情变了，报的哈希跟着变
     let relays = s.active_relays();
     if relays != old_relays {
         let node = state.node.clone();
@@ -163,4 +172,74 @@ pub fn overlay_idle(window: WebviewWindow, state: State<'_, AppState>, idle: boo
         label: window.label().to_string(),
         idle,
     });
+}
+
+/// 导入一个表情：静态图（控制面板缩好的 WebP）必有，动画、音效可选，都是 base64。
+/// 文件检查过写进 `emotes/`，再加进设置里的导入列表（同一张图再导入一次就换掉原来那条）。
+#[tauri::command]
+pub fn emote_import(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    still: String,
+    anim: Option<String>,
+    sound: Option<String>,
+    name: String,
+    fx: u8,
+) -> Result<Settings, String> {
+    let decode = |s: &str| {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(s)
+            .map_err(|_| "文件数据格式不对".to_string())
+    };
+    let still = decode(&still)?;
+    let anim = anim.as_deref().map(decode).transpose()?;
+    let sound = sound.as_deref().map(decode).transpose()?;
+    let mut s = state.settings();
+    let id = format!("c:{}", emotes::store::hash_of(&still));
+    if s.custom_emotes.len() >= emotes::MAX_CUSTOM && !s.custom_emotes.iter().any(|c| c.id == id) {
+        return Err(emotes::store::ImportError::Full.to_string());
+    }
+    state
+        .emotes
+        .import(&still, anim.as_deref(), sound.as_deref())
+        .map_err(|e| e.to_string())?;
+    let entry = emotes::CustomEmote {
+        id: id.clone(),
+        name,
+        animated: anim.is_some(),
+        sound: sound.is_some(),
+        fx,
+    };
+    match s.custom_emotes.iter_mut().find(|c| c.id == id) {
+        Some(c) => *c = entry,
+        None => s.custom_emotes.push(entry),
+    }
+    let raw = serde_json::to_value(&s).map_err(|e| e.to_string())?;
+    apply_settings(&app, &state, &raw)
+}
+
+/// 删掉一个导入的表情：先从设置里拿掉（轮盘上的那格换回默认），再删文件。
+#[tauri::command]
+pub fn emote_remove(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Settings, String> {
+    let mut s = state.settings();
+    s.custom_emotes.retain(|c| c.id != id);
+    let raw = serde_json::to_value(&s).map_err(|e| e.to_string())?;
+    let saved = apply_settings(&app, &state, &raw)?;
+    if let Some(hash) = emotes::custom_hash(&id) {
+        state.emotes.remove(hash);
+    }
+    Ok(saved)
+}
+
+/// 在主显示器中间放一个表情看看效果。
+#[tauri::command]
+pub fn emote_preview(state: State<'_, AppState>, emote: String) {
+    if emotes::is_ref_shape(&emote) {
+        state.overlays.send(Msg::EmotePreview(emote));
+    }
 }

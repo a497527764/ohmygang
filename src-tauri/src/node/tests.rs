@@ -170,6 +170,7 @@ fn presence(status: Status) -> LiveBody {
         laning: false,
         version: "2.0.0".into(),
         platform: "win".into(),
+        emotes: Vec::new(),
     }
 }
 

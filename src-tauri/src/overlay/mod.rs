@@ -1,4 +1,4 @@
-//! 透明窗口（架构第 3 节）：每个显示器一个透明、鼠标穿透、不拿焦点、始终置顶的窗口，画轮盘和信号。
+//! 透明窗口（架构第 3 节）：每个显示器一个透明、鼠标穿透、不拿焦点、始终置顶的窗口，画轮盘、信号和表情。
 //! 窗口管理的做法移植自 lolPing `src/main/overlayManager.ts`（MIT，© 2026 Danrui Meng）。
 //!
 //! 实现流程：
@@ -7,7 +7,8 @@
 //! 2. 显示器：每次要画新东西（开轮盘、单击信号、预览、提示）前先查一遍，另外每 3 秒查一遍；
 //!    和上次不一样（插拔、改分辨率、改缩放、游戏切了显示模式）就重建：多的窗口关掉、少的补上、其余挪到新位置。
 //! 3. 手势事件进来是物理像素：开轮盘时记下中心和所在的显示器，之后每次移动都按那块屏幕的缩放算出偏移、选出高亮的格子，
-//!    只在格子变了时通知页面；松开时按同样的算法定格，在中心放那一格的信号。页面只管画，不算规则。
+//!    只在格子变了时通知页面；松开时按同样的算法定格，在中心放那一格的信号或表情。页面只管画，不算规则。
+//!    信号轮盘和表情轮盘几何一样，只是格子里的东西不同；同一时间只开一个。
 //! 4. 空闲时挪开：页面没东西画 250 毫秒后报告空闲，就把窗口挪到显示器外只留一点（截图工具就不会把它当成要截的窗口）；
 //!    要画新东西前先挪回来，并重新置顶（Windows 10 偶尔会把置顶窗口压到普通窗口下面）。
 
@@ -61,6 +62,17 @@ pub enum Msg {
         y: u16,
         id: String,
     },
+    /// 队友的表情：第几号显示器、比例位置、表情引用和出场效果（已经检查过形状）。
+    RemoteEmote {
+        from: MemberId,
+        display: u8,
+        x: u16,
+        y: u16,
+        emote: String,
+        fx: u8,
+    },
+    /// 设置页的预览：在主显示器中间放一个表情。
+    EmotePreview(String),
     /// 队友的名字，信号下面的标签用。
     Names(Vec<(MemberId, String)>),
     /// 对线模式：对手的位置和状态、谁在对我充能（每 33 毫秒一次）。
@@ -96,8 +108,8 @@ pub struct LaneOpponent {
 pub struct Hooks {
     /// 暂停快捷键切换了开关。
     pub on_toggled: Box<dyn Fn(bool) + Send>,
-    /// 本人放了一个信号，交给队伍。
-    pub on_ping: Box<dyn Fn(LiveBody) + Send>,
+    /// 本人放了一个信号或表情，交给队伍。
+    pub on_live: Box<dyn Fn(LiveBody) + Send>,
     /// 对线模式的普攻（物理像素）。
     pub on_attack: Box<dyn Fn(i32, i32) + Send>,
     /// 按了对线模式快捷键。
@@ -153,8 +165,9 @@ struct Win {
     idle: bool,
 }
 
-/// 开着的轮盘：在哪块显示器、中心在窗口里的哪儿、当前高亮哪格。
+/// 开着的轮盘：哪一种、在哪块显示器、中心在窗口里的哪儿、当前高亮哪格。
 struct OpenWheel {
+    kind: WheelKind,
     key: String,
     center: (f64, f64),
     hot: Option<usize>,
@@ -212,6 +225,26 @@ impl Actor {
                         );
                     }
                 }
+                Msg::EmotePreview(emote) => {
+                    self.refresh();
+                    if let Some(d) = self.displays.first().cloned() {
+                        let (w, h) = css_size(&d);
+                        let fx = self.own_fx(&emote);
+                        self.show(
+                            &d.key,
+                            "emote:spawn",
+                            json!({ "owner": "preview", "emote": emote, "fx": fx, "mine": true, "x": w / 2.0, "y": h / 2.0 }),
+                        );
+                    }
+                }
+                Msg::RemoteEmote {
+                    from,
+                    display,
+                    x,
+                    y,
+                    emote,
+                    fx,
+                } => self.remote_emote(from, display, (x, y), emote, fx),
                 Msg::Poll => self.refresh(),
                 Msg::Names(list) => self.names = list.into_iter().collect(),
                 Msg::RemotePing {
@@ -237,30 +270,27 @@ impl Actor {
 
     fn input(&mut self, e: Emit) {
         match e {
-            // 表情轮盘在 M4 才做；M1 的配置里表情触发键是关的，这里只是不画。
-            Emit::WheelOpen {
-                wheel: WheelKind::Emote,
-                ..
-            }
-            | Emit::Click {
-                wheel: WheelKind::Emote,
-                ..
-            } => {}
-            Emit::WheelOpen { x, y, .. } => {
+            Emit::WheelOpen { x, y, wheel } => {
                 self.refresh();
                 let Some(d) = self.display_at(x, y) else {
                     return;
                 };
                 let center = displays::to_local(&d, x, y);
                 self.wheel = Some(OpenWheel {
+                    kind: wheel,
                     key: d.key.clone(),
                     center,
                     hot: None,
                 });
+                let kind = if wheel == WheelKind::Emote {
+                    "emote"
+                } else {
+                    "ping"
+                };
                 self.show(
                     &d.key,
                     "wheel:open",
-                    json!({ "x": center.0, "y": center.1 }),
+                    json!({ "x": center.0, "y": center.1, "kind": kind }),
                 );
             }
             Emit::WheelMove { x, y, .. } => {
@@ -278,7 +308,13 @@ impl Actor {
                 let slot = self.slot_at(x, y).flatten();
                 let Some(w) = self.wheel.take() else { return };
                 self.emit(&w.key, "wheel:close", json!(null));
-                if let Some(id) = slot.and_then(|i| self.settings.wheel.get(i)).cloned() {
+                if w.kind == WheelKind::Emote {
+                    if let Some(emote) =
+                        slot.and_then(|i| self.settings.emote_wheel.get(i)).cloned()
+                    {
+                        self.own_emote(&w.key, w.center, emote);
+                    }
+                } else if let Some(id) = slot.and_then(|i| self.settings.wheel.get(i)).cloned() {
                     self.emit(
                         &w.key,
                         "ping:spawn",
@@ -287,12 +323,17 @@ impl Actor {
                     self.share_ping(&w.key, w.center, id);
                 }
             }
-            Emit::Click { x, y, .. } => {
+            Emit::Click { x, y, wheel } => {
                 self.refresh();
                 let Some(d) = self.display_at(x, y) else {
                     return;
                 };
                 let (lx, ly) = displays::to_local(&d, x, y);
+                if wheel == WheelKind::Emote {
+                    let emote = self.settings.click_emote.clone();
+                    self.own_emote(&d.key, (lx, ly), emote);
+                    return;
+                }
                 let id = self.settings.click_ping_id.clone();
                 self.show(&d.key, "ping:spawn", json!({ "id": id, "x": lx, "y": ly }));
                 self.share_ping(&d.key, (lx, ly), id);
@@ -310,18 +351,80 @@ impl Actor {
     }
 
     /// 本人的信号交给队伍：位置换成「第几号显示器 + 比例」，落到队友同号显示器的同一比例处。
-    fn share_ping(&self, key: &str, (lx, ly): (f64, f64), id: String) {
-        let Some(i) = self.displays.iter().position(|d| d.key == key) else {
-            return;
-        };
+    fn share_ping(&self, key: &str, at: (f64, f64), id: String) {
+        if let Some((display, x, y)) = self.shared_pos(key, at) {
+            (self.hooks.on_live)(LiveBody::Ping { display, x, y, id });
+        }
+    }
+
+    fn shared_pos(&self, key: &str, (lx, ly): (f64, f64)) -> Option<(u8, u16, u16)> {
+        let i = self.displays.iter().position(|d| d.key == key)?;
         let (w, h) = css_size(&self.displays[i]);
         let display = u8::try_from(i + 1).unwrap_or(u8::MAX);
-        (self.hooks.on_ping)(LiveBody::Ping {
-            display,
-            x: to_ratio(lx, w),
-            y: to_ratio(ly, h),
-            id,
-        });
+        Some((display, to_ratio(lx, w), to_ratio(ly, h)))
+    }
+
+    /// 导入表情自己选的出场效果；内置表情是 0。
+    fn own_fx(&self, emote: &str) -> u8 {
+        self.settings
+            .custom_emotes
+            .iter()
+            .find(|c| c.id == emote)
+            .map_or(0, |c| c.fx)
+    }
+
+    /// 本人的表情：画在这里，同时交给队伍。
+    fn own_emote(&mut self, key: &str, (lx, ly): (f64, f64), emote: String) {
+        let fx = self.own_fx(&emote);
+        self.show(
+            key,
+            "emote:spawn",
+            json!({ "owner": "self", "emote": emote, "fx": fx, "mine": true, "x": lx, "y": ly }),
+        );
+        if let Some((display, x, y)) = self.shared_pos(key, (lx, ly)) {
+            (self.hooks.on_live)(LiveBody::Emote {
+                display,
+                x,
+                y,
+                emote,
+                fx,
+            });
+        }
+    }
+
+    /// 队友的表情：和信号一样落到同号显示器，下面带名字；每人同时只留一个。
+    fn remote_emote(
+        &mut self,
+        from: MemberId,
+        display: u8,
+        (x, y): (u16, u16),
+        emote: String,
+        fx: u8,
+    ) {
+        self.refresh();
+        let target = usize::from(display)
+            .checked_sub(1)
+            .and_then(|i| self.displays.get(i))
+            .or(self.displays.first());
+        let Some(d) = target.cloned() else {
+            return;
+        };
+        let (w, h) = css_size(&d);
+        let name = self
+            .names
+            .get(&from)
+            .cloned()
+            .unwrap_or_else(|| "队友".into());
+        let owner: String = from[..6].iter().map(|b| format!("{b:02x}")).collect();
+        self.show(
+            &d.key,
+            "emote:spawn",
+            json!({
+                "owner": owner, "emote": emote, "fx": fx, "mine": false,
+                "x": from_ratio(x, w), "y": from_ratio(y, h),
+                "tag": { "name": name, "color": tag_color(&from) },
+            }),
+        );
     }
 
     /// 队友的信号：落到本机同号显示器（没有这一号就落到 1 号）的同一比例处，下面带他的名字。

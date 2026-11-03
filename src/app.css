@@ -899,6 +899,81 @@ input::placeholder {
   font: 12px/1.5 Consolas, "Cascadia Mono", monospace;
 }
 
+/* ---------- 表情页 ---------- */
+/* 表情图是方的彩图：画成圆的，不染金色 */
+.wheel-editor.emote .mini-slot img,
+.emote-palette .palette-item img {
+  border-radius: 50%;
+  filter: none;
+}
+/* 44 个内置表情加导入的：列表自己滚，页面不至于拉得太长 */
+.emote-palette {
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.primary.small {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+.custom-emotes {
+  list-style: none;
+  margin: 12px 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.custom-emote {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.custom-emote img,
+.import-preview {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  flex: none;
+}
+.custom-emote input {
+  width: 150px;
+}
+.custom-emote .hint {
+  flex: 1;
+  min-width: 0;
+}
+.emote-import {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.emote-import input:not([type="file"]) {
+  width: 150px;
+}
+/* 选文件的按钮：真正的 <input type="file"> 藏在里面 */
+.file-pick {
+  position: relative;
+  cursor: pointer;
+}
+.file-pick input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.file-pick:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 @media (max-width: 920px) {
   .split {
     grid-template-columns: 1fr;

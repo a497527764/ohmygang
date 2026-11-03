@@ -4,7 +4,7 @@
 //! 1. 命令都是异步的：在节点任务里执行（`NodeHandle::call`），完了返回整份 `TeamView`，控制面板直接换上。
 //!    退出队伍时先发一帧 Bye 再写 Leave，队友马上就能看到人走了。
 //! 2. 节点的通知（`on_node_event`）在节点任务里调用，不能等节点：
-//!    队友的信号交给透明窗口；在线状态记进 `TeamState`；队伍有变化（进队、退出、改名、资料、解散）就
+//!    队友的信号和表情交给透明窗口，导入表情的传输帧交给 `emotes::net`；在线状态记进 `TeamState`；队伍有变化（进队、退出、改名、资料、解散）就
 //!    另开一个异步任务把队员名字交给透明窗口、通知控制面板刷新。
 //! 3. 本人的在线状态（`refresh_presence`）：信号关着是「暂停」，5 分钟没碰键鼠是「离开」，否则「在线」。
 //!    变了才交给节点，节点自己按周期重复发。
@@ -21,6 +21,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::api::AppState;
 use crate::app_core::{AppError, Core, CoreEvent, MemberView, RoomStatus, RoomSummary};
 use crate::crypto::{MemberId, RoomId};
+use crate::emotes::{self, net::NetMsg};
 use crate::identity::IdentityView;
 use crate::lane::LaneMsg;
 use crate::node::{NodeEvent, Outbox, now_ms};
@@ -405,11 +406,17 @@ pub fn refresh_presence(app: &AppHandle) {
     } else {
         Status::Online
     };
+    let announced = state
+        .settings
+        .lock()
+        .expect("设置锁没有中毒")
+        .announced_emotes();
     let body = LiveBody::Presence {
         status,
         laning: state.lane.is_on(),
         version: app.package_info().version.to_string(),
         platform: platform_name().into(),
+        emotes: emotes::join_announced(&announced),
     };
     let mut mine = state.team.mine.lock().expect("在线状态锁没有中毒");
     if mine.as_ref() != Some(&body) {
@@ -479,12 +486,48 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                 y,
                 id,
             }),
+            LiveBody::Emote {
+                display,
+                x,
+                y,
+                emote,
+                fx,
+            } => {
+                if emotes::is_ref_shape(&emote) && fx < emotes::FX_VARIANTS {
+                    state.overlays.send(Msg::RemoteEmote {
+                        from,
+                        display,
+                        x,
+                        y,
+                        emote,
+                        fx,
+                    });
+                }
+            }
+            LiveBody::Want { to, hash, need } => state.emote_net.send(NetMsg::Want {
+                from,
+                to,
+                hash: hex(&hash),
+                need,
+            }),
+            LiveBody::Chunk { hash, i, n, bytes } => state.emote_net.send(NetMsg::Chunk {
+                from,
+                hash: hex(&hash),
+                i,
+                n,
+                bytes,
+            }),
             LiveBody::Presence {
                 status,
                 laning,
                 platform,
+                emotes: announced,
                 ..
             } => {
+                state.emote_net.send(NetMsg::Announced {
+                    from,
+                    hashes: emotes::split_announced(&announced),
+                });
                 let mut presence = state.team.presence.lock().expect("在线状态锁没有中毒");
                 let changed = presence.get(&from).is_none_or(|s| {
                     s.status != status || s.laning != laning || s.at.elapsed() > PRESENCE_STALE
@@ -515,6 +558,7 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                     .expect("在线状态锁没有中毒")
                     .remove(&from);
                 state.lane.send(LaneMsg::Gone(from));
+                state.emote_net.send(NetMsg::Gone(from));
                 let _ = app.emit_to("main", "team://changed", ());
             }
             LiveBody::Cursor { display, x, y } => state.lane.send(LaneMsg::Cursor {

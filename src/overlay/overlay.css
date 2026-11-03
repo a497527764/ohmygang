@@ -6,22 +6,25 @@
 }
 
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; user-select: none; }
-#lane, #pings, #toasts { position: fixed; inset: 0; pointer-events: none; }
+#lane, #pings, #emotes, #toasts { position: fixed; inset: 0; pointer-events: none; }
 
 /* ---------- 轮盘 ---------- */
-#wheel {
+#wheel, #emoteWheel {
   position: absolute; left: 0; top: 0; width: 600px; height: 600px; margin: -300px 0 0 -300px;
   pointer-events: none; opacity: 0; transform: scale(.85); transition: opacity .12s ease-out, transform .12s ease-out;
 }
-#wheel.open { opacity: 1; transform: scale(1); }
-#wheel .wedge { transition: fill-opacity .08s; }
-#wheel .icon {
+#wheel.open, #emoteWheel.open { opacity: 1; transform: scale(1); }
+#wheel .wedge, #emoteWheel .wedge { transition: fill-opacity .08s; }
+#wheel .icon, #emoteWheel .icon {
   transition: filter .1s, transform .1s; transform-box: fill-box; transform-origin: center;
   filter: grayscale(1) sepia(.75) saturate(1.3) brightness(1.15);
 }
-#wheel .icon.hot { filter: none; transform: scale(1.18); }
-#wheel .centerTxt { font: 600 15px var(--sans); letter-spacing: 1px; fill: #1fa9e0; }
-#wheel .backTxt { font: 600 9px var(--sans); fill: #6c7a7c; letter-spacing: .5px; }
+#wheel .icon.hot, #emoteWheel .icon.hot { filter: none; transform: scale(1.18); }
+#wheel .centerTxt, #emoteWheel .centerTxt { font: 600 15px var(--sans); letter-spacing: 1px; fill: #1fa9e0; }
+#wheel .backTxt, #emoteWheel .backTxt { font: 600 9px var(--sans); fill: #6c7a7c; letter-spacing: .5px; }
+/* 表情图是方的：像游戏里的表情轮盘一样画成圆的，而且保持原色（只有信号图标染成金色）。 */
+#emoteWheel .icon, #emoteWheel .hub { clip-path: circle(50%); }
+#emoteWheel .icon { filter: none; }
 
 /* ---------- 信号（大小跟 --size，时长跟 --dur） ---------- */
 .ping { position: absolute; width: 0; height: 0; pointer-events: none; --size: 110px; --dur: 3.2s; }
@@ -82,7 +85,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 @keyframes toastOut { to { transform: translateY(12px); opacity: 0 } }
 
 @media (prefers-reduced-motion: reduce) {
-  #wheel { transition: none; }
+  #wheel, #emoteWheel { transition: none; }
 }
 
 /* ---------- 对线：对手的小英雄、范围圈、充能圈、冷却 ---------- */
@@ -131,3 +134,61 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 @keyframes hsRing { 0% { transform: scale(.3); opacity: 1 } 100% { transform: scale(1.6); opacity: 0 } }
 @keyframes hsText { 0% { transform: translate(-50%, 8px); opacity: 0 } 20% { transform: translate(-50%, 0); opacity: 1 } 80% { opacity: 1 } 100% { transform: translate(-50%, -10px); opacity: 0 } }
 @media (prefers-reduced-motion: reduce) { .minion.charged .face { animation: none; } }
+
+/* ---------- 表情（盒子和 6 种出场效果移植自 lolPing src/renderer/shared/emoteFx.css；--size 是图的宽，--dur 是停留 3 秒） ---------- */
+.emote { position: absolute; width: 0; height: 0; pointer-events: none; --size: 150px; --dur: 3s; }
+.emote .tag {
+  position: absolute; left: 0; top: calc(var(--size) * 0.5 + 8px); transform: translateX(-50%); white-space: nowrap;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box;
+  padding: 1px 7px; border-radius: 4px; background: rgba(8, 12, 16, .62); color: var(--tag);
+  font: 600 13px/18px var(--sans); letter-spacing: .2px; text-shadow: 0 1px 2px #000;
+  animation: tagIn .25s ease-out both, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards;
+}
+/* 内置表情是做好的动画：320 像素的画布里画着 256 像素的图，所以画成图宽的 1.25 倍。 */
+.emote .sheet {
+  position: absolute; left: calc(var(--size) * -0.625); top: calc(var(--size) * -0.625);
+  width: calc(var(--size) * 1.25); height: calc(var(--size) * 1.25);
+}
+.emote .bubble {
+  position: absolute; left: 8%; top: 8%; width: 84%; height: 68%; box-sizing: border-box; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: #f4efe2; border: 3px solid #c8aa6e; color: #1f2a30; filter: drop-shadow(0 0 8px #fff8);
+  font: 700 calc(var(--size) * .4)/1 var(--sans);
+}
+.emote .bubble::after {
+  content: ''; position: absolute; left: 24%; bottom: -7px; width: 14px; height: 14px; box-sizing: border-box;
+  background: #f4efe2; border: solid #c8aa6e; border-width: 0 3px 3px 0; transform: rotate(45deg) skew(8deg, 8deg);
+}
+/* 导入的图（或占位）：弹出、轻轻上下浮、最后 0.35 秒缩小淡出 */
+.emote .fx {
+  position: absolute; left: calc(var(--size) * -0.5); top: calc(var(--size) * -0.5); width: var(--size); height: var(--size);
+  animation: emoteIn .25s ease-out both, emoteBob 1.4s ease-in-out infinite, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards;
+}
+.emote .fx img { display: block; width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 0 8px #fff8); }
+@keyframes emoteIn { 0% { transform: scale(0) } 60% { transform: scale(1.15) } 100% { transform: scale(1) } }
+@keyframes emoteBob { 0%, 100% { translate: 0 0 } 25% { translate: 0 -4px } 75% { translate: 0 4px } }
+@keyframes emoteOut { from { transform: scale(1); opacity: 1 } to { transform: scale(.85); opacity: 0 } }
+/* v1 旋转进来、左右轻摆 */
+.emote .fx.v1 { animation: fxSpinIn .55s cubic-bezier(.25,.8,.3,1.15) both, fxSway 2.2s ease-in-out .55s infinite, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards; }
+@keyframes fxSpinIn { 0% { transform: rotate(-220deg) scale(.2); opacity: 0 } 70% { transform: rotate(14deg) scale(1.06); opacity: 1 } 100% { transform: none } }
+@keyframes fxSway { 0%, 100% { transform: rotate(-2.5deg) } 50% { transform: rotate(2.5deg) } }
+/* v2 落下来弹两下，最后跳走 */
+.emote .fx.v2 { animation: fxDrop .6s cubic-bezier(.3,.6,.4,1) both, fxMiniBounce 1.9s ease-in-out .6s infinite, fxBounceOut .4s ease-in calc(var(--dur) - .4s) forwards; }
+@keyframes fxDrop { 0% { transform: translateY(calc(var(--size) * -1.2)) scaleY(1.15); opacity: 0 } 40% { transform: none; opacity: 1 } 55% { transform: translateY(calc(var(--size) * -.24)) } 70% { transform: translateY(0) scale(1.06, .94) } 84% { transform: translateY(calc(var(--size) * -.07)) } 100% { transform: none } }
+@keyframes fxMiniBounce { 0%, 100% { translate: 0 0 } 50% { translate: 0 -7px } }
+@keyframes fxBounceOut { 0% { transform: none; opacity: 1 } 25% { transform: translateY(calc(var(--size) * .09)) scale(1.05, .93) } 100% { transform: translateY(calc(var(--size) * -1)); opacity: 0 } }
+/* v3 从一团模糊的闪光里聚焦出来，然后呼吸 */
+.emote .fx.v3 { animation: fxFlashIn .32s cubic-bezier(.2,1.3,.4,1) both, fxBreathe 2.4s ease-in-out .35s infinite, fxFlashOut .3s ease-in calc(var(--dur) - .3s) forwards; }
+.emote .fx.v3 img { filter: drop-shadow(0 0 12px #ffffffb0); }
+@keyframes fxFlashIn { 0% { transform: scale(1.55); filter: blur(7px) brightness(2); opacity: 0 } 55% { opacity: 1 } 100% { transform: none; filter: none } }
+@keyframes fxBreathe { 0%, 100% { transform: scale(1) } 50% { transform: scale(1.04) } }
+@keyframes fxFlashOut { from { transform: none; filter: none; opacity: 1 } to { transform: scale(1.3); filter: blur(6px); opacity: 0 } }
+/* v4 从上方的支点荡进来，像钟摆一样摆 */
+.emote .fx.v4 { transform-origin: 50% -20%; animation: fxSwingIn .75s cubic-bezier(.35,.85,.35,1) both, fxPendulum 2.1s ease-in-out .75s infinite, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards; }
+@keyframes fxSwingIn { 0% { transform: rotate(80deg); opacity: 0 } 22% { opacity: 1 } 55% { transform: rotate(-17deg) } 78% { transform: rotate(9deg) } 100% { transform: none } }
+@keyframes fxPendulum { 0%, 100% { transform: rotate(-3deg) } 50% { transform: rotate(3deg) } }
+/* v5 轻轻落下，然后像心跳一样带着暖光跳动 */
+.emote .fx.v5 { animation: fxHeartIn .3s ease-out both, fxHeart 1.2s ease-in-out .3s infinite, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards; }
+.emote .fx.v5 img { filter: drop-shadow(0 2px 14px #ffe9a8d0); }
+@keyframes fxHeartIn { 0% { transform: scale(.3); opacity: 0 } 100% { transform: none; opacity: 1 } }
+@keyframes fxHeart { 0%, 28%, 55%, 100% { transform: scale(1) } 10% { transform: scale(1.1) } 22% { transform: scale(1.01) } 40% { transform: scale(1.08) } }

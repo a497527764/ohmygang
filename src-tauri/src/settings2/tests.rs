@@ -61,6 +61,31 @@ fn a_saved_file_reads_back_the_same() {
         theme: "dark".into(),
         allow_internet: false,
         relays: vec!["wss://my.relay".into()],
+        emote_trigger: None,
+        emote_click: true,
+        emote_wheel: [
+            "facepalm",
+            "wahaha",
+            "gasp",
+            "pain",
+            "bee_sad",
+            "gg_heart",
+            "bee_happy",
+            "bee_mad",
+        ]
+        .map(String::from)
+        .to_vec(),
+        click_emote: "c:0123456789abcdef0123456789abcdef".into(),
+        emote_size_px: 200,
+        emote_sound: false,
+        custom_emotes: vec![CustomEmote {
+            id: "c:0123456789abcdef0123456789abcdef".into(),
+            name: "阿钢".into(),
+            animated: true,
+            sound: false,
+            fx: 4,
+        }],
+        friend_emotes: false,
     };
     assert_eq!(normalize(&serde_json::to_value(&s).unwrap()), s);
 }
@@ -210,7 +235,8 @@ fn gesture_config_follows_the_settings() {
     let c = s.gesture_config(false);
     assert_eq!(c.trigger, GTrigger::Mouse4);
     assert!(c.click_ping && c.game_check && !c.enabled);
-    assert_eq!(c.emote_trigger, GTrigger::None);
+    assert_eq!(c.emote_trigger, GTrigger::Ctrl);
+    assert!(!c.emote_click);
     assert_eq!(c.drag_threshold_px, 15);
     assert_eq!((c.toggle_mods, c.toggle_vk), (MOD_ALT, 0x4F));
     s.trigger = TriggerKey::Custom { vk: 0x47 };
@@ -255,4 +281,73 @@ fn laning_hotkey_defaults_to_ctrl_alt_l_and_reaches_the_gesture() {
     assert_eq!((c.laning_mods, c.laning_vk), (MOD_CTRL | MOD_ALT, 0x4C));
     let bad = normalize(&json!({ "laningHotkey": { "mods": 4, "vk": 0x4C } }));
     assert_eq!(bad.laning_hotkey, d.laning_hotkey, "只有 Shift 不行");
+}
+
+#[test]
+fn emote_key_is_off_or_a_trigger_that_clashes_with_nothing() {
+    let d = Settings::default();
+    assert_eq!(d.emote_trigger, Some(TriggerKey::Named(NamedTrigger::Ctrl)));
+    assert_eq!(
+        serde_json::to_value(&d).unwrap()["emoteTrigger"],
+        json!("ctrl")
+    );
+    let off = normalize(&json!({ "emoteTrigger": "off" }));
+    assert_eq!(off.emote_trigger, None);
+    assert_eq!(
+        serde_json::to_value(&off).unwrap()["emoteTrigger"],
+        json!("off")
+    );
+    assert_eq!(off.gesture_config(true).emote_trigger, GTrigger::None);
+    assert_eq!(
+        normalize(&json!({ "emoteTrigger": "mouse5" })).emote_trigger,
+        Some(TriggerKey::Named(NamedTrigger::Mouse5))
+    );
+    assert_eq!(
+        normalize(&json!({ "emoteTrigger": 7 })).emote_trigger,
+        d.emote_trigger,
+        "坏值换 Ctrl"
+    );
+    // 和信号触发键一样：关掉
+    assert_eq!(normalize(&json!({ "trigger": "ctrl" })).emote_trigger, None);
+    // 自定义键撞上暂停、对线快捷键的键：关掉
+    assert_eq!(
+        normalize(&json!({ "emoteTrigger": { "vk": 0x50 } })).emote_trigger,
+        None
+    );
+    assert_eq!(
+        normalize(&json!({ "emoteTrigger": { "vk": 0x4C } })).emote_trigger,
+        None
+    );
+    assert_eq!(
+        normalize(&json!({ "emoteTrigger": { "vk": 0x54 } })).emote_trigger,
+        Some(TriggerKey::Custom { vk: 0x54 })
+    );
+}
+
+#[test]
+fn emote_wheel_follows_the_imported_list() {
+    let h = "0123456789abcdef0123456789abcdef";
+    let mut wheel = emotes::DEFAULT_WHEEL.map(String::from).to_vec();
+    wheel[3] = format!("c:{h}");
+    let with = normalize(&json!({
+        "customEmotes": [{ "id": format!("c:{h}"), "name": "图", "fx": 2 }],
+        "emoteWheel": wheel, "clickEmote": format!("c:{h}"), "emoteSizePx": 999
+    }));
+    assert_eq!(with.emote_wheel[3], format!("c:{h}"));
+    assert_eq!(with.click_emote, format!("c:{h}"));
+    assert_eq!(with.emote_size_px, 300);
+    assert_eq!(with.announced_emotes(), vec![h.to_string()]);
+    let mut no_friends = with.clone();
+    no_friends.friend_emotes = false;
+    assert!(
+        no_friends.announced_emotes().is_empty(),
+        "不显示队友的表情就也不发自己的"
+    );
+    // 导入的删了：轮盘和单击表情都换回默认
+    let without = normalize(&json!({ "emoteWheel": wheel, "clickEmote": format!("c:{h}") }));
+    assert_eq!(
+        without.emote_wheel,
+        emotes::DEFAULT_WHEEL.map(String::from).to_vec()
+    );
+    assert_eq!(without.click_emote, emotes::DEFAULT_CLICK);
 }

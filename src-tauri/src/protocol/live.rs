@@ -1,4 +1,4 @@
-//! 实时帧（2.0 架构第 5 节）：在线状态、信号、对线的鼠标和充能，以后加上表情、文字、投票。
+//! 实时帧（2.0 架构第 5 节）：在线状态、信号、表情和导入表情的传输、对线的鼠标和充能，以后加上文字、投票。
 //! 不入库、不补齐，丢了就丢了。做法参考 lolPing 设计文档 12 节（MIT，© 2026 Danrui Meng）。
 //!
 //! 实现流程：
@@ -60,6 +60,9 @@ pub enum LiveBody {
         /// win、mac、linux。
         #[serde(rename = "o")]
         platform: String,
+        /// 轮盘上导入表情的哈希，每个 16 字节连在一起，最多 9 个（没有这张图的队友来要）。
+        #[serde(rename = "e", default, with = "serde_bytes")]
+        emotes: Vec<u8>,
     },
     /// 信号：第几号显示器、0–65535 的比例位置、信号 id。
     #[serde(rename = "G")]
@@ -72,6 +75,42 @@ pub enum LiveBody {
         y: u16,
         #[serde(rename = "i")]
         id: String,
+    },
+    /// 表情：第几号显示器、比例位置、表情引用（内置的 slug 或 `c:` 加哈希）、导入表情的出场效果。
+    #[serde(rename = "E")]
+    Emote {
+        #[serde(rename = "d")]
+        display: u8,
+        #[serde(rename = "x")]
+        x: u16,
+        #[serde(rename = "y")]
+        y: u16,
+        #[serde(rename = "r")]
+        emote: String,
+        #[serde(rename = "f", default)]
+        fx: u8,
+    },
+    /// 向 `to` 要一张导入表情的静态图；`need` 是缺的块号，空表示全要。
+    #[serde(rename = "W")]
+    Want {
+        #[serde(rename = "t", with = "serde_bytes")]
+        to: MemberId,
+        #[serde(rename = "h", with = "serde_bytes")]
+        hash: [u8; 16],
+        #[serde(rename = "n", with = "serde_bytes")]
+        need: Vec<u8>,
+    },
+    /// 静态图的一块：第 i 块、共 n 块。
+    #[serde(rename = "H")]
+    Chunk {
+        #[serde(rename = "h", with = "serde_bytes")]
+        hash: [u8; 16],
+        #[serde(rename = "i")]
+        i: u8,
+        #[serde(rename = "n")]
+        n: u8,
+        #[serde(rename = "b", with = "serde_bytes")]
+        bytes: Vec<u8>,
     },
     /// 对线模式下本人鼠标的位置：第几号显示器、0–65535 的比例。只在开着对线模式、鼠标动了时发。
     #[serde(rename = "C")]
@@ -233,6 +272,7 @@ mod tests {
             laning: true,
             version: "2.0.0".into(),
             platform: "win".into(),
+            emotes: vec![9; 32],
         };
         let w = sign_live(&me(), &ROOM, 6, NOW, &presence);
         assert_eq!(open_live(&w, &ROOM).unwrap().body, presence);
@@ -315,11 +355,78 @@ mod tests {
         assert_eq!(from_ratio(65535, 1080.0), 1080.0);
     }
 
+    fn wire_len(body: &LiveBody) -> usize {
+        let w = sign_live(&me(), &ROOM, u64::MAX, u64::MAX, body);
+        crate::protocol::frame::encode_frame(&crate::protocol::frame::Frame::Live(w)).len()
+    }
+
     #[test]
     fn frames_are_small() {
-        let w = sign_live(&me(), &ROOM, u64::MAX, u64::MAX, &ping());
-        let mut out = Vec::new();
-        ciborium::into_writer(&w, &mut out).unwrap();
-        assert!(out.len() < 150, "信号帧 {} 字节", out.len());
+        assert!(wire_len(&ping()) < 160, "信号帧 {} 字节", wire_len(&ping()));
+        let emote = LiveBody::Emote {
+            display: 1,
+            x: 1,
+            y: 2,
+            emote: format!("c:{}", "a".repeat(32)),
+            fx: 5,
+        };
+        assert!(wire_len(&emote) < 200);
+    }
+
+    /// 最大的分块、报满 9 个哈希的在线状态都要装得进一个包。
+    #[test]
+    fn biggest_frames_fit_one_packet() {
+        use crate::emotes::transfer::{CHUNK_BYTES, CHUNKS_MAX};
+        use crate::protocol::frame::MAX_FRAME_LEN;
+        let chunk = LiveBody::Chunk {
+            hash: [0xff; 16],
+            i: 255,
+            n: 255,
+            bytes: vec![0xff; CHUNK_BYTES],
+        };
+        assert!(
+            wire_len(&chunk) <= MAX_FRAME_LEN,
+            "分块帧 {} 字节",
+            wire_len(&chunk)
+        );
+        let want = LiveBody::Want {
+            to: [0xff; 32],
+            hash: [0xff; 16],
+            need: (0..CHUNKS_MAX).collect(),
+        };
+        assert!(wire_len(&want) <= MAX_FRAME_LEN);
+        let presence = LiveBody::Presence {
+            status: Status::Online,
+            laning: true,
+            version: "20.10.100-beta.1".into(),
+            platform: "linux".into(),
+            emotes: vec![0xff; 16 * crate::emotes::ANNOUNCED_MAX],
+        };
+        assert!(wire_len(&presence) <= MAX_FRAME_LEN);
+    }
+
+    /// 旧的在线状态（没有 e）照样能读，导入表情当作没有。
+    #[test]
+    fn presence_without_emotes_still_opens() {
+        #[derive(Serialize)]
+        enum Old {
+            #[serde(rename = "P")]
+            Presence {
+                s: Status,
+                l: bool,
+                v: String,
+                o: String,
+            },
+        }
+        let old = Old::Presence {
+            s: Status::Online,
+            l: false,
+            v: "2.0.0".into(),
+            o: "win".into(),
+        };
+        let LiveBody::Presence { emotes, .. } = body::decode(&body::encode(&old)).unwrap() else {
+            panic!("不是在线状态");
+        };
+        assert!(emotes.is_empty());
     }
 }

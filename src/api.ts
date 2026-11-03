@@ -3,6 +3,7 @@
 // 设置的合法性（范围、触发键、快捷键、轮盘）由 Rust 的 settings2::normalize 把关，这里只做类型声明和转发。
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { CustomEmote } from "./shared/emotes";
 import type { Hotkey } from "./shared/keys";
 import type { PingId } from "./shared/pings";
 
@@ -31,6 +32,17 @@ export interface Settings {
   allowInternet: boolean;
   /** 自己填的中继；空表示用默认列表。 */
   relays: string[];
+  /** 按住它拖动开表情轮盘；"off" 表示不用表情。和信号触发键、快捷键的键撞了时 Rust 会改成 "off"。 */
+  emoteTrigger: TriggerKey | "off";
+  emoteClick: boolean;
+  /** 8 格：内置表情的 slug 或导入表情的 "c:" 加哈希。 */
+  emoteWheel: string[];
+  clickEmote: string;
+  emoteSizePx: number;
+  emoteSound: boolean;
+  customEmotes: CustomEmote[];
+  /** 显示队友导入的表情（要传图）。 */
+  friendEmotes: boolean;
 }
 
 export interface Status {
@@ -48,6 +60,11 @@ export const setEnabled = (on: boolean): Promise<void> => invoke("pings_set_enab
 /** 录按键期间挂起拦截，键都交给控制面板。 */
 export const suspendInput = (on: boolean): Promise<void> => invoke("input_suspend", { on });
 export const previewPing = (id: PingId): Promise<void> => invoke("ping_preview", { id });
+export const previewEmote = (emote: string): Promise<void> => invoke("emote_preview", { emote });
+/** 导入表情：文件都是 base64，返回存好后的设置。 */
+export const importEmote = (args: { still: string; anim: string | null; sound: string | null; name: string; fx: number }): Promise<Settings> =>
+  invoke("emote_import", args);
+export const removeEmote = (id: string): Promise<Settings> => invoke("emote_remove", { id });
 
 export const onEnabled = (cb: (on: boolean) => void): Promise<UnlistenFn> =>
   listen<boolean>("pings://enabled", (e) => cb(e.payload));

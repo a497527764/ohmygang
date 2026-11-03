@@ -32,6 +32,8 @@ export class Wheel {
 
   constructor(
     private readonly svg: SVGSVGElement,
+    /** 中心的字：PING 或 EMOTE。 */
+    private readonly label: string,
     /** 高亮换格时调用（放刻度声）。 */
     private readonly onHover: () => void,
   ) {
@@ -47,7 +49,7 @@ export class Wheel {
     });
   }
 
-  /** 中间的图标：触发键加单击会放的那个信号。 */
+  /** 中间的图标：触发键加单击会放的那个信号或表情。 */
   setCenterIcon(url: string): void {
     this.hub?.setAttribute("href", url);
   }
@@ -131,7 +133,7 @@ export class Wheel {
     el("circle", { r: innerR, fill: `url(#${id}-core)`, stroke: "#c8aa6e", "stroke-width": 3, class: "core" }, svg);
     el("circle", { r: innerR - 7, fill: "none", stroke: "#8a7448", "stroke-width": 1, opacity: 0.6 }, svg);
     this.hub = el("image", { x: -20, y: -58, width: 40, height: 40, class: "hub" }, svg);
-    el("text", { x: 0, y: 6, "text-anchor": "middle", class: "centerTxt" }, svg).textContent = "PING";
+    el("text", { x: 0, y: 6, "text-anchor": "middle", class: "centerTxt" }, svg).textContent = this.label;
     el("text", { x: 6, y: 50, "text-anchor": "middle", class: "backTxt" }, svg).textContent = "BACK";
     const mouse = el("g", { opacity: 0.55, transform: "translate(-26,40)" }, svg);
     el("rect", { x: 0, y: 0, width: 11, height: 16, rx: 5.5, fill: "none", stroke: "#6c7a7c", "stroke-width": 1.3 }, mouse);

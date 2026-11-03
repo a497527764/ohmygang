@@ -2,6 +2,7 @@ pub mod api;
 pub mod app_core;
 pub mod base32;
 pub mod crypto;
+pub mod emotes;
 pub mod error;
 pub mod heartsteel;
 pub mod identity;
@@ -50,6 +51,31 @@ pub fn run() {
             start(app)?;
             Ok(())
         })
+        // 导入的表情和收到的队友表情：emote://localhost/<哈希>.<webp|anim|sound>（Windows 上是 http://emote.localhost/…）。
+        // 只认这种名字，别的一律 404；读文件放到别的线程，不卡主线程。
+        .register_asynchronous_uri_scheme_protocol("emote", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let name = request.uri().path().trim_start_matches('/').to_string();
+            std::thread::spawn(move || {
+                let found = app
+                    .try_state::<AppState>()
+                    .and_then(|state| state.emotes.read(&name));
+                let response = match found {
+                    Some((bytes, mime)) => tauri::http::Response::builder()
+                        .header("Content-Type", mime)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header("Cache-Control", "no-store")
+                        .body(bytes),
+                    None => tauri::http::Response::builder()
+                        .status(404)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(Vec::new()),
+                };
+                if let Ok(r) = response {
+                    responder.respond(r);
+                }
+            });
+        })
         // 点控制面板的关闭按钮只收进托盘，信号照常工作；真正退出用托盘菜单的「退出」。
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event
@@ -68,6 +94,9 @@ pub fn run() {
             api::ping_preview,
             api::overlay_hello,
             api::overlay_idle,
+            api::emote_import,
+            api::emote_remove,
+            api::emote_preview,
             team::team_view,
             team::team_create,
             team::team_join,
@@ -122,7 +151,7 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let (attack_to, laning_to) = (lane.clone(), lane.clone());
     let hooks = Hooks {
         on_toggled,
-        on_ping: Box::new(move |ping| share.send_live(ping)),
+        on_live: Box::new(move |body| share.send_live(body)),
         on_attack: Box::new(move |x, y| attack_to.send(lane::LaneMsg::Attack { x, y })),
         on_laning: Box::new(move || laning_to.send(lane::LaneMsg::Set(None))),
     };
@@ -136,6 +165,8 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => (None, Some(e)),
     };
     let theme = settings.theme.clone();
+    let emote_store = Arc::new(emotes::store::Store::open(&dir));
+    let emote_net = emotes::net::EmoteNet::start(app.handle(), emote_store.clone());
     app.manage(AppState {
         db: Mutex::new(db),
         settings: Mutex::new(settings),
@@ -146,6 +177,8 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         node,
         team: Default::default(),
         lane,
+        emotes: emote_store,
+        emote_net,
     });
     tray::setup(app, true)?;
     api::apply_window_theme(app.handle(), &theme);

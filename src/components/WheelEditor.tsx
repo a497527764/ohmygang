@@ -6,7 +6,7 @@ import { ALL_PINGS, pingById, textureUrl, type PingId } from "../shared/pings";
 import { Icon } from "./Icon";
 
 /** 把 id 放到第 slot 格；它已经在别的格子里就两格互换。 */
-export function placeOnSlot(wheel: readonly PingId[], id: PingId, slot: number): PingId[] {
+export function placeOnSlot<T>(wheel: readonly T[], id: T, slot: number): T[] {
   const next = [...wheel];
   const from = next.indexOf(id);
   if (from >= 0) [next[from], next[slot]] = [next[slot], next[from]];
@@ -15,12 +15,12 @@ export function placeOnSlot(wheel: readonly PingId[], id: PingId, slot: number):
 }
 
 /** 格子中心在示意轮盘上的位置（百分比），0 号在正上方，顺时针。 */
-const slotPos = (i: number): { left: string; top: string } => {
+export const slotPos = (i: number): { left: string; top: string } => {
   const a = ((-90 + i * 45) * Math.PI) / 180;
   return { left: `${50 + 37 * Math.cos(a)}%`, top: `${50 + 37 * Math.sin(a)}%` };
 };
 
-const DIRECTIONS = ["上", "右上", "右", "右下", "下", "左下", "左", "左上"];
+export const DIRECTIONS = ["上", "右上", "右", "右下", "下", "左下", "左", "左上"];
 
 export function WheelEditor({ wheel, onChange }: { wheel: PingId[]; onChange: (w: PingId[]) => void }) {
   const [slot, setSlot] = useState(0);
