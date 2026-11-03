@@ -1,12 +1,13 @@
 //! 本机设置（接口文档第 11 节）：只影响本机，不影响层数计算。目前有「允许互联网」、中继列表（M1-4），
-//! 音效开关和音量（M1-5，音效在界面里播放，这里只保存），新成员同步聊天的条数上限（M2，局域网 5000、中继 500）。
+//! 音效开关和音量（M1-5，音效在界面里播放，这里只保存），新成员同步聊天的条数上限（M2，局域网 5000、中继 500），
+//! 界面主题（V1.1：跟随系统、浅色、深色，界面据此切换配色）。
 //!
 //! 实现流程：
 //! 1. 每项设置存成 `settings` 表的一行，值为 JSON 文本；没存过的项用默认值。
 //!    中继列表只在用户改过之后才落盘，所以以后调整默认列表，没改过的用户会自动用上新的；
 //!    改回和默认列表一模一样时删掉这一行，恢复「跟随默认」。
 //! 2. 修改时先校验再写入：中继地址去掉首尾空格，必须是 `wss://` 加上不含空白的地址，重复的只留第一个。
-//!    音量必须在 0–100，聊天条数上限不超过 100000。任一项不合格就整次修改都不生效。
+//!    音量必须在 0–100，聊天条数上限不超过 100000，主题只能是 system、light、dark。任一项不合格就整次修改都不生效。
 
 use rusqlite::Connection;
 use serde::de::DeserializeOwned;
@@ -32,7 +33,10 @@ const SOUND_ENABLED: &str = "sound_enabled";
 const VOLUME: &str = "volume";
 const HISTORY_LIMIT_LAN: &str = "history_limit_lan";
 const HISTORY_LIMIT_RELAY: &str = "history_limit_relay";
+const THEME: &str = "theme";
 const MAX_HISTORY_LIMIT: u32 = 100_000;
+/// 可选的主题：跟随系统、浅色、深色。
+pub const THEMES: [&str; 3] = ["system", "light", "dark"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalSettings {
@@ -45,6 +49,8 @@ pub struct LocalSettings {
     pub history_limit_lan: u32,
     /// 经中继最多同步多少条（中继每秒只能发 3 包，所以少一些）。
     pub history_limit_relay: u32,
+    /// system、light 或 dark。
+    pub theme: String,
 }
 
 impl Default for LocalSettings {
@@ -56,6 +62,7 @@ impl Default for LocalSettings {
             volume: 80,
             history_limit_lan: 5000,
             history_limit_relay: 500,
+            theme: THEMES[0].to_string(),
         }
     }
 }
@@ -69,6 +76,7 @@ pub struct SettingsPatch {
     pub volume: Option<u8>,
     pub history_limit_lan: Option<u32>,
     pub history_limit_relay: Option<u32>,
+    pub theme: Option<String>,
 }
 
 fn read<T: DeserializeOwned>(conn: &Connection, key: &str) -> AppResult<Option<T>> {
@@ -88,6 +96,7 @@ pub fn load(conn: &Connection) -> AppResult<LocalSettings> {
         volume: read(conn, VOLUME)?.unwrap_or(d.volume),
         history_limit_lan: read(conn, HISTORY_LIMIT_LAN)?.unwrap_or(d.history_limit_lan),
         history_limit_relay: read(conn, HISTORY_LIMIT_RELAY)?.unwrap_or(d.history_limit_relay),
+        theme: read(conn, THEME)?.unwrap_or(d.theme),
     })
 }
 
@@ -101,6 +110,9 @@ pub fn update(conn: &Connection, patch: SettingsPatch) -> AppResult<LocalSetting
         .any(|v| v.is_some_and(|v| v > MAX_HISTORY_LIMIT))
     {
         return Err(AppError::InvalidHistoryLimit);
+    }
+    if patch.theme.as_deref().is_some_and(|t| !THEMES.contains(&t)) {
+        return Err(AppError::InvalidTheme);
     }
     let tx = conn.unchecked_transaction()?;
     if let Some(v) = patch.internet_allowed {
@@ -124,6 +136,9 @@ pub fn update(conn: &Connection, patch: SettingsPatch) -> AppResult<LocalSetting
     }
     if let Some(v) = patch.history_limit_relay {
         write(&tx, HISTORY_LIMIT_RELAY, v)?;
+    }
+    if let Some(v) = patch.theme {
+        write(&tx, THEME, v)?;
     }
     tx.commit()?;
     load(conn)
@@ -190,6 +205,32 @@ mod tests {
         // 去掉首尾空格、去重、保持顺序
         assert_eq!(s.relays, vec!["wss://a.example", "wss://b.example/path"]);
         assert_eq!(load(&c).unwrap(), s);
+    }
+
+    #[test]
+    fn theme_follows_system_by_default_and_is_checked() {
+        let c = storage::open_in_memory().unwrap();
+        assert_eq!(load(&c).unwrap().theme, "system");
+        let s = update(
+            &c,
+            SettingsPatch {
+                theme: Some("dark".into()),
+                ..SettingsPatch::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(s.theme, "dark");
+        assert!(matches!(
+            update(
+                &c,
+                SettingsPatch {
+                    theme: Some("pink".into()),
+                    ..SettingsPatch::default()
+                }
+            ),
+            Err(AppError::InvalidTheme)
+        ));
+        assert_eq!(load(&c).unwrap().theme, "dark");
     }
 
     #[test]

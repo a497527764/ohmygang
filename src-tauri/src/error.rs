@@ -33,6 +33,8 @@ pub enum AppError {
     InvalidRule,
     #[error("中继地址必须是 wss:// 开头的完整地址：{0}")]
     InvalidRelay(String),
+    #[error("主题只能是跟随系统、浅色或深色")]
+    InvalidTheme,
     #[error("音量必须在 0 到 100 之间")]
     InvalidVolume,
     #[error("聊天同步条数最多 100000")]

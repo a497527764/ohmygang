@@ -78,6 +78,7 @@ export interface Settings {
   /// 新进群时最多同步最近多少条聊天：经局域网、经中继。
   historyLimitLan: number;
   historyLimitRelay: number;
+  theme: "system" | "light" | "dark";
   /// 内置默认中继，只读。
   defaultRelays: string[];
 }

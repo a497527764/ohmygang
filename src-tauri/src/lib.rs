@@ -1,4 +1,5 @@
 pub mod app_core;
+pub mod attention;
 pub mod backup;
 pub mod base32;
 pub mod chat;
@@ -38,8 +39,8 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
-    let mut tray = TrayIconBuilder::with_id("main")
-        .tooltip("钢一下")
+    let mut tray = TrayIconBuilder::with_id(attention::TRAY_ID)
+        .tooltip(attention::TOOLTIP)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, e| match e.id.as_ref() {
@@ -86,12 +87,15 @@ pub fn run() {
             app.manage(node);
             Ok(())
         })
-        // 点窗口的关闭按钮只收进托盘，程序继续收消息；真正退出用托盘菜单的「退出」
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        // 点窗口的关闭按钮只收进托盘，程序继续收消息；真正退出用托盘菜单的「退出」。
+        // 窗口回到前台时清掉新消息提醒（托盘红点、任务栏闪烁）。
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 let _ = window.hide();
                 api.prevent_close();
             }
+            WindowEvent::Focused(true) => attention::clear(window.app_handle()),
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             commands::identity_get,
@@ -129,7 +133,7 @@ pub fn run() {
 }
 
 /// 启动流程：在应用数据目录打开数据库 → 从凭据管理器取本机主密钥、读出身份 → 启动节点，
-/// 节点的通知转发成 Tauri 事件 `hs://event`。
+/// 节点的通知转发成 Tauri 事件 `hs://event`；要提醒的新消息另外交给 `attention`（在主线程上处理）。
 ///
 /// 单机双开（开发用）：环境变量 `LOLGANG_INSTANCE=2` 时，数据目录、凭据条目、UDP 端口都换一套；
 /// 开发版的广播同时发往两个端口，两个实例就能在一台电脑上互相发现。
@@ -159,6 +163,13 @@ fn start_node(app: &tauri::AppHandle) -> Result<node::NodeHandle, Box<dyn std::e
     }
     let handle = app.clone();
     let sink: node::Sink = Arc::new(move |e| {
+        if matches!(
+            &e,
+            node::NodeEvent::Core(app_core::CoreEvent::TimelineItemAdded { alert: true, .. })
+        ) {
+            let app = handle.clone();
+            let _ = handle.run_on_main_thread(move || attention::alert(&app));
+        }
         let _ = handle.emit("hs://event", commands::EventDto::from(e));
     });
     Ok(tauri::async_runtime::block_on(node::Node::spawn(

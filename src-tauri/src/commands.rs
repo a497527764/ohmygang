@@ -260,6 +260,8 @@ pub struct SettingsDto {
     pub volume: u8,
     pub history_limit_lan: u32,
     pub history_limit_relay: u32,
+    /// system、light 或 dark。
+    pub theme: String,
     /// 内置默认中继，设置页「恢复默认」用。
     pub default_relays: Vec<String>,
 }
@@ -273,6 +275,7 @@ impl From<&LocalSettings> for SettingsDto {
             volume: s.volume,
             history_limit_lan: s.history_limit_lan,
             history_limit_relay: s.history_limit_relay,
+            theme: s.theme.clone(),
             default_relays: DEFAULT_RELAYS.map(String::from).to_vec(),
         }
     }
@@ -288,6 +291,7 @@ pub struct SettingsPatchDto {
     pub volume: Option<u8>,
     pub history_limit_lan: Option<u32>,
     pub history_limit_relay: Option<u32>,
+    pub theme: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -959,6 +963,7 @@ pub async fn settings_update(
             volume: patch.volume,
             history_limit_lan: patch.history_limit_lan,
             history_limit_relay: patch.history_limit_relay,
+            theme: patch.theme,
         })?;
         // 只有网络相关的项变了才需要重建中继连接池
         out.settings_changed = net_changed;
