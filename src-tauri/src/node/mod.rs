@@ -32,7 +32,7 @@ use tokio::time::MissedTickBehavior;
 
 use crate::app_core::{Core, CoreEvent, RoomStatus};
 use crate::crypto::{EventId, MemberId, RoomId, RoomKey};
-use crate::protocol::event::SignedEvent;
+use crate::protocol::event::{SignedEvent, kind};
 use crate::protocol::frame::{
     FloorEntry, Frame, HaveEntry, ShortId, WantRange, WireEvent, short_id,
 };
@@ -597,7 +597,9 @@ impl Node {
         let rooms: Vec<RoomId> = self.rooms.keys().copied().collect();
         for room in rooms {
             for e in self.core.pending_events(&room).unwrap_or_default() {
-                self.resend.add(room, e.event_id, e, now);
+                if worth_resending(&e) {
+                    self.resend.add(room, e.event_id, e, now);
+                }
             }
         }
     }
@@ -605,7 +607,7 @@ impl Node {
     /// 本人新写的事件：实时广播，需要时也发到中继；排进重发计划，等同伴确认。
     async fn send_events(&mut self, room: RoomId, events: Vec<SignedEvent>) {
         let now = Instant::now();
-        for e in &events {
+        for e in events.iter().filter(|e| worth_resending(e)) {
             self.resend.add(room, e.event_id, e.clone(), now);
         }
         self.broadcast_events(room, events).await;
@@ -1110,6 +1112,11 @@ impl Node {
             self.relay_backfill_at += interval;
         }
     }
+}
+
+/// 图片的各片不进重发计划：一张图上百片，重发三遍太占中继预算；丢了的片靠 Have/Want 补齐。
+fn worth_resending(e: &SignedEvent) -> bool {
+    e.event.kind != kind::IMAGE_CHUNK
 }
 
 #[cfg(test)]

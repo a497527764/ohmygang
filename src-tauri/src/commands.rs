@@ -15,8 +15,8 @@ use tauri::State;
 use tauri::Manager;
 
 use crate::app_core::{
-    BackupKind, Core, CoreEvent, LocalSettings, MemberView, RoomStatus, RoomSummary, RuleParams,
-    SettingsPatch,
+    BackupKind, Core, CoreEvent, Draft, LocalSettings, MemberView, RoomStatus, RoomSummary,
+    RuleParams, SettingsPatch,
 };
 use crate::chat::{NoticeKind, TimelineCursor, TimelineItem};
 use crate::crypto::MemberId;
@@ -139,6 +139,10 @@ pub struct RoomDto {
     pub last_active: u64,
     pub muted: bool,
     pub pinned: bool,
+    /// 最后一条消息（「乙：……」）。
+    pub preview: Option<String>,
+    /// 未读里有人 @ 我。
+    pub mentioned: bool,
 }
 
 impl From<&RoomSummary> for RoomDto {
@@ -152,6 +156,8 @@ impl From<&RoomSummary> for RoomDto {
             last_active: r.last_active,
             muted: r.muted,
             pinned: r.pinned,
+            preview: r.preview.clone(),
+            mentioned: r.mentioned,
         }
     }
 }
@@ -291,6 +297,24 @@ pub struct CursorDto {
     pub event_id: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplyDto {
+    pub event_id: String,
+    pub excerpt: String,
+    /// 原消息不在本机时为 null。
+    pub author_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageDto {
+    pub width: u16,
+    pub height: u16,
+    /// 各片都到齐了，可以用 chat_image 取图。
+    pub ready: bool,
+}
+
 /// 聊天窗口的一条：聊天或系统提示。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -300,10 +324,15 @@ pub struct MessageDto {
     pub author_id: String,
     pub ts_ms: u64,
     pub display_ts: u64,
+    /// 文字消息的文字；图片和系统提示为 null。
     pub text: Option<String>,
     pub delivery: Option<&'static str>,
     pub notice: Option<&'static str>,
     pub title: Option<String>,
+    pub reply: Option<ReplyDto>,
+    /// 被 @ 的人：公钥前 8 字节的十六进制（即成员 ID 的前 16 位）。
+    pub mentions: Vec<String>,
+    pub image: Option<ImageDto>,
 }
 
 impl MessageDto {
@@ -324,13 +353,24 @@ impl From<&TimelineItem> for MessageDto {
                 author_id: hex(&m.author_id),
                 ts_ms: m.ts_ms,
                 display_ts: m.display_ts,
-                text: Some(m.text.clone()),
+                text: m.image.is_none().then(|| m.text.clone()),
                 delivery: m.delivery.map(|d| match d {
                     Delivery::Pending => "pending",
                     Delivery::Sent => "sent",
                 }),
                 notice: None,
                 title: None,
+                reply: m.reply.as_ref().map(|r| ReplyDto {
+                    event_id: hex(&r.event_id),
+                    excerpt: r.excerpt.clone(),
+                    author_id: r.author_id.map(|a| hex(&a)),
+                }),
+                mentions: m.mentions.iter().map(|s| hex(s)).collect(),
+                image: m.image.map(|i| ImageDto {
+                    width: i.width,
+                    height: i.height,
+                    ready: i.ready,
+                }),
             },
             TimelineItem::Notice(n) => MessageDto {
                 kind: "notice",
@@ -348,6 +388,9 @@ impl From<&TimelineItem> for MessageDto {
                     NoticeKind::Dissolve => "dissolve",
                 }),
                 title: n.title.clone(),
+                reply: None,
+                mentions: Vec::new(),
+                image: None,
             },
         }
     }
@@ -363,7 +406,7 @@ impl From<&TimelineItem> for MessageDto {
 pub enum EventDto {
     Timeline {
         room_id: String,
-        message: MessageDto,
+        message: Box<MessageDto>,
         is_live: bool,
     },
     Stacks {
@@ -395,6 +438,11 @@ pub enum EventDto {
         room_id: String,
         event_ids: Vec<String>,
     },
+    /// 这张图片的各片收齐了，可以取图。
+    ImageReady {
+        room_id: String,
+        event_id: String,
+    },
 }
 
 impl From<NodeEvent> for EventDto {
@@ -404,9 +452,10 @@ impl From<NodeEvent> for EventDto {
                 room_id,
                 item,
                 is_live,
+                ..
             }) => EventDto::Timeline {
                 room_id: hex(&room_id),
-                message: MessageDto::from(&item),
+                message: Box::new(MessageDto::from(&item)),
                 is_live,
             },
             NodeEvent::Core(CoreEvent::StacksChanged { room_id, changes }) => EventDto::Stacks {
@@ -422,6 +471,10 @@ impl From<NodeEvent> for EventDto {
                 room_id: hex(&room_id),
                 member_id: hex(&member_id),
                 new_stacks,
+            },
+            NodeEvent::Core(CoreEvent::ImageReady { room_id, event_id }) => EventDto::ImageReady {
+                room_id: hex(&room_id),
+                event_id: hex(&event_id),
             },
             NodeEvent::Core(CoreEvent::RoomUpdated { room_id }) => EventDto::Room {
                 room_id: hex(&room_id),
@@ -723,19 +776,95 @@ pub async fn rooms_mark_read(node: State<'_, NodeHandle>, room_id: String) -> Re
     on_node(&node, move |core, _| core.mark_read(&room)).await
 }
 
+/// 发文字消息。`reply_to`：引用的消息 ID；`mentions`：被 @ 的成员 ID。
 #[tauri::command]
-pub async fn chat_send_text(
+pub async fn chat_send(
     node: State<'_, NodeHandle>,
     room_id: String,
     text: String,
+    reply_to: Option<String>,
+    mentions: Vec<String>,
 ) -> Result<MessageDto, String> {
     let room = unhex::<16>(&room_id)?;
+    let reply_to = reply_to.map(|r| unhex::<32>(&r)).transpose()?;
+    let mentions = mentions
+        .iter()
+        .map(|m| unhex::<32>(m))
+        .collect::<Result<Vec<_>, _>>()?;
     on_node(&node, move |core, out| {
-        let sent = core.send_text(&room, &text, now_ms())?;
+        let draft = Draft {
+            text: &text,
+            reply_to,
+            mentions: &mentions,
+        };
+        let sent = core.send_chat(&room, &draft, now_ms())?;
         out.broadcast(room, sent.events);
         out.notes
             .extend(sent.notes.into_iter().map(NodeEvent::Core));
         Ok(MessageDto::from(&TimelineItem::Chat(sent.message)))
+    })
+    .await
+}
+
+/// 发图片。`data` 是界面压缩好的图片的 Base64。
+#[tauri::command]
+pub async fn chat_send_image(
+    node: State<'_, NodeHandle>,
+    room_id: String,
+    data: String,
+    width: u16,
+    height: u16,
+) -> Result<MessageDto, String> {
+    let room = unhex::<16>(&room_id)?;
+    let bytes = unbase64(&data)?;
+    on_node(&node, move |core, out| {
+        let sent = core.send_image(&room, &bytes, (width, height), now_ms())?;
+        out.broadcast(room, sent.events);
+        Ok(MessageDto::from(&TimelineItem::Chat(sent.message)))
+    })
+    .await
+}
+
+/// 取图片：收齐时返回 data URL，还没收齐返回 null。
+#[tauri::command]
+pub async fn chat_image(
+    node: State<'_, NodeHandle>,
+    room_id: String,
+    event_id: String,
+) -> Result<Option<String>, String> {
+    let room = unhex::<16>(&room_id)?;
+    let id = unhex::<32>(&event_id)?;
+    let data = on_node(&node, move |core, _| core.image_data(&room, &id)).await?;
+    Ok(data.and_then(|d| Some(format!("data:{};base64,{}", image_mime(&d)?, base64(&d)))))
+}
+
+/// 在当前群的文字消息里搜索，从新到旧最多 50 条。
+#[tauri::command]
+pub async fn chat_search(
+    node: State<'_, NodeHandle>,
+    room_id: String,
+    query: String,
+) -> Result<Vec<MessageDto>, String> {
+    let room = unhex::<16>(&room_id)?;
+    on_node(&node, move |core, _| {
+        Ok(core
+            .search_chat(&room, &query)?
+            .iter()
+            .map(MessageDto::from)
+            .collect())
+    })
+    .await
+}
+
+/// 清空本机的聊天记录显示（只影响本机）。
+#[tauri::command]
+pub async fn rooms_clear_history(
+    node: State<'_, NodeHandle>,
+    room_id: String,
+) -> Result<RoomDto, String> {
+    let room = unhex::<16>(&room_id)?;
+    on_node(&node, move |core, _| {
+        Ok(RoomDto::from(&core.clear_history(&room, now_ms())?))
     })
     .await
 }
@@ -872,6 +1001,8 @@ mod tests {
             last_active: 0,
             muted: true,
             pinned: false,
+            preview: None,
+            mentioned: false,
         };
         let d = RoomDto::from(&r);
         assert!(d.muted && !d.pinned);
@@ -941,6 +1072,9 @@ mod tests {
             display_ts: 11,
             text: "你好".into(),
             delivery: Some(Delivery::Pending),
+            reply: None,
+            mentions: vec![[0xab; 8]],
+            image: None,
         });
         let dto = MessageDto::from(&chat);
         assert_eq!(
@@ -948,6 +1082,7 @@ mod tests {
             ("chat", Some("你好"), 11)
         );
         assert_eq!(dto.delivery, Some("pending"));
+        assert_eq!(dto.mentions, vec!["ab".repeat(8)]);
         assert_eq!(
             dto.cursor(),
             CursorDto {

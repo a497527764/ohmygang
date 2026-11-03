@@ -91,21 +91,33 @@ fn timeline_pages_without_gaps_or_repeats() {
     for i in 1..=7u64 {
         events::put_event(&c, &chat(&m, i, i * 1000, &[i as u8]), i * 1000, None).unwrap();
     }
-    let page1 = events::timeline(&c, &ROOM, None, 3).unwrap();
+    let page1 = events::timeline(&c, &ROOM, None, Default::default(), 3).unwrap();
     assert_eq!(
         page1.iter().map(|e| e.display_ts).collect::<Vec<_>>(),
         vec![5000, 6000, 7000]
     );
     let first = &page1[0];
-    let page2 =
-        events::timeline(&c, &ROOM, Some((first.display_ts, first.event.event_id)), 3).unwrap();
+    let page2 = events::timeline(
+        &c,
+        &ROOM,
+        Some((first.display_ts, first.event.event_id)),
+        Default::default(),
+        3,
+    )
+    .unwrap();
     assert_eq!(
         page2.iter().map(|e| e.display_ts).collect::<Vec<_>>(),
         vec![2000, 3000, 4000]
     );
     let first = &page2[0];
-    let page3 =
-        events::timeline(&c, &ROOM, Some((first.display_ts, first.event.event_id)), 3).unwrap();
+    let page3 = events::timeline(
+        &c,
+        &ROOM,
+        Some((first.display_ts, first.event.event_id)),
+        Default::default(),
+        3,
+    )
+    .unwrap();
     assert_eq!(
         page3.iter().map(|e| e.display_ts).collect::<Vec<_>>(),
         vec![1000]

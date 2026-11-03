@@ -7,8 +7,11 @@
 //! 2. 查询把行原样还原成 `SignedEvent`，字段一个不改，所以还原后仍能通过验签。
 //! 3. `timeline` 按 (display_ts, event_id) 倒序取一页再翻成正序；翻页游标是本页第一条的 (display_ts, event_id)。
 //! 4. `append_own`：本人写新事件的唯一入口，取下一个 seq 和严格递增的 ts（架构 4.1），签名后入库，投递状态为 Pending。
+//! 5. 「消息」指文字聊天和图片（`MESSAGE_KINDS`），图片的各片不算；未读、预览、最近 n 条都只数消息。
+//! 6. 「看得见」（`Visible`）：不在解散之后，也不在本机清空聊天记录之前（入库序号和显示时间都晚于清空时的分界）。
+//!    聊天窗口、未读、预览、搜索都只看看得见的；同步和层数不受影响。
 
-use rusqlite::{Connection, OptionalExtension, Params, Row, params};
+use rusqlite::{Connection, OptionalExtension, Params, Row, named_params, params};
 
 use crate::crypto::{EventId, Identity, MemberId, RoomId};
 use crate::error::AppResult;
@@ -36,9 +39,29 @@ pub struct StoredEvent {
     pub is_fork: bool,
 }
 
-/// 会出现在聊天窗口里的 kind：聊天和系统提示。
-const TIMELINE_KINDS: [u16; 6] = [
+/// 算作一条消息的 kind：文字和图片（不含图片的各片）。
+pub const MESSAGE_KINDS: [u16; 2] = [kind::CHAT, kind::IMAGE];
+
+fn message_kinds() -> String {
+    MESSAGE_KINDS.map(|k| k.to_string()).join(",")
+}
+
+/// 哪些条目看得见：不在解散之后；本机清空过聊天记录时，入库序号和显示时间都要晚于分界。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Visible {
+    pub dissolve_ts: Option<u64>,
+    pub cleared_seq: Option<i64>,
+    pub cleared_before: Option<u64>,
+}
+
+const VISIBLE: &str = "(:dissolve IS NULL OR ts_ms <= :dissolve)
+     AND (:cleared_seq IS NULL OR local_seq > :cleared_seq)
+     AND (:cleared_before IS NULL OR display_ts > :cleared_before)";
+
+/// 会出现在聊天窗口里的 kind：消息和系统提示。
+const TIMELINE_KINDS: [u16; 7] = [
     kind::CHAT,
+    kind::IMAGE,
     kind::JOIN,
     kind::LEAVE,
     kind::RENAME,
@@ -230,11 +253,12 @@ pub fn last_ts(conn: &Connection, room: &RoomId, author: &MemberId) -> AppResult
     )?)
 }
 
-/// 聊天窗口的一页，正序。`before` 为 None 时取最新一页。
+/// 聊天窗口的一页，正序。`before` 为 None 时取最新一页；只取看得见的。
 pub fn timeline(
     conn: &Connection,
     room: &RoomId,
     before: Option<(u64, EventId)>,
+    v: Visible,
     limit: u32,
 ) -> AppResult<Vec<StoredEvent>> {
     let kinds = TIMELINE_KINDS.map(|k| k.to_string()).join(",");
@@ -245,11 +269,13 @@ pub fn timeline(
     let mut page = collect(
         conn,
         &format!(
-            "{SELECT} WHERE room_id = ?1 AND kind IN ({kinds})
-             AND (?2 IS NULL OR display_ts < ?2 OR (display_ts = ?2 AND event_id < ?3))
-             ORDER BY display_ts DESC, event_id DESC LIMIT ?4"
+            "{SELECT} WHERE room_id = :room AND kind IN ({kinds})
+             AND (:cursor_ts IS NULL OR display_ts < :cursor_ts OR (display_ts = :cursor_ts AND event_id < :cursor_id))
+             AND {VISIBLE}
+             ORDER BY display_ts DESC, event_id DESC LIMIT :limit"
         ),
-        params![room, cursor_ts, cursor_id, limit],
+        named_params! {":room": room, ":cursor_ts": cursor_ts, ":cursor_id": cursor_id, ":limit": limit,
+        ":dissolve": v.dissolve_ts, ":cleared_seq": v.cleared_seq, ":cleared_before": v.cleared_before},
     )?;
     page.reverse();
     Ok(page)
@@ -264,20 +290,91 @@ pub fn max_local_seq(conn: &Connection, room: &RoomId) -> AppResult<i64> {
     Ok(max.unwrap_or(0))
 }
 
-/// 未读：他人发的、local_seq 大于已读游标、且不在解散之后的聊天条数。
+/// 未读：他人发的、local_seq 大于已读游标、看得见的消息条数。
 pub fn count_unread(
     conn: &Connection,
     room: &RoomId,
     me: &MemberId,
     after: i64,
-    dissolve_ts: Option<u64>,
+    v: Visible,
 ) -> AppResult<u32> {
     Ok(conn.query_row(
-        "SELECT COUNT(*) FROM events WHERE room_id = ?1 AND kind = ?2 AND author_id != ?3 AND local_seq > ?4
-         AND (?5 IS NULL OR ts_ms <= ?5)",
-        params![room, kind::CHAT, me, after, dissolve_ts],
+        &format!(
+            "SELECT COUNT(*) FROM events WHERE room_id = :room AND kind IN ({}) AND author_id != :me
+             AND local_seq > :after AND {VISIBLE}",
+            message_kinds()
+        ),
+        named_params! {":room": room, ":me": me, ":after": after, ":dissolve": v.dissolve_ts, ":cleared_seq": v.cleared_seq, ":cleared_before": v.cleared_before},
         |r| r.get(0),
     )?)
+}
+
+/// 未读的他人文字消息，最新的在前，最多 limit 条（用来看有没有人 @ 我）。
+pub fn unread_chats(
+    conn: &Connection,
+    room: &RoomId,
+    me: &MemberId,
+    after: i64,
+    v: Visible,
+    limit: u32,
+) -> AppResult<Vec<StoredEvent>> {
+    collect(
+        conn,
+        &format!(
+            "{SELECT} WHERE room_id = :room AND kind = :kind AND author_id != :me AND local_seq > :after
+             AND {VISIBLE} ORDER BY local_seq DESC LIMIT :limit"
+        ),
+        named_params! {":room": room, ":kind": kind::CHAT, ":me": me, ":after": after,
+        ":dissolve": v.dissolve_ts, ":cleared_seq": v.cleared_seq, ":cleared_before": v.cleared_before, ":limit": limit},
+    )
+}
+
+/// 显示顺序上最后一条看得见的消息（房间列表的预览）。
+pub fn last_message(
+    conn: &Connection,
+    room: &RoomId,
+    v: Visible,
+) -> AppResult<Option<StoredEvent>> {
+    Ok(collect(
+        conn,
+        &format!(
+            "{SELECT} WHERE room_id = :room AND kind IN ({}) AND {VISIBLE}
+             ORDER BY display_ts DESC, event_id DESC LIMIT 1",
+            message_kinds()
+        ),
+        named_params! {":room": room, ":dissolve": v.dissolve_ts, ":cleared_seq": v.cleared_seq, ":cleared_before": v.cleared_before},
+    )?
+    .pop())
+}
+
+/// 看得见的文字消息，从新到旧（搜索用）。
+pub fn chats_newest_first(
+    conn: &Connection,
+    room: &RoomId,
+    v: Visible,
+) -> AppResult<Vec<StoredEvent>> {
+    collect(
+        conn,
+        &format!(
+            "{SELECT} WHERE room_id = :room AND kind = :kind AND stream = 1 AND {VISIBLE}
+             ORDER BY display_ts DESC, event_id DESC"
+        ),
+        named_params! {":room": room, ":kind": kind::CHAT, ":dissolve": v.dissolve_ts, ":cleared_seq": v.cleared_seq, ":cleared_before": v.cleared_before},
+    )
+}
+
+/// 按事件 ID 取本房间的一条事件。
+pub fn get_in_room(
+    conn: &Connection,
+    room: &RoomId,
+    id: &EventId,
+) -> AppResult<Option<StoredEvent>> {
+    Ok(collect(
+        conn,
+        &format!("{SELECT} WHERE room_id = ?1 AND event_id = ?2"),
+        params![room, id],
+    )?
+    .pop())
 }
 
 /// 本人在某房间写一条新事件并入库，返回签好名的事件。同时把房间的最近活跃时间推到这条事件。
@@ -314,20 +411,17 @@ pub fn mark_sent(
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// 最近 n 条聊天（按显示顺序）里每位作者最早的序号。
-pub fn recent_chat_floors(
-    conn: &Connection,
-    room: &RoomId,
-    n: u32,
-) -> AppResult<Vec<(MemberId, u64)>> {
-    let mut stmt = conn.prepare(
-        "SELECT author_id, MIN(seq) FROM (
-             SELECT author_id, seq FROM events WHERE room_id = ?1 AND stream = 1
-             ORDER BY display_ts DESC, event_id DESC LIMIT ?2
-         ) GROUP BY author_id",
-    )?;
-    let rows = stmt.query_map(params![room, n], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+/// 最近 n 条消息（按显示顺序，不含图片的各片），最新的在前。
+pub fn recent_messages(conn: &Connection, room: &RoomId, n: u32) -> AppResult<Vec<StoredEvent>> {
+    collect(
+        conn,
+        &format!(
+            "{SELECT} WHERE room_id = ?1 AND stream = 1 AND kind IN ({})
+             ORDER BY display_ts DESC, event_id DESC LIMIT ?2",
+            message_kinds()
+        ),
+        params![room, n],
+    )
 }
 
 /// 本人还没被确认的事件，按 local_seq 升序。

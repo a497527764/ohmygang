@@ -127,6 +127,8 @@ mod tests {
         let me = Identity::from_secret(&[7u8; 32]);
         let b = body::encode(&ChatBody {
             text: "字".repeat(len / 3),
+            reply: None,
+            mentions: vec![],
         });
         WireEvent::from_signed(&build_event(
             &me,

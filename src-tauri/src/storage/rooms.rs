@@ -50,6 +50,9 @@ pub struct RoomRow {
     pub last_active: u64,
     pub muted: bool,
     pub pinned: bool,
+    /// 本机清空聊天记录时的最大入库序号和时刻（规则见 chat.rs）。
+    pub cleared_seq: Option<i64>,
+    pub cleared_ts: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,7 +65,7 @@ pub struct MemberRow {
     pub avatar: Option<Vec<u8>>,
 }
 
-const SELECT_ROOM: &str = "SELECT room_id, code_cipher, owner_tag, status, title, owner_id, dissolve_ts, last_active, muted, pinned FROM rooms";
+const SELECT_ROOM: &str = "SELECT room_id, code_cipher, owner_tag, status, title, owner_id, dissolve_ts, last_active, muted, pinned, cleared_seq, cleared_ts FROM rooms";
 
 fn read_room(r: &rusqlite::Row) -> rusqlite::Result<RoomRow> {
     Ok(RoomRow {
@@ -76,6 +79,8 @@ fn read_room(r: &rusqlite::Row) -> rusqlite::Result<RoomRow> {
         last_active: r.get(7)?,
         muted: r.get(8)?,
         pinned: r.get(9)?,
+        cleared_seq: r.get(10)?,
+        cleared_ts: r.get(11)?,
     })
 }
 
@@ -112,6 +117,31 @@ pub fn list_rooms(conn: &Connection) -> AppResult<Vec<RoomRow>> {
     ))?;
     let rows = stmt.query_map([], read_room)?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// 记下清空聊天记录时的入库序号和时刻。
+pub fn set_cleared(conn: &Connection, room: &RoomId, seq: i64, ts: u64) -> AppResult<()> {
+    conn.execute(
+        "UPDATE rooms SET cleared_seq = ?2, cleared_ts = ?3 WHERE room_id = ?1",
+        params![room, seq, ts],
+    )?;
+    Ok(())
+}
+
+/// 某成员在本房间的昵称缓存。
+pub fn nickname_of(
+    conn: &Connection,
+    room: &RoomId,
+    member: &MemberId,
+) -> AppResult<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT nickname FROM members WHERE room_id = ?1 AND member_id = ?2",
+            params![room, member],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten())
 }
 
 pub fn set_status(conn: &Connection, room: &RoomId, status: RoomStatus) -> AppResult<()> {

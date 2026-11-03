@@ -8,6 +8,7 @@
 //! 3. 缓存：状态事件变化后，用 M1-1 的 derive_room_state 重新推导群名、房主、成员、昵称、规则和解散时间，写回缓存表；
 //!    推导出解散时间时，房间转为 Dissolved。缓存都能从事件重建，权威始终是推导结果。
 
+use crate::chat;
 use crate::crypto::{self, Identity, MemberId, RoomId};
 use crate::error::{AppError, AppResult};
 use crate::keystore::{PURPOSE_ROOM_CODE, decrypt_local, encrypt_local};
@@ -37,6 +38,10 @@ pub struct RoomSummary {
     pub last_active: u64,
     pub muted: bool,
     pub pinned: bool,
+    /// 最后一条消息（「乙：……」，自己发的不带名字）。
+    pub preview: Option<String>,
+    /// 未读里有人 @ 我。
+    pub mentioned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -205,10 +210,12 @@ pub fn summary(conn: &Connection, me: &MemberId, row: &RoomRow) -> AppResult<Roo
         title: row.title.clone(),
         status: row.status,
         is_owner: owner_tag_of(me) == row.owner_tag,
-        unread: events::count_unread(conn, &row.room_id, me, cursor, row.dissolve_ts)?,
+        unread: events::count_unread(conn, &row.room_id, me, cursor, chat::visible(row, true))?,
         last_active: row.last_active,
         muted: row.muted,
         pinned: row.pinned,
+        preview: chat::preview(conn, row, me)?,
+        mentioned: chat::mentioned(conn, row, me)?,
     })
 }
 

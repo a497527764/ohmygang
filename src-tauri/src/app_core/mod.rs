@@ -29,7 +29,7 @@ use crate::storage::{self, Connection, identity as id_store, rooms as room_store
 use crate::sync::plan::Holdings;
 
 pub use crate::backup::BackupKind;
-pub use crate::chat::{ChatMessage, TimelineCursor, TimelineItem};
+pub use crate::chat::{ChatMessage, Draft, TimelineCursor, TimelineItem};
 pub use crate::error::AppError;
 pub use crate::rooms::service::{MemberView, RoomSummary, RuleParams};
 pub use crate::settings::{LocalSettings, SettingsPatch};
@@ -50,6 +50,13 @@ pub enum CoreEvent {
         room_id: RoomId,
         item: TimelineItem,
         is_live: bool,
+        /// 要提醒本机用户（规则见 `chat::should_alert`）。
+        alert: bool,
+    },
+    /// 图片的各片后到，现在收齐了。
+    ImageReady {
+        room_id: RoomId,
+        event_id: EventId,
     },
     StacksChanged {
         room_id: RoomId,
@@ -191,10 +198,27 @@ impl Core {
         rooms::leaderboard(&self.conn, room)
     }
 
-    /// 本人发言。和叠层判定在同一个事务里；本人实时叠层同样产生 HeartsteelLive，用于播放音效。
+    /// 只发文字（测试里常用）。
     pub fn send_text(&mut self, room: &RoomId, text: &str, now_ms: u64) -> AppResult<SentMessage> {
+        self.send_chat(
+            room,
+            &Draft {
+                text,
+                ..Draft::default()
+            },
+            now_ms,
+        )
+    }
+
+    /// 本人发言（可带引用和 @）。和叠层判定在同一个事务里；本人实时叠层同样产生 HeartsteelLive，用于播放音效。
+    pub fn send_chat(
+        &mut self,
+        room: &RoomId,
+        draft: &Draft,
+        now_ms: u64,
+    ) -> AppResult<SentMessage> {
         let tx = self.conn.transaction()?;
-        let (message, written, stacked) = chat::send_text(&tx, &self.me, room, text, now_ms)?;
+        let (message, written, stacked) = chat::send_chat(&tx, &self.me, room, draft, now_ms)?;
         tx.commit()?;
         let mut notes = Vec::new();
         if let Some(s) = stacked {
@@ -223,6 +247,43 @@ impl Core {
             events: written,
             notes,
         })
+    }
+
+    /// 发一张图片（界面已压缩）。图片不参与叠层判定。
+    pub fn send_image(
+        &mut self,
+        room: &RoomId,
+        data: &[u8],
+        size: (u16, u16),
+        now_ms: u64,
+    ) -> AppResult<SentMessage> {
+        let tx = self.conn.transaction()?;
+        let (message, events) = chat::send_image(&tx, &self.me, room, data, size, now_ms)?;
+        tx.commit()?;
+        Ok(SentMessage {
+            message,
+            events,
+            notes: Vec::new(),
+        })
+    }
+
+    /// 图片的完整内容；还没收齐时为 None。
+    pub fn image_data(&self, room: &RoomId, id: &EventId) -> AppResult<Option<Vec<u8>>> {
+        chat::image_data(&self.conn, room, id)
+    }
+
+    /// 在本房间的文字消息里搜索，从新到旧最多 50 条。
+    pub fn search_chat(&self, room: &RoomId, query: &str) -> AppResult<Vec<TimelineItem>> {
+        chat::search(&self.conn, room, query, 50)
+    }
+
+    /// 清空本机的聊天记录显示（只影响本机，层数和同步不受影响）。
+    pub fn clear_history(&mut self, room: &RoomId, now_ms: u64) -> AppResult<RoomSummary> {
+        let tx = self.conn.transaction()?;
+        chat::clear_history(&tx, room, now_ms)?;
+        let summary = rooms::summary(&tx, &self.view.member_id, &rooms::get(&tx, room)?)?;
+        tx.commit()?;
+        Ok(summary)
     }
 
     /// 聊天窗口的一页（正序）。`before` 为 None 时取最新一页；翻页时传入上一页第一条的 `cursor()`。
@@ -374,9 +435,9 @@ impl Core {
         Ok(())
     }
 
-    /// 回答 WantFloors：最近 n 条聊天里每位作者最早的序号（架构 7.4）。
+    /// 回答 WantFloors：最近 n 条消息里每位作者最早的序号（架构 7.4；图片算到它的第一片）。
     pub fn floors_for_last(&self, room: &RoomId, n: u32) -> AppResult<Vec<FloorEntry>> {
-        Ok(events::recent_chat_floors(&self.conn, room, n)?
+        Ok(chat::floors_for_last(&self.conn, room, n)?
             .into_iter()
             .map(|(author, floor)| FloorEntry {
                 author: short_id(&author),
@@ -684,12 +745,27 @@ impl Core {
         }
 
         let row = rooms::get(&tx, room)?;
+        let me = self.view.member_id;
         for s in &new_items {
-            if let Some(item) = chat::to_item(s, &row.owner_tag, row.dissolve_ts) {
+            if let Some(item) = chat::to_item(&tx, s, &row)? {
                 notes.push(CoreEvent::TimelineItemAdded {
                     room_id: *room,
+                    alert: chat::should_alert(&item, is_live, &row, &me),
                     item,
                     is_live,
+                });
+            }
+        }
+        let chunks: Vec<&StoredEvent> = new_items
+            .iter()
+            .filter(|s| s.event.event.kind == kind::IMAGE_CHUNK)
+            .collect();
+        for event_id in chat::images_completed_by(&tx, room, &chunks)? {
+            // 图片消息本身也在这一批里时，上面的条目已经带着「收齐」了
+            if !new_items.iter().any(|s| s.event.event_id == event_id) {
+                notes.push(CoreEvent::ImageReady {
+                    room_id: *room,
+                    event_id,
                 });
             }
         }
@@ -762,3 +838,6 @@ mod backup_tests;
 
 #[cfg(test)]
 mod manage_tests;
+
+#[cfg(test)]
+mod chat_tests;

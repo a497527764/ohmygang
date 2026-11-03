@@ -179,7 +179,11 @@ mod tests {
     }
 
     fn chat(text: &str) -> crate::protocol::event::SignedEvent {
-        let b = body::encode(&ChatBody { text: text.into() });
+        let b = body::encode(&ChatBody {
+            text: text.into(),
+            reply: None,
+            mentions: vec![],
+        });
         build_event(
             &me(),
             ROOM,

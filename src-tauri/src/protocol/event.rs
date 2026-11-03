@@ -26,6 +26,10 @@ pub mod kind {
     pub const DISSOLVE: u16 = 7;
     pub const HEARTSTEEL: u16 = 8;
     pub const CHAT: u16 = 100;
+    /// 图片的一片（V1.1），不单独显示。
+    pub const IMAGE_CHUNK: u16 = 101;
+    /// 图片消息（V1.1），前面连续的 n 个聊天序号是它的各片。
+    pub const IMAGE: u16 = 102;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

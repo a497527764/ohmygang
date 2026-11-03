@@ -49,7 +49,11 @@ pub(super) fn chat(who: &Identity, room: RoomId, seq: u64, ts: u64) -> SignedEve
         seq,
         ts,
         kind::CHAT,
-        body::encode(&ChatBody { text }),
+        body::encode(&ChatBody {
+            text,
+            reply: None,
+            mentions: vec![],
+        }),
     )
 }
 

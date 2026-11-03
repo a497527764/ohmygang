@@ -480,6 +480,42 @@ async fn chats_missed_while_offline_are_backfilled() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn image_reaches_the_other_node_in_one_piece() {
+    let addrs = free_ports(2);
+    let (da, db) = (temp_db(), temp_db());
+    let a = start(&da, 1, addrs[0], &addrs).await;
+    let b = start(&db, 2, addrs[1], &addrs).await;
+    let (room, code) = create(&a).await;
+    join(&b, &code).await;
+    assert!(eventually(&b, status_is(room, RoomStatus::Active)).await);
+
+    // 约 20KB 的图：23 片
+    let mut data = b"RIFF\0\0\0\0WEBPVP8 ".to_vec();
+    data.extend((0..20_000u32).map(|i| (i % 251) as u8));
+    let sent = data.clone();
+    let id = a
+        .handle
+        .call(move |core, out| {
+            let s = core.send_image(&room, &sent, (320, 240), now_ms()).unwrap();
+            out.broadcast(room, s.events);
+            s.message.event_id
+        })
+        .await
+        .unwrap();
+    let want = data.clone();
+    assert!(
+        eventually(&b, move |c| c.image_data(&room, &id).unwrap().as_ref()
+            == Some(&want))
+        .await,
+        "B 收到完整的图片"
+    );
+
+    drop((a, b));
+    remove_db(&da);
+    remove_db(&db);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn new_member_only_gets_the_most_recent_chats() {
     let addrs = free_ports(2);
     let (da, dc) = (temp_db(), temp_db());

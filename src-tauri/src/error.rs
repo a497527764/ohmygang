@@ -15,8 +15,14 @@ pub enum AppError {
     RoomNotActive,
     #[error("只有正在加入的群可以取消")]
     RoomNotJoining,
-    #[error("消息太长，最多 900 字节")]
+    #[error("消息太长了，删掉一些字再发")]
     TextTooLong,
+    #[error("要回复的消息不在这个群里")]
+    ReplyNotFound,
+    #[error("只能发 WebP、PNG、JPEG 图片")]
+    InvalidImage,
+    #[error("图片太大了，压缩后仍超过 192KB")]
+    ImageTooLarge,
     #[error("群名为空或太长，最多 64 个字符")]
     InvalidTitle,
     #[error("昵称太长，最多 32 个字符")]

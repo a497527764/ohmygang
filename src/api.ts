@@ -29,6 +29,10 @@ export interface Room {
   lastActive: number;
   muted: boolean;
   pinned: boolean;
+  /// 最后一条消息（「乙：……」，自己发的不带名字）。
+  preview: string | null;
+  /// 未读里有人 @ 我。
+  mentioned: boolean;
 }
 
 /// 现在经哪条路径能联系上这位成员（架构 6.5）。
@@ -84,16 +88,35 @@ export interface NetworkStatus {
   lanDegraded: boolean;
 }
 
+export interface Reply {
+  eventId: string;
+  excerpt: string;
+  /// 原消息不在本机时为 null。
+  authorId: string | null;
+}
+
+export interface ImageInfo {
+  width: number;
+  height: number;
+  /// 各片都到齐了，可以用 api.image 取图。
+  ready: boolean;
+}
+
 export interface Message {
   kind: "chat" | "notice";
   eventId: string;
   authorId: string;
   tsMs: number;
   displayTs: number;
+  /// 文字消息的文字；图片和系统提示为 null。
   text: string | null;
   delivery: "pending" | "sent" | null;
   notice: "join" | "leave" | "rename" | "config" | "dissolve" | null;
   title: string | null;
+  reply: Reply | null;
+  /// 被 @ 的人：成员 ID 的前 16 位。
+  mentions: string[];
+  image: ImageInfo | null;
 }
 
 export interface Cursor {
@@ -109,7 +132,8 @@ export type HsEvent =
   | { type: "fork"; roomId: string; memberId: string }
   | { type: "status"; roomId: string; status: RoomStatus }
   | { type: "mismatch"; roomId: string; remoteProto: number }
-  | { type: "delivered"; roomId: string; eventIds: string[] };
+  | { type: "delivered"; roomId: string; eventIds: string[] }
+  | { type: "imageReady"; roomId: string; eventId: string };
 
 export const api = {
   identity: () => invoke<Identity>("identity_get"),
@@ -135,7 +159,17 @@ export const api = {
   dissolveRoom: (roomId: string) => invoke<void>("rooms_dissolve", { roomId }),
   cancelJoin: (roomId: string) => invoke<void>("rooms_cancel_join", { roomId }),
   leaderboard: (roomId: string) => invoke<LeaderboardEntry[]>("heartsteel_leaderboard", { roomId }),
-  send: (roomId: string, text: string) => invoke<Message>("chat_send_text", { roomId, text }),
+  /// replyTo：引用的消息 ID；mentions：被 @ 的成员 ID。
+  send: (roomId: string, text: string, replyTo: string | null = null, mentions: string[] = []) =>
+    invoke<Message>("chat_send", { roomId, text, replyTo, mentions }),
+  /// data：压缩好的图片的 Base64。
+  sendImage: (roomId: string, data: string, width: number, height: number) =>
+    invoke<Message>("chat_send_image", { roomId, data, width, height }),
+  /// 收齐时返回 data URL，否则 null。
+  image: (roomId: string, eventId: string) => invoke<string | null>("chat_image", { roomId, eventId }),
+  search: (roomId: string, query: string) => invoke<Message[]>("chat_search", { roomId, query }),
+  /// 只清空本机的显示。
+  clearHistory: (roomId: string) => invoke<Room>("rooms_clear_history", { roomId }),
   messages: (roomId: string, before: Cursor | null, limit: number) =>
     invoke<Message[]>("chat_list", { roomId, before, limit }),
   settings: () => invoke<Settings>("settings_get"),

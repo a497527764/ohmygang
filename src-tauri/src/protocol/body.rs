@@ -9,10 +9,14 @@
 //!    新版本解码旧事件时，缺的字段取默认值。所以加字段不需要升协议版本。
 //! 6. 头像（`Avatar`）放在 Profile 里随昵称一起同步，不分片：内置头像只是两个小数字；
 //!    上传的图片由界面压到 800 字节以内，只认 WebP、PNG、JPEG 的文件头。
+//! 7. 聊天可带引用（原消息 ID 和最多 60 字节的摘要）和 @（8 字节短 ID 列表），都是可选字段。
+//! 8. 图片消息（V1.1）：图片切成每片不超过 900 字节的 `ImageChunkBody`，紧接着一条 `ImageBody`
+//!    记下片数、总字节数、SHA-256 和宽高。各片就是这条图片消息前面连续的 n 个聊天序号。
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::crypto::EventId;
+use crate::protocol::frame::ShortId;
 
 pub const CHAT_TEXT_MAX_BYTES: usize = 900;
 pub const NICKNAME_MAX_CHARS: usize = 32;
@@ -22,6 +26,14 @@ pub const AVATAR_IMAGE_MAX_BYTES: usize = 800;
 /// 内置头像的图标数和底色数。界面里的列表只能在末尾追加，已有的下标不能改。
 pub const AVATAR_PRESET_ICONS: u16 = 48;
 pub const AVATAR_PRESET_COLORS: u8 = 12;
+/// 引用摘要的上限。
+pub const REPLY_EXCERPT_MAX_BYTES: usize = 60;
+/// 一条消息最多 @ 多少人。
+pub const MAX_MENTIONS: usize = 20;
+/// 图片每片的字节数和整张图的上限（约 219 片）。
+pub const IMAGE_CHUNK_BYTES: usize = 900;
+pub const IMAGE_MAX_BYTES: usize = 192 * 1024;
+pub const IMAGE_MAX_CHUNKS: u64 = IMAGE_MAX_BYTES.div_ceil(IMAGE_CHUNK_BYTES) as u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rule {
@@ -49,6 +61,38 @@ impl Rule {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatBody {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<ReplyRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<Mention>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplyRef {
+    #[serde(with = "serde_bytes")]
+    pub id: EventId,
+    pub excerpt: String,
+}
+
+/// 被 @ 的人的短 ID（公钥前 8 字节）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Mention(#[serde(with = "serde_bytes")] pub ShortId);
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageChunkBody {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageBody {
+    pub chunks: u16,
+    pub size: u32,
+    #[serde(with = "serde_bytes")]
+    pub sha256: [u8; 32],
+    pub width: u16,
+    pub height: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,8 +195,18 @@ mod tests {
     fn roundtrip_all_bodies() {
         let chat = ChatBody {
             text: "你好".into(),
+            reply: None,
+            mentions: vec![],
         };
         assert_eq!(decode::<ChatBody>(&encode(&chat)), Ok(chat));
+        let image = ImageBody {
+            chunks: 3,
+            size: 2000,
+            sha256: [5; 32],
+            width: 640,
+            height: 480,
+        };
+        assert_eq!(decode::<ImageBody>(&encode(&image)), Ok(image));
         let create = RoomCreateBody {
             title: "开黑".into(),
             rule: Rule::DEFAULT,
@@ -230,6 +284,40 @@ mod tests {
     }
 
     #[test]
+    fn chat_with_reply_and_mentions_is_compatible() {
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        struct OldChat {
+            text: String,
+        }
+        let new = ChatBody {
+            text: "@乙 看这个".into(),
+            reply: Some(ReplyRef {
+                id: [3; 32],
+                excerpt: "原话".into(),
+            }),
+            mentions: vec![Mention([9; 8])],
+        };
+        let bytes = encode(&new);
+        assert_eq!(decode::<ChatBody>(&bytes), Ok(new));
+        assert_eq!(
+            decode::<OldChat>(&bytes),
+            Ok(OldChat {
+                text: "@乙 看这个".into()
+            })
+        );
+        let plain = ChatBody {
+            text: "冲".into(),
+            reply: None,
+            mentions: vec![],
+        };
+        // 没有引用和 @ 时和旧格式一模一样
+        assert_eq!(encode(&plain), encode(&OldChat { text: "冲".into() }));
+        // 短 ID 编成 CBOR 字节串：每个 @ 只占 9 字节
+        let one = encode(&vec![Mention([1; 8])]);
+        assert_eq!(one.len(), 1 + 9);
+    }
+
+    #[test]
     fn avatar_validity() {
         assert!(Avatar::Image(webp(AVATAR_IMAGE_MAX_BYTES)).is_valid());
         assert!(!Avatar::Image(webp(AVATAR_IMAGE_MAX_BYTES + 1)).is_valid());
@@ -277,8 +365,15 @@ mod tests {
         assert!(n <= MAX_BODY_LEN, "叠层 body {n} 字节");
         let chat = ChatBody {
             text: "a".repeat(CHAT_TEXT_MAX_BYTES),
+            reply: None,
+            mentions: vec![],
         };
         assert!(encode(&chat).len() <= MAX_BODY_LEN);
+        let chunk = ImageChunkBody {
+            data: vec![0xab; IMAGE_CHUNK_BYTES],
+        };
+        assert!(encode(&chunk).len() <= MAX_BODY_LEN);
+        assert!(IMAGE_MAX_CHUNKS <= u64::from(u16::MAX));
         // 32 个四字节字符的昵称加上最大的头像图片
         let profile = ProfileBody {
             nickname: "😀".repeat(NICKNAME_MAX_CHARS),
