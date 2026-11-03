@@ -1,8 +1,10 @@
-// 设置页（需求 3.6 的本机部分）：占据主区域，左边分组，右边是这一组的设置。
-// 通用（外观、声音、后台运行）、网络（允许互联网、中继列表、局域网）、聊天记录（同步条数）、备份与恢复、关于。
-// 每项改动立即保存；中继地址不合格时显示 Rust 返回的中文错误，列表不变。昵称和头像在「个人资料」里改。
-import { useState } from "react";
-import type { NetworkStatus, RelayHealth, Settings } from "../api";
+// 设置（需求 3.6 的本机部分，V1.1 第二版参考 WhatsApp）：在左栏里打开，不挡住聊天。
+// 第一层是个人资料卡片和分组列表：通用（外观、声音、后台运行）、网络（中继、局域网）、聊天记录、备份与恢复、关于；
+// 点一组进到这一组的设置，左上角箭头返回。每项改动立即保存；中继地址不合格时显示 Rust 返回的中文错误，列表不变。
+import { getVersion } from "@tauri-apps/api/app";
+import { useEffect, useState } from "react";
+import type { Identity, NetworkStatus, RelayHealth, Settings } from "../api";
+import { Avatar } from "./Avatar";
 import { BackupSection } from "./BackupSection";
 import { Icon, type IconName } from "./Icon";
 
@@ -16,27 +18,29 @@ const STATE_TEXT: Record<RelayHealth["state"], string> = {
 const THEME_NAMES: Record<Settings["theme"], string> = { system: "跟随系统", light: "浅色", dark: "深色" };
 
 type Tab = "general" | "network" | "history" | "backup" | "about";
-const TABS: { id: Tab; name: string; icon: IconName }[] = [
-  { id: "general", name: "通用", icon: "sun" },
-  { id: "network", name: "网络", icon: "globe" },
-  { id: "history", name: "聊天记录", icon: "clock" },
-  { id: "backup", name: "备份与恢复", icon: "archive" },
-  { id: "about", name: "关于", icon: "info" },
+const TABS: { id: Tab; name: string; sub: string; icon: IconName }[] = [
+  { id: "general", name: "通用", sub: "主题、声音、后台运行", icon: "sun" },
+  { id: "network", name: "网络", sub: "互联网中继、局域网", icon: "globe" },
+  { id: "history", name: "聊天记录", sub: "新进群时同步多少消息", icon: "clock" },
+  { id: "backup", name: "备份与恢复", sub: "换电脑前导出，换好后导入", icon: "archive" },
+  { id: "about", name: "关于钢一下", sub: "版本和玩法", icon: "info" },
 ];
 
 type Patch = Partial<Omit<Settings, "defaultRelays">>;
 
 interface Props {
+  me: Identity | null;
   settings: Settings;
   relays: RelayHealth[] | null | undefined;
   network: NetworkStatus | null;
   /// reject 时显示错误。
   onUpdate: (patch: Patch) => Promise<void>;
   onPreview: (volume: number) => void;
+  onOpenProfile: () => void;
 }
 
-export function SettingsPage(p: Props) {
-  const [tab, setTab] = useState<Tab>("general");
+export function SettingsPanel(p: Props) {
+  const [tab, setTab] = useState<Tab | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function update(patch: Patch): Promise<boolean> {
@@ -50,27 +54,25 @@ export function SettingsPage(p: Props) {
     }
   }
 
-  return (
-    <div className="settings-page">
-      <nav className="settings-nav" aria-label="设置分组">
-        <h1>设置</h1>
-        {TABS.map((t) => (
+  const current = TABS.find((t) => t.id === tab);
+  if (current) {
+    return (
+      <>
+        <header className="side-head">
           <button
-            key={t.id}
-            className={t.id === tab ? "current" : undefined}
-            aria-current={t.id === tab ? "page" : undefined}
+            className="icon-button"
             onClick={() => {
-              setTab(t.id);
+              setTab(null);
               setError(null);
             }}
+            aria-label="返回"
+            title="返回"
           >
-            <Icon name={t.icon} size={17} />
-            {t.name}
+            <Icon name="arrowLeft" size={20} />
           </button>
-        ))}
-      </nav>
-      <div className="settings-content">
-        <div className="settings-inner">
+          <h1 className="small">{current.name}</h1>
+        </header>
+        <div className="side-scroll settings-detail">
           {tab === "general" && <General {...p} update={update} />}
           {tab === "network" && <Network {...p} update={update} />}
           {tab === "history" && <History {...p} update={update} />}
@@ -78,8 +80,38 @@ export function SettingsPage(p: Props) {
           {tab === "about" && <About />}
           {error && <p className="field-error">{error}</p>}
         </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <header className="side-head">
+        <h1>设置</h1>
+      </header>
+      <div className="side-scroll">
+        {p.me && (
+          <button className="profile-card" onClick={p.onOpenProfile}>
+            <Avatar fingerprint={p.me.fingerprint} name={p.me.nickname} avatar={p.me.avatar} size={64} />
+            <span className="profile-card-text">
+              <span className="profile-card-name">{p.me.nickname || "还没有昵称"}</span>
+              <span className="profile-card-sub">编辑头像和昵称</span>
+            </span>
+          </button>
+        )}
+        <nav className="settings-list" aria-label="设置分组">
+          {TABS.map((t) => (
+            <button key={t.id} className="settings-entry" onClick={() => setTab(t.id)}>
+              <Icon name={t.icon} size={21} />
+              <span className="entry-text">
+                <span>{t.name}</span>
+                <small>{t.sub}</small>
+              </span>
+            </button>
+          ))}
+        </nav>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -283,11 +315,16 @@ function History({ settings: s, update }: SectionProps) {
 }
 
 function About() {
+  // 版本号由 Rust 侧读安装包里的配置（tauri.conf.json 的 version），不在界面里另写一份
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
+  }, []);
   return (
     <section className="settings-section">
       <h2>关于钢一下</h2>
       <p className="settings-note">
-        版本 0.1.0。不用服务器的开黑群聊：同一局域网直接互联，跨网经公共中继转发，消息全程加密，只有拿到房间码的人能看。
+        版本 {version || "…"}。不用服务器的开黑群聊：同一局域网直接互联，跨网经公共中继转发，消息全程加密，只有拿到房间码的人能看。
       </p>
       <p className="settings-note">在群里 5 秒内连发 3 条消息叠一层心之钢（规则群主可改），头像右下角是层数。</p>
     </section>

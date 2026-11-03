@@ -1,10 +1,11 @@
-// 输入区（V1.1）：表情、发图片、引用回复、@ 选人、多行输入。
+// 输入区（V1.1）：一条圆角输入框，左边表情和图片，右边圆形发送键；上方是引用卡片和 @ 选人列表。
 // Enter 发送，Shift+Enter 换行；输入「@」弹出群成员，选中后插入「@昵称 」并记下这个人，发送时文字里还留着的才算 @。
 // 粘贴或拖进来的图片直接发送（压缩在 App 里做）。
 import { useEffect, useRef, useState } from "react";
 import type { Identity, Member, Message } from "../api";
 import { EMOJI } from "../emoji";
 import { firstImage } from "../image";
+import { nameStyle } from "../avatars";
 import { displayName } from "../names";
 import { Avatar } from "./Avatar";
 import { Icon } from "./Icon";
@@ -59,10 +60,10 @@ export function Composer(p: Props) {
     const el = input.current;
     if (!el) return;
     el.style.height = "auto";
-    // 边框不算在 scrollHeight 里，要加回来，否则总差 2 像素、出现滚动条
-    const full = el.scrollHeight + 2;
-    el.style.height = `${Math.min(full, 132)}px`;
-    el.style.overflowY = full > 132 ? "auto" : "hidden";
+    // 输入框没有边框，scrollHeight 就是内容加内边距的高度
+    const full = el.scrollHeight;
+    el.style.height = `${Math.min(full, 140)}px`;
+    el.style.overflowY = full > 140 ? "auto" : "hidden";
   }, [draft]);
 
   useEffect(() => {
@@ -185,14 +186,15 @@ export function Composer(p: Props) {
   return (
     <div className="composer">
       {p.replyTo && (
-        <div className="reply-bar">
-          <Icon name="reply" size={14} />
-          <span className="reply-bar-text">
-            回复 {displayName(p.replyTo.authorId, p.members)}：
-            {p.replyTo.image ? "[图片]" : p.replyTo.text}
-          </span>
-          <button className="icon-button small" onClick={p.onCancelReply} aria-label="取消回复" title="取消回复">
-            <Icon name="close" size={14} />
+        <div className="reply-card">
+          <div className="reply-card-body" style={nameStyle(p.members.find((m) => m.memberId === p.replyTo?.authorId)?.fingerprint ?? p.replyTo.authorId)}>
+            <span className="reply-card-who">
+              {p.replyTo.authorId === p.me?.memberId ? "你" : displayName(p.replyTo.authorId, p.members)}
+            </span>
+            <span className="reply-card-text">{p.replyTo.image ? "[图片]" : p.replyTo.text}</span>
+          </div>
+          <button className="icon-button" onClick={p.onCancelReply} aria-label="取消回复" title="取消回复">
+            <Icon name="close" size={18} />
           </button>
         </div>
       )}
@@ -209,7 +211,7 @@ export function Composer(p: Props) {
                   mention(m, picker.at);
                 }}
               >
-                <Avatar fingerprint={m.fingerprint} name={m.nickname} avatar={m.avatar} size={24} />
+                <Avatar fingerprint={m.fingerprint} name={m.nickname} avatar={m.avatar} size={28} />
                 <span>{nameOf(m)}</span>
                 <span className="mention-fp">{m.fingerprint.slice(0, 6)}</span>
               </button>
@@ -217,17 +219,17 @@ export function Composer(p: Props) {
           ))}
         </ul>
       )}
-      <div className="composer-tools">
+      <div className="composer-bar">
         <div className="menu-anchor" ref={emojiRef}>
           <button
-            className="icon-button"
+            className={emojiOpen ? "icon-button round on" : "icon-button round"}
             disabled={!p.enabled}
             onClick={() => setEmojiOpen((o) => !o)}
             title="表情"
             aria-label="表情"
             aria-expanded={emojiOpen}
           >
-            <Icon name="smile" size={20} />
+            <Icon name="smile" size={23} />
           </button>
           {emojiOpen && (
             <div className="emoji-panel" role="dialog" aria-label="表情">
@@ -246,13 +248,13 @@ export function Composer(p: Props) {
           )}
         </div>
         <button
-          className="icon-button"
+          className="icon-button round"
           disabled={!p.enabled || busy}
           onClick={() => file.current?.click()}
           title="发图片（也可以直接粘贴或拖进来）"
           aria-label="发图片"
         >
-          <Icon name="image" size={20} />
+          <Icon name="image" size={23} />
         </button>
         <input
           ref={file}
@@ -264,46 +266,38 @@ export function Composer(p: Props) {
             e.currentTarget.value = "";
           }}
         />
+        <div className={tooLong ? "input-pill over" : "input-pill"}>
+          <textarea
+            ref={input}
+            rows={1}
+            value={draft}
+            onChange={(e) => onChange(e.currentTarget.value, e.currentTarget.selectionStart)}
+            onKeyDown={onKeyDown}
+            onPaste={(e) => {
+              const img = firstImage(e.clipboardData?.items);
+              if (img) {
+                e.preventDefault();
+                sendFile(img);
+              }
+            }}
+            placeholder={p.enabled ? "输入消息" : ""}
+            disabled={!p.enabled}
+            aria-label="输入消息"
+          />
+          {bytes > MAX_BYTES - 150 && (
+            <span className={tooLong ? "byte-count over" : "byte-count"} title="一条消息最多 900 字节">
+              {MAX_BYTES - bytes}
+            </span>
+          )}
+        </div>
         <button
-          className="icon-button"
-          disabled={!p.enabled}
-          onClick={() => {
-            insert("@");
-            const caret = (input.current?.selectionStart ?? draft.length) + 1;
-            setPicker({ at: caret - 1, query: "", index: 0 });
-          }}
-          title="@ 某人"
-          aria-label="@ 某人"
+          className="send-button"
+          disabled={!p.enabled || busy || !draft.trim() || tooLong}
+          onClick={submit}
+          title="发送（Enter）"
+          aria-label="发送"
         >
-          <Icon name="at" size={19} />
-        </button>
-        {bytes > MAX_BYTES - 150 && (
-          <span className={tooLong ? "byte-count over" : "byte-count"}>
-            {tooLong ? "太长了，" : ""}
-            {bytes}/{MAX_BYTES} 字节
-          </span>
-        )}
-      </div>
-      <div className="composer-row">
-        <textarea
-          ref={input}
-          rows={1}
-          value={draft}
-          onChange={(e) => onChange(e.currentTarget.value, e.currentTarget.selectionStart)}
-          onKeyDown={onKeyDown}
-          onPaste={(e) => {
-            const img = firstImage(e.clipboardData?.items);
-            if (img) {
-              e.preventDefault();
-              sendFile(img);
-            }
-          }}
-          placeholder={p.enabled ? "说点什么，Enter 发送，Shift+Enter 换行" : ""}
-          disabled={!p.enabled}
-          aria-label="输入消息"
-        />
-        <button className="primary send" disabled={!p.enabled || busy || !draft.trim() || tooLong} onClick={submit}>
-          发送
+          <Icon name="send" size={20} />
         </button>
       </div>
     </div>

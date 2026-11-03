@@ -38,12 +38,32 @@ export function timeText(ms: number, now = Date.now()): string {
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
 
-/// 房间列表右上角的时间：今天显示时分，其余只显示日期。
+/// 气泡里的时间：只显示时分。
+export function clockText(ms: number): string {
+  const d = new Date(ms);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/// 聊天里的日期分隔：今天、昨天、本周几、更早的日期。
+export function dayText(ms: number, now = Date.now()): string {
+  const d = new Date(ms);
+  const t = new Date(now);
+  const start = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((start(t) - start(d)) / 86_400_000);
+  if (days === 0) return "今天";
+  if (days === 1) return "昨天";
+  if (days > 1 && days < 7) return `星期${"日一二三四五六"[d.getDay()]}`;
+  if (d.getFullYear() === t.getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日`;
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
+/// 房间列表右上角的时间：今天显示时分，昨天显示「昨天」，其余只显示日期。
 export function shortTime(ms: number, now = Date.now()): string {
   if (!ms) return "";
   const d = new Date(ms);
   const t = new Date(now);
   if (d.toDateString() === t.toDateString()) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (dayText(ms, now) === "昨天") return "昨天";
   if (d.getFullYear() === t.getFullYear()) return `${d.getMonth() + 1}/${d.getDate()}`;
   return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
 }

@@ -1,5 +1,6 @@
-// 主界面（V1.1）：左边窄栏（我的头像 → 个人资料；聊天；设置），聊天时是房间列表 + 聊天区 + 右侧面板（群资料或搜索），
-// 设置时整个主区域是设置页。数据都从 api.ts 取；收到 hs://event 时只刷新受影响的部分。
+// 主界面（V1.1 第二版，参考 WhatsApp 的布局）：最左边窄栏（上面是聊天，下面是设置和我的头像），
+// 左栏按窄栏的选择显示聊天列表、设置或个人资料，中间始终是聊天区，右侧按需打开群资料或搜索。
+// 数据都从 api.ts 取；收到 hs://event 时只刷新受影响的部分。
 // 成员路径、中继和局域网状态没有推送，每 5 秒刷新一次。音效在这里决定播不播：本机音效开关、房间免打扰、音量。
 // 主题：设置里选了浅色或深色就写到 <html data-theme>，跟随系统时去掉这个属性，由 CSS 按系统设置切换。
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -23,11 +24,11 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { Dialog } from "./components/Dialog";
 import { GroupDrawer } from "./components/GroupDrawer";
 import { Icon } from "./components/Icon";
-import { ProfileDialog } from "./components/ProfileDialog";
+import { ProfilePanel } from "./components/ProfileDialog";
 import { RoomList } from "./components/RoomList";
 import { RuleDialog } from "./components/RuleDialog";
 import { SearchPanel } from "./components/SearchPanel";
-import { SettingsPage } from "./components/SettingsPage";
+import { SettingsPanel } from "./components/SettingsPage";
 import { compressForChat } from "./image";
 import { displayName } from "./names";
 import { playHeartsteel } from "./sound";
@@ -53,8 +54,7 @@ function App() {
   const [network, setNetwork] = useState<NetworkStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [view, setView] = useState<"chat" | "settings">("chat");
-  const [profileOpen, setProfileOpen] = useState(false);
+  const [left, setLeft] = useState<"chats" | "settings" | "profile">("chats");
   const [dialog, setDialog] = useState<DialogKind | null>(null);
   const [confirmKind, setConfirmKind] = useState<ConfirmKind | null>(null);
   const [ruleEdit, setRuleEdit] = useState<RoomRule | null>(null);
@@ -94,7 +94,7 @@ function App() {
     async (roomId: string) => {
       activeRef.current = roomId;
       setActive(roomId);
-      setView("chat");
+      setLeft("chats");
       api.setActiveRoom(roomId).catch(fail);
       setMessages([]);
       setMembers([]);
@@ -390,48 +390,47 @@ function App() {
     },
   };
 
+  const anyUnread = rooms.some((r) => r.unread > 0 && (!r.muted || r.mentioned));
+
   return (
     <div className="app">
       <nav className="rail" aria-label="主导航">
-        <button className="rail-me" onClick={() => setProfileOpen(true)} title="个人资料" aria-label="个人资料">
-          {me ? (
-            <Avatar fingerprint={me.fingerprint} name={me.nickname} avatar={me.avatar} size={38} />
-          ) : (
-            <span className="avatar" style={{ width: 38, height: 38 }} />
-          )}
-        </button>
         <button
-          className={view === "chat" ? "rail-item current" : "rail-item"}
-          onClick={() => setView("chat")}
+          className={left === "chats" ? "rail-item current" : "rail-item"}
+          onClick={() => setLeft("chats")}
           title="聊天"
           aria-label="聊天"
-          aria-current={view === "chat" ? "page" : undefined}
+          aria-current={left === "chats" ? "page" : undefined}
         >
-          <Icon name="chat" size={22} />
-          {rooms.some((r) => r.unread > 0 && (!r.muted || r.mentioned)) && <span className="rail-dot" />}
+          <Icon name="chat" size={23} />
+          {anyUnread && <span className="rail-dot" />}
         </button>
         <span className="rail-spacer" />
         <button
-          className={view === "settings" ? "rail-item current" : "rail-item"}
-          onClick={() => setView("settings")}
+          className={left === "settings" ? "rail-item current" : "rail-item"}
+          onClick={() => setLeft("settings")}
           title="设置"
           aria-label="设置"
-          aria-current={view === "settings" ? "page" : undefined}
+          aria-current={left === "settings" ? "page" : undefined}
         >
-          <Icon name="gear" size={22} />
+          <Icon name="gear" size={23} />
+        </button>
+        <button
+          className={left === "profile" ? "rail-me current" : "rail-me"}
+          onClick={() => setLeft("profile")}
+          title="个人资料"
+          aria-label="个人资料"
+        >
+          {me ? (
+            <Avatar fingerprint={me.fingerprint} name={me.nickname} avatar={me.avatar} size={30} />
+          ) : (
+            <span className="avatar" style={{ width: 30, height: 30 }} />
+          )}
         </button>
       </nav>
 
-      {view === "settings" && settings ? (
-        <SettingsPage
-          settings={settings}
-          relays={relays}
-          network={network}
-          onUpdate={updateSettings}
-          onPreview={playHeartsteel}
-        />
-      ) : (
-        <>
+      <aside className="sidebar">
+        {left === "chats" && (
           <RoomList
             rooms={rooms}
             active={active}
@@ -439,68 +438,97 @@ function App() {
             onCreate={() => setDialog("create")}
             onJoin={() => setDialog("join")}
           />
-          <div className="main">
-            {network?.lanDegraded && (
-              <div className="banner warn">局域网端口被其他软件占用，现在只能经中继联系群友。详情见设置。</div>
-            )}
-            {room ? (
-              <ChatView
-                room={room}
-                me={me}
-                members={members}
-                messages={messages}
-                relays={relays}
-                canLoadOlder={hasOlder}
-                pulse={pulse}
-                flash={flash}
-                highlight={highlight}
-                onLoadOlder={loadOlder}
-                onSend={send}
-                onSendImage={sendImage}
-                onJump={jumpTo}
-                onOpenDrawer={() => setPanel((p) => (p === "drawer" ? null : "drawer"))}
-                onOpenSearch={() => setPanel((p) => (p === "search" ? null : "search"))}
-                onCancelJoin={() => setConfirmKind("cancelJoin")}
-                onToast={setToast}
-              />
-            ) : (
-              <div className="welcome">
-                <img src={heartsteel} alt="" width={88} height={88} />
-                <h2>钢一下</h2>
-                <p>不用服务器的开黑群聊。在群里 5 秒内连发 3 条消息，叠一层心之钢。</p>
-                <div className="welcome-actions">
-                  <button className="primary" onClick={() => setDialog("create")}>
-                    建一个群
-                  </button>
-                  <button className="soft" onClick={() => setDialog("join")}>
-                    用房间码进群
-                  </button>
-                </div>
-              </div>
-            )}
+        )}
+        {left === "settings" && settings && (
+          <SettingsPanel
+            me={me}
+            settings={settings}
+            relays={relays}
+            network={network}
+            onUpdate={updateSettings}
+            onPreview={playHeartsteel}
+            onOpenProfile={() => setLeft("profile")}
+          />
+        )}
+        {left === "profile" && me && (
+          <ProfilePanel
+            me={me}
+            onSaved={(m) => {
+              setMe(m);
+              if (active) loadMembers(active);
+            }}
+            onToast={setToast}
+            onError={fail}
+          />
+        )}
+      </aside>
+
+      <div className="main">
+        {network?.lanDegraded && (
+          <div className="banner warn">局域网端口被其他软件占用，现在只能经中继联系群友。详情见「设置 → 网络」。</div>
+        )}
+        {room ? (
+          <ChatView
+            room={room}
+            me={me}
+            members={members}
+            messages={messages}
+            relays={relays}
+            canLoadOlder={hasOlder}
+            pulse={pulse}
+            flash={flash}
+            highlight={highlight}
+            onLoadOlder={loadOlder}
+            onSend={send}
+            onSendImage={sendImage}
+            onJump={jumpTo}
+            onOpenDrawer={() => setPanel((p) => (p === "drawer" ? null : "drawer"))}
+            onOpenSearch={() => setPanel((p) => (p === "search" ? null : "search"))}
+            onCancelJoin={() => setConfirmKind("cancelJoin")}
+            onToast={setToast}
+          />
+        ) : (
+          <div className="welcome">
+            <img src={heartsteel} alt="" width={120} height={120} />
+            <h2>钢一下</h2>
+            <p>不用服务器的开黑群聊。在群里 5 秒内连发 3 条消息，叠一层心之钢。</p>
+            <div className="welcome-actions">
+              <button className="primary" onClick={() => setDialog("create")}>
+                建一个群
+              </button>
+              <button className="outline" onClick={() => setDialog("join")}>
+                用房间码进群
+              </button>
+            </div>
+            <p className="welcome-foot">
+              <Icon name="lock" size={14} />
+              消息全程加密，只有拿到房间码的人能看到
+            </p>
           </div>
-          {room && panel === "drawer" && (
-            <GroupDrawer
-              room={room}
-              me={me}
-              members={members}
-              refreshKey={boardKey}
-              pulse={pulse}
-              onClose={() => setPanel(null)}
-              onCopyCode={copyCode}
-              onPrefs={setPrefs}
-              onRename={() => setDialog("rename")}
-              onEditRule={setRuleEdit}
-              onClearHistory={() => setConfirmKind("clearHistory")}
-              onLeave={() => setConfirmKind("leave")}
-              onDissolve={() => setConfirmKind("dissolve")}
-              onError={fail}
-            />
-          )}
-          {room && panel === "search" && (
-            <SearchPanel room={room} members={members} onJump={jumpTo} onClose={() => setPanel(null)} />
-          )}
-        </>
+        )}
+      </div>
+
+      {room && panel === "drawer" && (
+        <GroupDrawer
+          room={room}
+          me={me}
+          members={members}
+          refreshKey={boardKey}
+          pulse={pulse}
+          onClose={() => setPanel(null)}
+          onCopyCode={copyCode}
+          onSearch={() => setPanel("search")}
+          onPrefs={setPrefs}
+          onRename={() => setDialog("rename")}
+          onEditRule={setRuleEdit}
+          onClearHistory={() => setConfirmKind("clearHistory")}
+          onLeave={() => setConfirmKind("leave")}
+          onDissolve={() => setConfirmKind("dissolve")}
+          onError={fail}
+        />
+      )}
+      {room && panel === "search" && (
+        <SearchPanel room={room} members={members} onJump={jumpTo} onClose={() => setPanel(null)} />
       )}
 
       {error && (
@@ -512,17 +540,6 @@ function App() {
         <div className="toast" role="status">
           {toast}
         </div>
-      )}
-      {profileOpen && me && (
-        <ProfileDialog
-          me={me}
-          onSaved={(m) => {
-            setMe(m);
-            if (active) loadMembers(active);
-          }}
-          onClose={() => setProfileOpen(false)}
-          onToast={setToast}
-        />
       )}
       {confirmKind && (
         <ConfirmDialog

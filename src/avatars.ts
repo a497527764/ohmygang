@@ -32,3 +32,8 @@ export function initialOf(name: string | null | undefined, fallback: string): st
   const first = Array.from((name ?? "").trim())[0];
   return first ?? fallback.slice(0, 2).toUpperCase();
 }
+
+/// 群聊里每个人名字的颜色：按指纹算色相，浅色背景上用深一点，深色背景上用亮一点（由 CSS 的 --name-l 决定）。
+export function nameStyle(fingerprint: string): Record<string, string | number> {
+  return { ["--h"]: hueOf(fingerprint) };
+}

@@ -59,13 +59,13 @@ export function SearchPanel({ room, members, onJump, onClose }: Props) {
       }}
     >
       <header className="panel-head">
-        <h2>搜索聊天记录</h2>
-        <button className="icon-button" onClick={onClose} aria-label="关闭">
-          <Icon name="close" />
+        <button className="icon-button" onClick={onClose} aria-label="关闭" title="关闭">
+          <Icon name="close" size={20} />
         </button>
+        <h2>搜索消息</h2>
       </header>
-      <div className="panel-body">
-        <label className="search-box large">
+      <div className="panel-body search-body">
+        <label className="search-pill">
           <Icon name="search" size={16} />
           <input
             autoFocus
