@@ -746,8 +746,12 @@ impl Core {
 
         let row = rooms::get(&tx, room)?;
         let me = self.view.member_id;
+        let mut latest = 0;
         for s in &new_items {
             if let Some(item) = chat::to_item(&tx, s, &row)? {
+                if let TimelineItem::Chat(m) = &item {
+                    latest = latest.max(m.display_ts);
+                }
                 notes.push(CoreEvent::TimelineItemAdded {
                     room_id: *room,
                     alert: chat::should_alert(&item, is_live, &row, &me),
@@ -755,6 +759,10 @@ impl Core {
                     is_live,
                 });
             }
+        }
+        // 收到新消息也算房间活跃：房间列表的时间和排序跟着最后一条消息走
+        if latest > 0 {
+            room_store::touch(&tx, room, latest)?;
         }
         let chunks: Vec<&StoredEvent> = new_items
             .iter()

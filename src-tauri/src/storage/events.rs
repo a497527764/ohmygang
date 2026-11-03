@@ -377,7 +377,7 @@ pub fn get_in_room(
     .pop())
 }
 
-/// 本人在某房间写一条新事件并入库，返回签好名的事件。同时把房间的最近活跃时间推到这条事件。
+/// 本人在某房间写一条新事件并入库，返回签好名的事件。聊天流的事件同时把房间的最近活跃时间推到这条事件。
 pub fn append_own(
     conn: &Connection,
     me: &Identity,
@@ -392,7 +392,10 @@ pub fn append_own(
     let ts = next_ts(now_ms, last_ts(conn, room, &author)?);
     let e = build_event(me, *room, stream, seq, ts, k, body);
     put_event(conn, &e, ts, Some(Delivery::Pending))?;
-    crate::storage::rooms::touch(conn, room, ts)?;
+    // 只有聊天流（发言、发图）算房间活跃；改资料、叠层这些状态事件不改变房间列表的时间和排序
+    if stream == Stream::Chat {
+        crate::storage::rooms::touch(conn, room, ts)?;
+    }
     Ok(e)
 }
 

@@ -1,10 +1,10 @@
-// 设置页（需求 3.6 的本机部分）：昵称、心之钢音效、网络（允许互联网、中继列表）、聊天记录条数、备份与恢复、局域网提示。
-// 每项改动立即保存；中继地址不合格时显示 Rust 返回的中文错误，列表不变。
+// 设置页（需求 3.6 的本机部分）：占据主区域，左边分组，右边是这一组的设置。
+// 通用（外观、声音、后台运行）、网络（允许互联网、中继列表、局域网）、聊天记录（同步条数）、备份与恢复、关于。
+// 每项改动立即保存；中继地址不合格时显示 Rust 返回的中文错误，列表不变。昵称和头像在「个人资料」里改。
 import { useState } from "react";
-import type { Identity, NetworkStatus, RelayHealth, Settings } from "../api";
-import { Avatar } from "./Avatar";
+import type { NetworkStatus, RelayHealth, Settings } from "../api";
 import { BackupSection } from "./BackupSection";
-import { Icon } from "./Icon";
+import { Icon, type IconName } from "./Icon";
 
 const STATE_TEXT: Record<RelayHealth["state"], string> = {
   ok: "已连接",
@@ -13,26 +13,33 @@ const STATE_TEXT: Record<RelayHealth["state"], string> = {
   retired: "已停用",
 };
 
+const THEME_NAMES: Record<Settings["theme"], string> = { system: "跟随系统", light: "浅色", dark: "深色" };
+
+type Tab = "general" | "network" | "history" | "backup" | "about";
+const TABS: { id: Tab; name: string; icon: IconName }[] = [
+  { id: "general", name: "通用", icon: "sun" },
+  { id: "network", name: "网络", icon: "globe" },
+  { id: "history", name: "聊天记录", icon: "clock" },
+  { id: "backup", name: "备份与恢复", icon: "archive" },
+  { id: "about", name: "关于", icon: "info" },
+];
+
+type Patch = Partial<Omit<Settings, "defaultRelays">>;
+
 interface Props {
-  me: Identity | null;
   settings: Settings;
   relays: RelayHealth[] | null | undefined;
   network: NetworkStatus | null;
-  onClose: () => void;
-  onEditNickname: () => void;
   /// reject 时显示错误。
-  onUpdate: (patch: Partial<Omit<Settings, "defaultRelays">>) => Promise<void>;
+  onUpdate: (patch: Patch) => Promise<void>;
   onPreview: (volume: number) => void;
 }
 
 export function SettingsPage(p: Props) {
-  const { settings: s } = p;
-  const [newRelay, setNewRelay] = useState("");
+  const [tab, setTab] = useState<Tab>("general");
   const [error, setError] = useState<string | null>(null);
-  const [volume, setVolume] = useState(s.volume);
-  const [limits, setLimits] = useState({ lan: String(s.historyLimitLan), relay: String(s.historyLimitRelay) });
 
-  async function update(patch: Partial<Omit<Settings, "defaultRelays">>): Promise<boolean> {
+  async function update(patch: Patch): Promise<boolean> {
     setError(null);
     try {
       await p.onUpdate(patch);
@@ -43,53 +50,65 @@ export function SettingsPage(p: Props) {
     }
   }
 
-  async function addRelay() {
-    const url = newRelay.trim();
-    if (!url) return;
-    if (await update({ relays: [...s.relays, url] })) setNewRelay("");
-  }
-
-  const health = (url: string) => p.relays?.find((r) => r.url === url);
-  const isDefault =
-    s.relays.length === s.defaultRelays.length && s.relays.every((u, i) => u === s.defaultRelays[i]);
-
   return (
-    <div className="overlay" onMouseDown={p.onClose}>
-      <div
-        className="settings"
-        role="dialog"
-        aria-label="设置"
-        onMouseDown={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") p.onClose();
-        }}
-      >
-        <header className="settings-head">
-          <h2>设置</h2>
-          <button className="icon-button" onClick={p.onClose} aria-label="关闭" autoFocus>
-            <Icon name="close" />
+    <div className="settings-page">
+      <nav className="settings-nav" aria-label="设置分组">
+        <h1>设置</h1>
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            className={t.id === tab ? "current" : undefined}
+            aria-current={t.id === tab ? "page" : undefined}
+            onClick={() => {
+              setTab(t.id);
+              setError(null);
+            }}
+          >
+            <Icon name={t.icon} size={17} />
+            {t.name}
           </button>
-        </header>
+        ))}
+      </nav>
+      <div className="settings-content">
+        <div className="settings-inner">
+          {tab === "general" && <General {...p} update={update} />}
+          {tab === "network" && <Network {...p} update={update} />}
+          {tab === "history" && <History {...p} update={update} />}
+          {tab === "backup" && <BackupSection />}
+          {tab === "about" && <About />}
+          {error && <p className="field-error">{error}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-        <section className="settings-section">
-          <h3>我的资料</h3>
-          {p.me && (
-            <div className="profile">
-              <Avatar fingerprint={p.me.fingerprint} name={p.me.nickname} size={48} />
-              <div className="profile-text">
-                <span className="profile-name">{p.me.nickname || "还没设置昵称"}</span>
-                <span className="profile-fp">公钥指纹 {p.me.fingerprint}</span>
-              </div>
-              <button className="soft" onClick={p.onEditNickname}>
-                改昵称
-              </button>
-            </div>
-          )}
-          <p className="settings-note">昵称可以和别人重名，群友核对身份时请以公钥指纹为准。</p>
-        </section>
+type SectionProps = Props & { update: (patch: Patch) => Promise<boolean> };
 
-        <section className="settings-section">
-          <h3>声音</h3>
+function General({ settings: s, update, onPreview }: SectionProps) {
+  const [volume, setVolume] = useState(s.volume);
+  return (
+    <>
+      <section className="settings-section">
+        <h2>外观</h2>
+        <div className="segmented" role="radiogroup" aria-label="主题">
+          {(Object.keys(THEME_NAMES) as Settings["theme"][]).map((t) => (
+            <button
+              key={t}
+              role="radio"
+              aria-checked={s.theme === t}
+              className={s.theme === t ? "selected" : undefined}
+              onClick={() => update({ theme: t })}
+            >
+              {THEME_NAMES[t]}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h2>声音</h2>
+        <div className="settings-card">
           <label className="switch-row">
             <span>叠层时播放心之钢音效</span>
             <input
@@ -113,15 +132,41 @@ export function SettingsPage(p: Props) {
               aria-label="音量"
             />
             <span className="volume-value">{volume}</span>
-            <button className="soft" onClick={() => p.onPreview(volume)} disabled={!s.soundEnabled}>
+            <button className="soft small" onClick={() => onPreview(volume)} disabled={!s.soundEnabled}>
               <Icon name="speaker" size={14} />
               试听
             </button>
           </div>
-        </section>
+        </div>
+      </section>
 
-        <section className="settings-section">
-          <h3>网络</h3>
+      <section className="settings-section">
+        <h2>后台运行</h2>
+        <p className="settings-note">
+          点窗口右上角的关闭按钮只会把窗口收进右下角的托盘，程序继续收消息、叠层照常响。窗口不在眼前时来了新消息，托盘图标会出现红点，任务栏按钮会闪烁。要彻底退出，请右键托盘里的钢一下图标，选「退出」。
+        </p>
+      </section>
+    </>
+  );
+}
+
+function Network({ settings: s, relays, network, update }: SectionProps) {
+  const [newRelay, setNewRelay] = useState("");
+  const health = (url: string) => relays?.find((r) => r.url === url);
+  const isDefault =
+    s.relays.length === s.defaultRelays.length && s.relays.every((u, i) => u === s.defaultRelays[i]);
+
+  async function addRelay() {
+    const url = newRelay.trim();
+    if (!url) return;
+    if (await update({ relays: [...s.relays, url] })) setNewRelay("");
+  }
+
+  return (
+    <>
+      <section className="settings-section">
+        <h2>互联网中继</h2>
+        <div className="settings-card">
           <label className="switch-row">
             <span>允许经互联网中继联系群友</span>
             <input
@@ -131,110 +176,120 @@ export function SettingsPage(p: Props) {
               onChange={(e) => update({ internetAllowed: e.currentTarget.checked })}
             />
           </label>
-          <p className="settings-note">关闭后只能和同一局域网（同一个路由器）里的群友联系。</p>
+        </div>
+        <p className="settings-note">关闭后只能和同一局域网（同一个路由器）里的群友联系。</p>
 
-          <ul className="relay-list" aria-label="中继列表">
-            {s.relays.map((url) => {
-              const h = health(url);
-              const state = !s.internetAllowed ? "off" : (h?.state ?? "connecting");
-              return (
-                <li key={url}>
-                  <span className={`relay-dot ${state}`} />
-                  <span className="relay-url">{url}</span>
-                  <span className="relay-state">
-                    {state === "off" ? "未启用" : STATE_TEXT[state]}
-                    {state === "ok" && h?.lastEchoMs != null && ` ${h.lastEchoMs} ms`}
-                  </span>
-                  <button
-                    className="icon-button small"
-                    onClick={() => update({ relays: s.relays.filter((u) => u !== url) })}
-                    aria-label={`删除 ${url}`}
-                    title="删除"
-                  >
-                    <Icon name="close" size={14} />
-                  </button>
-                </li>
-              );
-            })}
-            {s.relays.length === 0 && <li className="relay-empty">没有中继，只能经局域网联系。</li>}
-          </ul>
-          <form
-            className="relay-add"
-            onSubmit={(e) => {
-              e.preventDefault();
-              addRelay();
-            }}
-          >
-            <input
-              value={newRelay}
-              onChange={(e) => setNewRelay(e.currentTarget.value)}
-              placeholder="wss://中继地址"
-              aria-label="新中继地址"
-            />
-            <button type="submit" className="soft" disabled={!newRelay.trim()}>
-              添加
-            </button>
-            <button type="button" className="ghost" disabled={isDefault} onClick={() => update({ relays: s.defaultRelays })}>
-              恢复默认
-            </button>
-          </form>
-          {error && <p className="field-error">{error}</p>}
-        </section>
+        <ul className="relay-list" aria-label="中继列表">
+          {s.relays.map((url) => {
+            const h = health(url);
+            const state = !s.internetAllowed ? "off" : (h?.state ?? "connecting");
+            return (
+              <li key={url}>
+                <span className={`relay-dot ${state}`} />
+                <span className="relay-url">{url}</span>
+                <span className="relay-state">
+                  {state === "off" ? "未启用" : STATE_TEXT[state]}
+                  {state === "ok" && h?.lastEchoMs != null && ` ${h.lastEchoMs} ms`}
+                </span>
+                <button
+                  className="icon-button small"
+                  onClick={() => update({ relays: s.relays.filter((u) => u !== url) })}
+                  aria-label={`删除 ${url}`}
+                  title="删除"
+                >
+                  <Icon name="close" size={14} />
+                </button>
+              </li>
+            );
+          })}
+          {s.relays.length === 0 && <li className="relay-empty">没有中继，只能经局域网联系。</li>}
+        </ul>
+        <form
+          className="relay-add"
+          onSubmit={(e) => {
+            e.preventDefault();
+            addRelay();
+          }}
+        >
+          <input
+            value={newRelay}
+            onChange={(e) => setNewRelay(e.currentTarget.value)}
+            placeholder="wss://中继地址"
+            aria-label="新中继地址"
+          />
+          <button type="submit" className="soft" disabled={!newRelay.trim()}>
+            添加
+          </button>
+          <button type="button" className="ghost" disabled={isDefault} onClick={() => update({ relays: s.defaultRelays })}>
+            恢复默认
+          </button>
+        </form>
+      </section>
 
-        <section className="settings-section">
-          <h3>聊天记录</h3>
-          <p className="settings-note">新进一个群时，最多从群友那里同步最近多少条聊天。层数和群成员总是完整同步，不受这个数影响。</p>
-          <div className="limit-row">
-            <label>
-              <span>经局域网</span>
-              <input
-                type="number"
-                min={0}
-                max={100000}
-                value={limits.lan}
-                onChange={(e) => setLimits({ ...limits, lan: e.currentTarget.value })}
-                onBlur={() => update({ historyLimitLan: Number(limits.lan) || 0 })}
-              />
-              <span>条</span>
-            </label>
-            <label>
-              <span>经中继</span>
-              <input
-                type="number"
-                min={0}
-                max={100000}
-                value={limits.relay}
-                onChange={(e) => setLimits({ ...limits, relay: e.currentTarget.value })}
-                onBlur={() => update({ historyLimitRelay: Number(limits.relay) || 0 })}
-              />
-              <span>条</span>
-            </label>
-          </div>
-        </section>
-
-        <BackupSection />
-
-        <section className="settings-section">
-          <h3>后台运行</h3>
-          <p className="settings-note">
-            点窗口右上角的关闭按钮只会把窗口收进右下角的托盘，程序继续收消息、叠层照常响。要彻底退出，请右键托盘里的心之钢图标，选「退出」。
+      <section className="settings-section">
+        <h2>局域网</h2>
+        {network?.lanDegraded ? (
+          <p className="settings-warn">
+            局域网端口被其他软件占用，现在用的是临时端口 {network.lanPort}，收不到同一局域网群友的消息，只能经中继联系。关掉占用端口
+            47480 的软件后重开本程序即可恢复。
           </p>
-        </section>
+        ) : (
+          <p className="settings-note">
+            局域网端口 {network?.lanPort ?? "…"}。第一次运行时 Windows 防火墙会询问，请勾选「专用网络」并允许，否则同一局域网的群友找不到你。
+          </p>
+        )}
+      </section>
+    </>
+  );
+}
 
-        <section className="settings-section">
-          <h3>局域网</h3>
-          {p.network?.lanDegraded ? (
-            <p className="settings-warn">
-              局域网端口被其他软件占用，现在用的是临时端口 {p.network.lanPort}，收不到同一局域网群友的消息，只能经中继联系。关掉占用端口
-              47480 的软件后重开本程序即可恢复。
-            </p>
-          ) : (
-            <p className="settings-note">
-              局域网端口 {p.network?.lanPort ?? "…"}。第一次运行时 Windows 防火墙会询问，请勾选「专用网络」并允许，否则同一局域网的群友找不到你。
-            </p>
-          )}
-        </section>
+function History({ settings: s, update }: SectionProps) {
+  const [limits, setLimits] = useState({ lan: String(s.historyLimitLan), relay: String(s.historyLimitRelay) });
+  return (
+    <section className="settings-section">
+      <h2>新进群时同步多少聊天</h2>
+      <p className="settings-note">
+        新进一个群时，最多从群友那里同步最近多少条消息。层数和群成员总是完整同步，不受这个数影响。中继每秒只能传几条，所以经中继的少一些。
+      </p>
+      <div className="settings-card limit-rows">
+        <label className="limit-row">
+          <span>经局域网</span>
+          <input
+            type="number"
+            min={0}
+            max={100000}
+            value={limits.lan}
+            onChange={(e) => setLimits({ ...limits, lan: e.currentTarget.value })}
+            onBlur={() => update({ historyLimitLan: Number(limits.lan) || 0 })}
+          />
+          <span>条</span>
+        </label>
+        <label className="limit-row">
+          <span>经中继</span>
+          <input
+            type="number"
+            min={0}
+            max={100000}
+            value={limits.relay}
+            onChange={(e) => setLimits({ ...limits, relay: e.currentTarget.value })}
+            onBlur={() => update({ historyLimitRelay: Number(limits.relay) || 0 })}
+          />
+          <span>条</span>
+        </label>
       </div>
-    </div>
+      <p className="settings-note">要清空某个群的聊天记录，到那个群的「群资料」里操作。</p>
+    </section>
+  );
+}
+
+function About() {
+  return (
+    <section className="settings-section">
+      <h2>关于钢一下</h2>
+      <p className="settings-note">
+        版本 0.1.0。不用服务器的开黑群聊：同一局域网直接互联，跨网经公共中继转发，消息全程加密，只有拿到房间码的人能看。
+      </p>
+      <p className="settings-note">在群里 5 秒内连发 3 条消息叠一层心之钢（规则群主可改），头像右下角是层数。</p>
+    </section>
   );
 }

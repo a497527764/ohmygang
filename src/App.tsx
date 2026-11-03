@@ -1,6 +1,7 @@
-// 主界面（M1-5，微信式）：左边窄栏（我的头像、聊天、设置），房间列表，聊天区；群资料是右侧抽屉，设置是弹出页。
-// 数据都从 api.ts 取；收到 hs://event 时只刷新受影响的部分。成员路径、中继和局域网状态没有推送，每 5 秒刷新一次。
-// 音效在这里决定播不播：本机音效开关、房间免打扰、音量。
+// 主界面（V1.1）：左边窄栏（我的头像 → 个人资料；聊天；设置），聊天时是房间列表 + 聊天区 + 右侧面板（群资料或搜索），
+// 设置时整个主区域是设置页。数据都从 api.ts 取；收到 hs://event 时只刷新受影响的部分。
+// 成员路径、中继和局域网状态没有推送，每 5 秒刷新一次。音效在这里决定播不播：本机音效开关、房间免打扰、音量。
+// 主题：设置里选了浅色或深色就写到 <html data-theme>，跟随系统时去掉这个属性，由 CSS 按系统设置切换。
 import { useCallback, useEffect, useRef, useState } from "react";
 import heartsteel from "./assets/heartsteel.png";
 import {
@@ -22,47 +23,58 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { Dialog } from "./components/Dialog";
 import { GroupDrawer } from "./components/GroupDrawer";
 import { Icon } from "./components/Icon";
+import { ProfileDialog } from "./components/ProfileDialog";
 import { RoomList } from "./components/RoomList";
 import { RuleDialog } from "./components/RuleDialog";
+import { SearchPanel } from "./components/SearchPanel";
 import { SettingsPage } from "./components/SettingsPage";
+import { compressForChat } from "./image";
 import { displayName } from "./names";
 import { playHeartsteel } from "./sound";
 import "./app.css";
 
 const PAGE = 100;
+/// 跳到一条旧消息时最多往前翻多少页。
+const MAX_JUMP_PAGES = 60;
 
-type DialogKind = "create" | "join" | "nickname" | "rename";
-type ConfirmKind = "leave" | "dissolve" | "cancelJoin";
+type DialogKind = "create" | "join" | "rename";
+type ConfirmKind = "leave" | "dissolve" | "cancelJoin" | "clearHistory";
+type Panel = "drawer" | "search" | null;
 
 function App() {
   const [me, setMe] = useState<Identity | null>(null);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [hasOlder, setHasOlder] = useState(false);
   const [members, setMembers] = useState<Member[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [relays, setRelays] = useState<RelayHealth[] | null | undefined>(undefined);
   const [network, setNetwork] = useState<NetworkStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [view, setView] = useState<"chat" | "settings">("chat");
+  const [profileOpen, setProfileOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogKind | null>(null);
   const [confirmKind, setConfirmKind] = useState<ConfirmKind | null>(null);
   const [ruleEdit, setRuleEdit] = useState<RoomRule | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [panel, setPanel] = useState<Panel>(null);
   const [pulse, setPulse] = useState<Pulse | null>(null);
   const [flash, setFlash] = useState<Flash | null>(null);
+  const [highlight, setHighlight] = useState<{ eventId: string; key: number } | null>(null);
   const [boardKey, setBoardKey] = useState(0);
   // 事件回调里要读最新值，用 ref 存一份
   const activeRef = useRef<string | null>(null);
   const roomsRef = useRef<Room[]>([]);
   const settingsRef = useRef<Settings | null>(null);
   const membersRef = useRef<Member[]>([]);
+  const messagesRef = useRef<Message[]>([]);
   roomsRef.current = rooms;
   settingsRef.current = settings;
   membersRef.current = members;
+  messagesRef.current = messages;
 
-  const fail = useCallback((e: unknown) => setError(String(e)), []);
+  const fail = useCallback((e: unknown) => setError(e instanceof Error ? e.message : String(e)), []);
   // 补齐时会一下子来很多条：标记已读和刷新房间列表攒一下，300 毫秒内只做一次
   const readTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -82,14 +94,17 @@ function App() {
     async (roomId: string) => {
       activeRef.current = roomId;
       setActive(roomId);
+      setView("chat");
       api.setActiveRoom(roomId).catch(fail);
       setMessages([]);
       setMembers([]);
-      setDrawerOpen(false);
+      setPanel(null);
+      setHighlight(null);
       try {
         const [list, people] = await Promise.all([api.messages(roomId, null, PAGE), api.members(roomId)]);
         if (activeRef.current !== roomId) return;
         setMessages(list);
+        setHasOlder(list.length >= PAGE);
         setMembers(people);
         await api.markRead(roomId);
         await loadRooms();
@@ -121,6 +136,11 @@ function App() {
           const ids = new Set(e.eventIds);
           setMessages((list) => list.map((m) => (ids.has(m.eventId) ? { ...m, delivery: "sent" } : m)));
         }
+        if (e.type === "imageReady") {
+          setMessages((list) =>
+            list.map((m) => (m.eventId === e.eventId && m.image ? { ...m, image: { ...m.image, ready: true } } : m)),
+          );
+        }
         if (e.type === "timeline") {
           setMessages((list) => mergeMessages(list, [e.message]));
           if (!readTimer.current) {
@@ -137,12 +157,21 @@ function App() {
         }
       }
       if (e.type === "mismatch") setError("有群友的版本和你不同，请双方更新到同一版本");
-      if ((e.type !== "timeline" && e.type !== "delivered") || e.roomId !== current) loadRooms();
+      if ((e.type !== "timeline" && e.type !== "delivered" && e.type !== "imageReady") || e.roomId !== current) {
+        loadRooms();
+      }
     });
     return () => {
       off.then((f) => f());
     };
   }, [loadRooms, loadMembers, fail]);
+
+  // 主题：跟随系统时去掉 data-theme，由 CSS 的 prefers-color-scheme 决定
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!settings || settings.theme === "system") delete root.dataset.theme;
+    else root.dataset.theme = settings.theme;
+  }, [settings]);
 
   // 成员路径、中继和局域网状态没有推送，定时刷新
   useEffect(() => {
@@ -171,6 +200,11 @@ function App() {
     const t = setTimeout(() => setFlash(null), 1800);
     return () => clearTimeout(t);
   }, [flash]);
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 8000);
+    return () => clearTimeout(t);
+  }, [error]);
 
   const room = rooms.find((r) => r.roomId === active) ?? null;
 
@@ -178,7 +212,7 @@ function App() {
     if (!active) return;
     try {
       await navigator.clipboard.writeText(await api.roomCode(active));
-      setToast("房间码已复制，发给群友即可加入");
+      setToast("房间码已复制，发给群友就能进群");
     } catch (e) {
       fail(e);
     }
@@ -190,24 +224,21 @@ function App() {
       await loadRooms();
       await openRoom(created.room.roomId);
       await navigator.clipboard.writeText(created.code).catch(() => {});
-      setToast("建好了，房间码已复制，发给群友即可加入");
+      setToast("建好了，房间码已复制，发给群友就能进群");
     } else if (kind === "join") {
       const joined = await api.joinRoom(value.trim());
       await loadRooms();
       await openRoom(joined.roomId);
-    } else if (kind === "rename") {
+    } else {
       if (!active) return;
       await api.renameRoom(active, value);
       await afterManage(active);
-    } else {
-      setMe(await api.setProfile(value, null));
-      if (active) loadMembers(active);
     }
     setDialog(null);
   }
 
   /// 群管理操作之后：刷新房间列表、当前房间的消息和成员、群资料。
-  /// 不用 openRoom：那会关掉群资料抽屉，改完群名或规则还要接着看。
+  /// 不用 openRoom：那会关掉群资料，改完群名或规则还要接着看。
   async function afterManage(roomId: string) {
     await loadRooms();
     if (activeRef.current === roomId) {
@@ -227,20 +258,27 @@ function App() {
     } else if (kind === "dissolve") {
       await api.dissolveRoom(roomId);
       await afterManage(roomId);
+    } else if (kind === "clearHistory") {
+      await api.clearHistory(roomId);
+      setMessages([]);
+      setHasOlder(false);
+      await loadRooms();
+      setToast("本机的聊天记录已清空");
     } else {
       await api.cancelJoin(roomId);
       activeRef.current = null;
       setActive(null);
+      setPanel(null);
       api.setActiveRoom(null).catch(fail);
       await loadRooms();
     }
     setConfirmKind(null);
   }
 
-  async function send(text: string): Promise<boolean> {
+  async function send(text: string, replyTo: string | null, mentions: string[]): Promise<boolean> {
     if (!active) return false;
     try {
-      const sent = await api.send(active, text);
+      const sent = await api.send(active, text, replyTo, mentions);
       setMessages((list) => mergeMessages(list, [sent]));
       loadMembers(active);
       return true;
@@ -250,15 +288,57 @@ function App() {
     }
   }
 
-  async function loadOlder() {
-    if (!active || messages.length === 0) return;
-    const first = messages[0];
+  async function sendImage(file: Blob): Promise<boolean> {
+    if (!active) return false;
+    const roomId = active;
     try {
-      const older = await api.messages(active, { displayTs: first.displayTs, eventId: first.eventId }, PAGE);
+      const c = await compressForChat(file);
+      const sent = await api.sendImage(roomId, c.data, c.width, c.height);
+      if (activeRef.current === roomId) setMessages((list) => mergeMessages(list, [sent]));
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  }
+
+  async function loadOlder() {
+    const roomId = activeRef.current;
+    const first = messagesRef.current[0];
+    if (!roomId || !first) return;
+    try {
+      const older = await api.messages(roomId, { displayTs: first.displayTs, eventId: first.eventId }, PAGE);
+      if (activeRef.current !== roomId) return;
+      setHasOlder(older.length >= PAGE);
       setMessages((list) => mergeMessages(list, older));
     } catch (e) {
       fail(e);
     }
+  }
+
+  /// 跳到一条消息：不在已加载的范围里就往前翻页，直到找到为止。
+  async function jumpTo(eventId: string) {
+    const roomId = activeRef.current;
+    if (!roomId) return;
+    let list = messagesRef.current;
+    let more = hasOlder;
+    try {
+      for (let page = 0; !list.some((m) => m.eventId === eventId) && more && page < MAX_JUMP_PAGES; page++) {
+        const first = list[0];
+        if (!first) break;
+        const older = await api.messages(roomId, { displayTs: first.displayTs, eventId: first.eventId }, PAGE);
+        if (activeRef.current !== roomId) return;
+        more = older.length >= PAGE;
+        list = mergeMessages(list, older);
+      }
+    } catch (e) {
+      fail(e);
+      return;
+    }
+    setMessages(list);
+    setHasOlder(more);
+    if (list.some((m) => m.eventId === eventId)) setHighlight({ eventId, key: Date.now() });
+    else setToast("原消息不在本机（可能早于同步范围或已清空）");
   }
 
   async function setPrefs(prefs: { muted?: boolean; pinned?: boolean }) {
@@ -279,16 +359,15 @@ function App() {
   }
 
   const dialogProps = {
-    create: { title: "建一个群", confirm: "建房", placeholder: "群名称，比如：周五开黑", maxLength: 64 },
-    join: { title: "用房间码进房", confirm: "进房", placeholder: "粘贴群友发来的房间码（HS1- 开头）" },
-    nickname: { title: "修改昵称", confirm: "保存", placeholder: "最多 32 个字", maxLength: 32, initial: me?.nickname ?? "" },
+    create: { title: "建一个群", confirm: "建群", placeholder: "群名称，比如：周五开黑", maxLength: 64 },
+    join: { title: "用房间码进群", confirm: "进群", placeholder: "粘贴群友发来的房间码（HS1- 开头）" },
     rename: { title: "修改群名称", confirm: "保存", placeholder: "最多 64 个字", maxLength: 64, initial: room?.title ?? "" },
   };
   const roomTitle = room?.title ?? "这个群";
   const confirmProps: Record<ConfirmKind, { title: string; message: string; confirm: string; danger?: boolean }> = {
     leave: {
       title: "退出群聊",
-      message: `退出「${roomTitle}」后不再收发这个群的消息。聊天记录保留在本机只读，你的心之钢层数保留，以后用房间码可以重新进房。`,
+      message: `退出「${roomTitle}」后不再收发这个群的消息。聊天记录保留在本机只读，你的心之钢层数保留，以后用房间码可以重新进群。`,
       confirm: "退出",
       danger: true,
     },
@@ -300,106 +379,149 @@ function App() {
     },
     cancelJoin: {
       title: "取消加入",
-      message: `不再等待加入「${roomTitle}」。以后想进还可以再用房间码进房。`,
+      message: `不再等待加入「${roomTitle}」。以后想进还可以再用房间码进群。`,
       confirm: "取消加入",
+    },
+    clearHistory: {
+      title: "清空聊天记录",
+      message: `清空后，这台电脑上不再显示「${roomTitle}」现在的聊天记录。只影响你自己：群友那里的记录不变，心之钢层数不变，之后的新消息照常显示。`,
+      confirm: "清空",
+      danger: true,
     },
   };
 
   return (
     <div className="app">
       <nav className="rail" aria-label="主导航">
-        <button className="rail-me" onClick={() => setSettingsOpen(true)} title="我的资料和设置">
-          {me ? <Avatar fingerprint={me.fingerprint} name={me.nickname} size={36} /> : <span className="avatar" />}
+        <button className="rail-me" onClick={() => setProfileOpen(true)} title="个人资料" aria-label="个人资料">
+          {me ? (
+            <Avatar fingerprint={me.fingerprint} name={me.nickname} avatar={me.avatar} size={38} />
+          ) : (
+            <span className="avatar" style={{ width: 38, height: 38 }} />
+          )}
         </button>
-        <button className="rail-item current" title="聊天" aria-current="page">
+        <button
+          className={view === "chat" ? "rail-item current" : "rail-item"}
+          onClick={() => setView("chat")}
+          title="聊天"
+          aria-label="聊天"
+          aria-current={view === "chat" ? "page" : undefined}
+        >
           <Icon name="chat" size={22} />
+          {rooms.some((r) => r.unread > 0 && (!r.muted || r.mentioned)) && <span className="rail-dot" />}
         </button>
         <span className="rail-spacer" />
-        <button className="rail-item" onClick={() => setSettingsOpen(true)} title="设置" aria-label="设置">
+        <button
+          className={view === "settings" ? "rail-item current" : "rail-item"}
+          onClick={() => setView("settings")}
+          title="设置"
+          aria-label="设置"
+          aria-current={view === "settings" ? "page" : undefined}
+        >
           <Icon name="gear" size={22} />
         </button>
       </nav>
 
-      <RoomList
-        rooms={rooms}
-        active={active}
-        onOpen={openRoom}
-        onCreate={() => setDialog("create")}
-        onJoin={() => setDialog("join")}
-      />
-
-      <div className="main">
-        {network?.lanDegraded && (
-          <div className="banner warn">局域网端口被其他软件占用，现在只能经中继联系群友。详情见设置。</div>
-        )}
-        {error && (
-          <button className="banner error" onClick={() => setError(null)} title="点击关闭">
-            {error}
-          </button>
-        )}
-        {room ? (
-          <ChatView
-            room={room}
-            me={me}
-            members={members}
-            messages={messages}
-            relays={relays}
-            canLoadOlder={messages.length >= PAGE}
-            pulse={pulse}
-            flash={flash}
-            onLoadOlder={loadOlder}
-            onSend={send}
-            onOpenDrawer={() => setDrawerOpen(true)}
-            onCancelJoin={() => setConfirmKind("cancelJoin")}
-          />
-        ) : (
-          <div className="welcome">
-            <img src={heartsteel} alt="" width={96} height={96} />
-            <p>在群里 5 秒内连发 3 条消息，就能叠一层心之钢。</p>
-            <div className="welcome-actions">
-              <button className="primary" onClick={() => setDialog("create")}>
-                建房
-              </button>
-              <button className="soft" onClick={() => setDialog("join")}>
-                用房间码进房
-              </button>
-            </div>
-          </div>
-        )}
-        {toast && (
-          <div className="toast" role="status">
-            {toast}
-          </div>
-        )}
-      </div>
-
-      {room && drawerOpen && (
-        <GroupDrawer
-          room={room}
-          me={me}
-          members={members}
-          refreshKey={boardKey}
-          pulse={pulse}
-          onClose={() => setDrawerOpen(false)}
-          onCopyCode={copyCode}
-          onPrefs={setPrefs}
-          onRename={() => setDialog("rename")}
-          onEditRule={setRuleEdit}
-          onLeave={() => setConfirmKind("leave")}
-          onDissolve={() => setConfirmKind("dissolve")}
-          onError={fail}
-        />
-      )}
-      {settingsOpen && settings && (
+      {view === "settings" && settings ? (
         <SettingsPage
-          me={me}
           settings={settings}
           relays={relays}
           network={network}
-          onClose={() => setSettingsOpen(false)}
-          onEditNickname={() => setDialog("nickname")}
           onUpdate={updateSettings}
           onPreview={playHeartsteel}
+        />
+      ) : (
+        <>
+          <RoomList
+            rooms={rooms}
+            active={active}
+            onOpen={openRoom}
+            onCreate={() => setDialog("create")}
+            onJoin={() => setDialog("join")}
+          />
+          <div className="main">
+            {network?.lanDegraded && (
+              <div className="banner warn">局域网端口被其他软件占用，现在只能经中继联系群友。详情见设置。</div>
+            )}
+            {room ? (
+              <ChatView
+                room={room}
+                me={me}
+                members={members}
+                messages={messages}
+                relays={relays}
+                canLoadOlder={hasOlder}
+                pulse={pulse}
+                flash={flash}
+                highlight={highlight}
+                onLoadOlder={loadOlder}
+                onSend={send}
+                onSendImage={sendImage}
+                onJump={jumpTo}
+                onOpenDrawer={() => setPanel((p) => (p === "drawer" ? null : "drawer"))}
+                onOpenSearch={() => setPanel((p) => (p === "search" ? null : "search"))}
+                onCancelJoin={() => setConfirmKind("cancelJoin")}
+                onToast={setToast}
+              />
+            ) : (
+              <div className="welcome">
+                <img src={heartsteel} alt="" width={88} height={88} />
+                <h2>钢一下</h2>
+                <p>不用服务器的开黑群聊。在群里 5 秒内连发 3 条消息，叠一层心之钢。</p>
+                <div className="welcome-actions">
+                  <button className="primary" onClick={() => setDialog("create")}>
+                    建一个群
+                  </button>
+                  <button className="soft" onClick={() => setDialog("join")}>
+                    用房间码进群
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          {room && panel === "drawer" && (
+            <GroupDrawer
+              room={room}
+              me={me}
+              members={members}
+              refreshKey={boardKey}
+              pulse={pulse}
+              onClose={() => setPanel(null)}
+              onCopyCode={copyCode}
+              onPrefs={setPrefs}
+              onRename={() => setDialog("rename")}
+              onEditRule={setRuleEdit}
+              onClearHistory={() => setConfirmKind("clearHistory")}
+              onLeave={() => setConfirmKind("leave")}
+              onDissolve={() => setConfirmKind("dissolve")}
+              onError={fail}
+            />
+          )}
+          {room && panel === "search" && (
+            <SearchPanel room={room} members={members} onJump={jumpTo} onClose={() => setPanel(null)} />
+          )}
+        </>
+      )}
+
+      {error && (
+        <button className="banner error floating" onClick={() => setError(null)} title="点击关闭">
+          {error}
+        </button>
+      )}
+      {toast && (
+        <div className="toast" role="status">
+          {toast}
+        </div>
+      )}
+      {profileOpen && me && (
+        <ProfileDialog
+          me={me}
+          onSaved={(m) => {
+            setMe(m);
+            if (active) loadMembers(active);
+          }}
+          onClose={() => setProfileOpen(false)}
+          onToast={setToast}
         />
       )}
       {confirmKind && (

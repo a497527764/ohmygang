@@ -147,6 +147,11 @@ fn nickname_change_emits_profile_in_active_rooms() {
     assert!(events[0].event.ts_ms > created.events.last().unwrap().event.ts_ms);
     assert_eq!(a.identity().nickname, "新名字");
     assert_eq!(
+        a.list_rooms().unwrap()[0].last_active,
+        1000,
+        "改资料不改变房间列表的时间"
+    );
+    assert_eq!(
         a.list_members(&room).unwrap()[0].nickname.as_deref(),
         Some("新名字")
     );

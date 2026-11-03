@@ -182,6 +182,10 @@ fn room_preview_and_mention_flag() {
     a.ingest_events(&room, &at.events, true, 11_100).unwrap();
     let s = summary(&a);
     assert_eq!(s.preview.as_deref(), Some("乙：@甲 来 了"));
+    assert_eq!(
+        s.last_active, at.message.display_ts,
+        "收到消息也更新房间的活跃时间"
+    );
     assert!(s.mentioned);
     assert_eq!(s.unread, 1);
     a.mark_read(&room).unwrap();
