@@ -1,4 +1,4 @@
-//! 实时帧（2.0 架构第 5 节）：在线状态、信号、表情和导入表情的传输、对线的鼠标和充能，以后加上文字、投票。
+//! 实时帧（2.0 架构第 5 节）：在线状态、信号、表情和导入表情的传输、对线的鼠标和充能、文字、投票。
 //! 不入库、不补齐，丢了就丢了。做法参考 lolPing 设计文档 12 节（MIT，© 2026 Danrui Meng）。
 //!
 //! 实现流程：
@@ -63,6 +63,9 @@ pub enum LiveBody {
         /// 轮盘上导入表情的哈希，每个 16 字节连在一起，最多 9 个（没有这张图的队友来要）。
         #[serde(rename = "e", default, with = "serde_bytes")]
         emotes: Vec<u8>,
+        /// 关掉了的功能：`OFF_TEXT`、`OFF_VOTES` 按位或。关了投票的人不算投票人。
+        #[serde(rename = "f", default)]
+        off: u8,
     },
     /// 信号：第几号显示器、0–65535 的比例位置、信号 id。
     #[serde(rename = "G")]
@@ -130,10 +133,44 @@ pub enum LiveBody {
         #[serde(rename = "o")]
         on: bool,
     },
+    /// 一句话（Alt+T）：第几号显示器、比例位置、最多 120 个字。
+    #[serde(rename = "T")]
+    Text {
+        #[serde(rename = "d")]
+        display: u8,
+        #[serde(rename = "x")]
+        x: u16,
+        #[serde(rename = "y")]
+        y: u16,
+        #[serde(rename = "t")]
+        text: String,
+    },
+    /// 发起投票：编号、种类（`VoteKind::code`）、踢人时的目标。
+    #[serde(rename = "V")]
+    Vote {
+        #[serde(rename = "i")]
+        id: u32,
+        #[serde(rename = "k")]
+        kind: u8,
+        #[serde(rename = "t", default, with = "serde_bytes")]
+        target: Option<MemberId>,
+    },
+    /// 对投票的回答；投票结束前每 3 秒重发一次（实时帧可能丢）。
+    #[serde(rename = "B")]
+    Ballot {
+        #[serde(rename = "i")]
+        id: u32,
+        #[serde(rename = "y")]
+        yes: bool,
+    },
     /// 离开队伍或退出程序。
     #[serde(rename = "Y")]
     Bye,
 }
+
+/// 在线状态里「关掉了的功能」的位。
+pub const OFF_TEXT: u8 = 1;
+pub const OFF_VOTES: u8 = 2;
 
 fn digest(room: &RoomId, from: &MemberId, seq: u64, ts_ms: u64, body: &[u8]) -> [u8; 32] {
     crypto::sha256(&[
@@ -273,6 +310,7 @@ mod tests {
             version: "2.0.0".into(),
             platform: "win".into(),
             emotes: vec![9; 32],
+            off: OFF_VOTES,
         };
         let w = sign_live(&me(), &ROOM, 6, NOW, &presence);
         assert_eq!(open_live(&w, &ROOM).unwrap().body, presence);
@@ -371,6 +409,17 @@ mod tests {
             fx: 5,
         };
         assert!(wire_len(&emote) < 200);
+        let text = LiveBody::Text {
+            display: 1,
+            x: 1,
+            y: 2,
+            text: "钢".repeat(crate::team_text::MAX_CHARS),
+        };
+        assert!(
+            wire_len(&text) <= crate::protocol::frame::MAX_FRAME_LEN,
+            "最长的文字帧 {} 字节",
+            wire_len(&text)
+        );
     }
 
     /// 最大的分块、报满 9 个哈希的在线状态都要装得进一个包。
@@ -401,8 +450,35 @@ mod tests {
             version: "20.10.100-beta.1".into(),
             platform: "linux".into(),
             emotes: vec![0xff; 16 * crate::emotes::ANNOUNCED_MAX],
+            off: 0xff,
         };
         assert!(wire_len(&presence) <= MAX_FRAME_LEN);
+    }
+
+    #[test]
+    fn votes_and_ballots_round_trip() {
+        for body in [
+            LiveBody::Vote {
+                id: 0xdead_beef,
+                kind: 2,
+                target: Some([5u8; 32]),
+            },
+            LiveBody::Vote {
+                id: 1,
+                kind: 0,
+                target: None,
+            },
+            LiveBody::Ballot { id: 7, yes: false },
+            LiveBody::Text {
+                display: 2,
+                x: 3,
+                y: 4,
+                text: "上路来人".into(),
+            },
+        ] {
+            let w = sign_live(&me(), &ROOM, 9, NOW, &body);
+            assert_eq!(open_live(&w, &ROOM).unwrap().body, body);
+        }
     }
 
     /// 旧的在线状态（没有 e）照样能读，导入表情当作没有。
@@ -428,5 +504,9 @@ mod tests {
             panic!("不是在线状态");
         };
         assert!(emotes.is_empty());
+        let LiveBody::Presence { off, .. } = body::decode(&body::encode(&old)).unwrap() else {
+            panic!("不是在线状态");
+        };
+        assert_eq!(off, 0);
     }
 }

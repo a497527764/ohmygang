@@ -114,7 +114,7 @@ pub struct Config {
     pub click_ping: bool,
     /// 全屏程序（游戏）占着点击的那块屏幕时，触发键加点击原样放行。
     pub game_check: bool,
-    /// 表情轮盘的触发键（M4 才用，默认关）。
+    /// 表情轮盘的触发键；None 表示关。
     pub emote_trigger: Trigger,
     pub emote_click: bool,
     /// 按下后拖过这么多物理像素才开轮盘。
@@ -125,6 +125,11 @@ pub struct Config {
     /// 对线模式快捷键；vk 为 0 表示关（还没收到配置时什么都不拦）。
     pub laning_mods: u32,
     pub laning_vk: u32,
+    /// 队伍文字快捷键（默认 Alt+T）；vk 为 0 表示关（不在队伍里、关了文字）。
+    pub text_mods: u32,
+    pub text_vk: u32,
+    /// 按住显示队伍面板的键（默认 Tab，不带修饰键）；0 表示关。
+    pub panel_vk: u32,
     pub enabled: bool,
 }
 
@@ -141,6 +146,9 @@ impl Default for Config {
             toggle_vk: 0x50, // P
             laning_mods: MOD_CTRL | MOD_ALT,
             laning_vk: 0,
+            text_mods: MOD_ALT,
+            text_vk: 0,
+            panel_vk: 0,
             enabled: true,
         }
     }
@@ -185,6 +193,12 @@ pub enum Emit {
     },
     /// 按了对线模式快捷键。
     LaningToggled,
+    /// 按了队伍文字快捷键：打开输入框。
+    TextRequested,
+    /// 面板键按下（show）或松开；连发停了太久（抬起丢了）也会收起。
+    Panel {
+        show: bool,
+    },
 }
 
 /// 要回放给系统的输入，平台层带上自己的标记发出去。
@@ -209,6 +223,8 @@ pub struct Outcome {
 pub const MASK_VK: u32 = 0xFC;
 /// 手势这么久没有鼠标事件就当作卡住了，取消掉。
 pub const WATCHDOG_MS: u64 = 10_000;
+/// 按住的键连发间隔远小于这个；拦下的面板键这么久没连发，说明抬起丢了，收起面板。
+pub const PANEL_REPEAT_GAP_MS: u64 = 1_500;
 
 const VK_SHIFT: u32 = 0x10;
 const VK_CTRL: u32 = 0x11;
@@ -270,6 +286,12 @@ pub struct Gesture {
     px: i32,
     py: i32,
     last_mouse_ms: u64,
+    /// 最近一次鼠标事件的位置（面板键的全屏检查用）。
+    mx: i32,
+    my: i32,
+    /// 拦下了、还没见到抬起的面板键（0 表示没有），和它最近一次连发的时间。
+    panel_down: u32,
+    last_panel_ms: u64,
 }
 
 impl Default for Gesture {
@@ -300,6 +322,10 @@ impl Gesture {
             px: 0,
             py: 0,
             last_mouse_ms: 0,
+            mx: 0,
+            my: 0,
+            panel_down: 0,
+            last_panel_ms: 0,
         }
     }
 
@@ -357,9 +383,27 @@ impl Gesture {
         r
     }
 
+    /// 收起面板，不等抬起（系统不再告诉我们按键了）。抬起要是还来，照样拦下。
+    pub fn release_panel(&mut self) -> Outcome {
+        let mut r = Outcome::default();
+        if self.panel_down != 0 {
+            self.key_down[self.panel_down as usize] = false;
+            self.panel_down = 0;
+            r.emits.push(Emit::Panel { show: false });
+        }
+        r
+    }
+
     /// 平台层每秒调一次。
     pub fn tick(&mut self, now_ms: u64) -> Outcome {
         let mut r = Outcome::default();
+        // 拦下的面板键连发停了：抬起丢了，收起面板。真正的抬起要是还来，靠 swallow_key_ups 拦下。
+        if self.panel_down != 0
+            && now_ms > self.last_panel_ms
+            && now_ms - self.last_panel_ms > PANEL_REPEAT_GAP_MS
+        {
+            r = self.release_panel();
+        }
         let busy = matches!(self.state, State::Pending | State::Wheel);
         if busy && now_ms > self.last_mouse_ms && now_ms - self.last_mouse_ms > WATCHDOG_MS {
             r.emits.push(Emit::Cancel);
@@ -402,14 +446,17 @@ impl Gesture {
             EvKind::KeyUp => self.on_key_up(e, &mut r),
             EvKind::MouseDown => {
                 self.last_mouse_ms = e.time_ms;
+                (self.mx, self.my) = (e.x, e.y);
                 self.on_mouse_down(e, &mut r);
             }
             EvKind::MouseUp => {
                 self.last_mouse_ms = e.time_ms;
+                (self.mx, self.my) = (e.x, e.y);
                 self.on_mouse_up(e, &mut r);
             }
             EvKind::MouseMove => {
                 self.last_mouse_ms = e.time_ms;
+                (self.mx, self.my) = (e.x, e.y);
                 self.on_mouse_move(e, &mut r);
             }
         }
@@ -550,6 +597,10 @@ impl Gesture {
         let i = vk as usize;
         let repeat = self.key_down[i];
         self.key_down[i] = true;
+        // 按别的键时 Windows 会停掉面板键的连发，所以按了别的键也说明面板键还按着：别让看门狗收起面板。
+        if self.panel_down != 0 && vk != self.panel_down {
+            self.last_panel_ms = e.time_ms;
+        }
 
         // 别的程序的组合键开始了（Alt+Tab 的切换、Win+Tab、Alt+F4）：触发键全松开之前，单击都归它。
         // 只在 Idle 判断：手势中途来的键（比如 Esc 取消轮盘）不代表下一次手势。
@@ -587,6 +638,42 @@ impl Gesture {
             if !repeat {
                 r.emits.push(Emit::LaningToggled);
             }
+            return;
+        }
+        if self.active()
+            && self.cfg.text_vk != 0
+            && vk == self.cfg.text_vk
+            && self.mods() == self.cfg.text_mods
+        {
+            r.swallow = true;
+            self.swallow_key_ups[i] = true;
+            self.mark_swallow();
+            if !repeat {
+                self.cancel_gesture(r);
+                r.emits.push(Emit::TextRequested);
+            }
+            return;
+        }
+        // 面板键：故意不放行的普通键（只在队伍里、开着面板时）。按下就拦、从不回放；
+        // 它的连发即使配置改了也照样拦，因为系统没见过按下。
+        if self.panel_down != 0 && vk == self.panel_down {
+            r.swallow = true;
+            self.last_panel_ms = e.time_ms;
+            return;
+        }
+        if self.active()
+            && !repeat
+            && self.cfg.panel_vk != 0
+            && vk == self.cfg.panel_vk
+            && self.mods() == 0
+            && !self.is_any_trigger_vk(vk)
+            && !(self.cfg.game_check && self.probe.as_ref().is_some_and(|p| p(self.mx, self.my)))
+        {
+            r.swallow = true;
+            self.swallow_key_ups[i] = true;
+            self.panel_down = vk;
+            self.last_panel_ms = e.time_ms;
+            r.emits.push(Emit::Panel { show: true });
             return;
         }
         if self.active() {
@@ -634,6 +721,10 @@ impl Gesture {
         if self.swallow_key_ups[i] {
             self.swallow_key_ups[i] = false;
             r.swallow = true;
+        }
+        if vk == self.panel_down {
+            self.panel_down = 0;
+            r.emits.push(Emit::Panel { show: false });
         }
         // 补发过的键，它真正的抬起放行（拦截在补发时已经撤掉），打字结束。
         if vk == self.typed_vk {

@@ -997,3 +997,117 @@ fn laning_hotkey_toggles_once_and_only_when_set() {
     g.set_enabled(false);
     assert!(!g.on_event(&kd(key_l)).swallow, "信号暂停时不拦");
 }
+
+fn kd_at(vk: u32, t: u64) -> InputEvent {
+    InputEvent::key(EvKind::KeyDown, vk, t)
+}
+
+fn with_team_keys() -> Gesture {
+    with_config(Config {
+        text_vk: KEY_T,
+        text_mods: MOD_ALT,
+        panel_vk: TAB,
+        ..Config::default()
+    })
+}
+
+#[test]
+fn text_hotkey_opens_the_box_once_and_cancels_a_gesture() {
+    let mut g = Gesture::new();
+    g.on_event(&kd(ALT));
+    assert!(
+        !g.on_event(&kd(KEY_T)).swallow,
+        "不在队伍里（没配置）：Alt+T 照常放行"
+    );
+    g.on_event(&ku(KEY_T));
+    g.on_event(&ku(ALT));
+
+    let mut g = with_team_keys();
+    g.on_event(&kd(ALT));
+    g.on_event(&md(Btn::Left, 100, 100));
+    g.on_event(&mv(140, 100));
+    let r = g.on_event(&kd(KEY_T));
+    assert!(r.swallow);
+    assert!(has_cancel(&r), "开着的轮盘取消");
+    assert!(r.emits.contains(&Emit::TextRequested));
+    assert!(g.on_event(&kd(KEY_T)).emits.is_empty(), "连发不再打开");
+    assert!(g.on_event(&ku(KEY_T)).swallow);
+    assert!(!g.on_event(&kd(KEY_G)).swallow);
+    g.on_event(&ku(KEY_G));
+    g.on_event(&ku(ALT));
+    assert!(!g.on_event(&kd(KEY_T)).swallow, "不带 Alt 的 T 照常打字");
+    g.on_event(&ku(KEY_T));
+    g.set_enabled(false);
+    g.on_event(&kd(ALT));
+    assert!(!g.on_event(&kd(KEY_T)).swallow, "信号暂停时不拦");
+}
+
+#[test]
+fn panel_key_shows_while_held_and_hides_on_release() {
+    let mut g = with_team_keys();
+    let r = g.on_event(&kd_at(TAB, 1000));
+    assert!(r.swallow && r.emits == vec![Emit::Panel { show: true }]);
+    let r = g.on_event(&kd_at(TAB, 1030));
+    assert!(r.swallow && r.emits.is_empty(), "连发拦下，不再显示");
+    let r = g.on_event(&ku(TAB));
+    assert!(r.swallow && r.emits == vec![Emit::Panel { show: false }]);
+    // 带修饰键的 Tab（Alt+Tab、Ctrl+Tab）放行
+    g.on_event(&kd(ALT));
+    assert!(!g.on_event(&kd(TAB)).swallow);
+    g.on_event(&ku(TAB));
+    g.on_event(&ku(ALT));
+    // 没配置时放行
+    let mut off = Gesture::new();
+    assert!(!off.on_event(&kd(TAB)).swallow);
+}
+
+#[test]
+fn a_lost_panel_key_up_hides_the_panel_after_the_repeats_stop() {
+    let mut g = with_team_keys();
+    g.on_event(&kd_at(TAB, 1000));
+    assert!(g.tick(1000 + PANEL_REPEAT_GAP_MS).emits.is_empty());
+    // 按了别的键：连发停了，但面板键还按着
+    g.on_event(&kd_at(KEY_G, 2400));
+    g.on_event(&ku(KEY_G));
+    assert!(g.tick(2400 + PANEL_REPEAT_GAP_MS).emits.is_empty());
+    let r = g.tick(2401 + PANEL_REPEAT_GAP_MS);
+    assert_eq!(r.emits, vec![Emit::Panel { show: false }]);
+    // 真正的抬起后来到了：照样拦下，不再收起一次
+    let r = g.on_event(&ku(TAB));
+    assert!(r.swallow && r.emits.is_empty());
+    // 下一次按下又能显示
+    assert_eq!(
+        g.on_event(&kd_at(TAB, 9000)).emits,
+        vec![Emit::Panel { show: true }]
+    );
+}
+
+#[test]
+fn panel_key_passes_through_in_a_fullscreen_game_and_when_it_is_a_trigger() {
+    let mut g = with_config(Config {
+        panel_vk: TAB,
+        game_check: true,
+        ..Config::default()
+    });
+    g.set_fullscreen_probe(Box::new(|x, _| x > 1000));
+    g.on_event(&mv(1500, 10));
+    assert!(
+        !g.on_event(&kd(TAB)).swallow,
+        "全屏游戏里 Tab 是游戏的记分板"
+    );
+    g.on_event(&ku(TAB));
+    g.on_event(&mv(10, 10));
+    assert!(g.on_event(&kd(TAB)).swallow);
+    g.on_event(&ku(TAB));
+    // 自定义触发键就是这个键：归轮盘
+    let mut g = with_config(Config {
+        panel_vk: KEY_T,
+        trigger: Trigger::Custom(KEY_T),
+        ..Config::default()
+    });
+    assert!(
+        !g.on_event(&kd(KEY_T))
+            .emits
+            .contains(&Emit::Panel { show: true })
+    );
+}

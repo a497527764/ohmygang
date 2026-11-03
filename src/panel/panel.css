@@ -1,0 +1,289 @@
+/* 队伍面板和投票窗口：深色半透明、金色细边，和透明窗口上的提示同一套颜色。窗口本身透明，画面都在卡片里。 */
+:root {
+  --sans: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", -apple-system, "PingFang SC", "Noto Sans CJK SC",
+    "Noto Sans", sans-serif;
+  --bg: rgba(8, 18, 24, 0.94);
+  --bg-2: rgba(22, 34, 42, 0.92);
+  --line: rgba(200, 170, 110, 0.55);
+  --gold: #c8aa6e;
+  --gold-hi: #f0e6d2;
+  --muted: #a09b8c;
+  --cyan: #1fa9e0;
+  --yes: #3fbf7f;
+  --no: #e0525a;
+}
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  color: var(--gold-hi);
+  font: 14px/1.4 var(--sans);
+  user-select: none;
+}
+#root {
+  height: 100%;
+  box-sizing: border-box;
+  padding: 6px;
+}
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+button:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+/* ---------- 面板 ---------- */
+.board {
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+.cap {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(200, 170, 110, 0.25);
+}
+.cap .lol-btn:first-child {
+  justify-self: start;
+}
+.cap .lol-btn:last-child {
+  justify-self: end;
+}
+.team-title {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.team-title b {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.team-title .count {
+  color: var(--muted);
+  font-size: 12px;
+}
+.lol-btn {
+  min-width: 96px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--gold);
+  border-radius: 2px;
+  background: linear-gradient(#1e2328, #10161c);
+  color: var(--gold-hi);
+  letter-spacing: 0.5px;
+}
+.lol-btn:hover {
+  border-color: var(--gold-hi);
+  background: linear-gradient(#2a3036, #151c22);
+}
+.members {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-content: start;
+  gap: 6px 10px;
+}
+.member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--bg-2);
+  border: 1px solid transparent;
+}
+.member.me {
+  border-color: rgba(200, 170, 110, 0.4);
+}
+.member.off {
+  opacity: 0.5;
+}
+.portrait {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--gold);
+  font-size: 16px;
+  color: #fff;
+}
+.portrait img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.who .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.who .path {
+  color: var(--muted);
+  font-size: 12px;
+}
+.stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.stats .chip {
+  padding: 0 6px;
+  border-radius: 3px;
+  background: rgba(31, 169, 224, 0.18);
+  color: var(--cyan);
+}
+.kick {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+}
+.kick:hover {
+  background: rgba(224, 82, 90, 0.2);
+  color: var(--no);
+}
+.panel-error {
+  margin: 0;
+  color: #ffb3b8;
+  font-size: 13px;
+}
+
+/* ---------- 投票卡片（投票窗口和面板里都用） ---------- */
+.vote-card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+#root > .vote-card {
+  height: 100%;
+}
+.board .vote-card {
+  box-shadow: none;
+  background: var(--bg-2);
+}
+.vote-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+}
+.vote-marks {
+  display: flex;
+  gap: 4px;
+}
+.vote-marks .mark {
+  flex: 1;
+  height: 8px;
+  border-radius: 2px;
+  background: rgba(240, 230, 210, 0.18);
+}
+.vote-marks .mark.yes {
+  background: var(--yes);
+}
+.vote-marks .mark.no {
+  background: var(--no);
+}
+/* 准备确认：每人一格写名字 */
+.ready .vote-marks {
+  flex-wrap: wrap;
+}
+.ready .vote-marks .mark {
+  flex: 1 1 30%;
+  height: auto;
+  padding: 4px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  text-align: center;
+}
+.vote-marks .mark.me {
+  outline: 1px solid var(--gold);
+}
+.vote-track {
+  height: 3px;
+  background: rgba(240, 230, 210, 0.12);
+}
+.vote-bar {
+  height: 100%;
+  background: var(--gold);
+  transform-origin: left;
+}
+.vote-foot {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  min-height: 30px;
+  align-items: center;
+}
+.vote-btn {
+  min-width: 76px;
+  height: 30px;
+  border-radius: 2px;
+  border: 1px solid;
+  background: transparent;
+}
+.vote-btn.yes {
+  border-color: var(--yes);
+  color: #b9f0d2;
+}
+.vote-btn.yes:hover {
+  background: rgba(63, 191, 127, 0.18);
+}
+.vote-btn.no {
+  border-color: var(--no);
+  color: #ffc7ca;
+}
+.vote-btn.no:hover {
+  background: rgba(224, 82, 90, 0.18);
+}
+.vote-said {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vote-bar {
+    transition: none;
+  }
+}

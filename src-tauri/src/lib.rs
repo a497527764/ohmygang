@@ -12,14 +12,17 @@ pub mod lane;
 pub mod laning;
 pub mod node;
 pub mod overlay;
+pub mod panel;
 pub mod protocol;
 pub mod rooms;
 pub mod settings2;
 pub mod storage;
 pub mod sync;
 pub mod team;
+pub mod team_text;
 pub mod transport;
 pub mod tray;
+pub mod votes;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -31,8 +34,11 @@ use api::AppState;
 use overlay::{Hooks, Msg, Overlays};
 use settings2::Hotkey;
 
+/// 开机自动启动时带的参数：这时只进托盘，不打开控制面板。
+pub const AUTOSTART_ARG: &str = "--autostart";
+
 /// 开发用的单机双开：环境变量 `LOLGANG_INSTANCE=2` 表示第二实例，数据目录换一套。
-fn is_second_instance() -> bool {
+pub fn is_second_instance() -> bool {
     std::env::var("LOLGANG_INSTANCE").is_ok_and(|v| v == "2")
 }
 
@@ -47,6 +53,11 @@ pub fn run() {
         }));
     }
     builder
+        // 开机启动（Windows 注册表 Run、macOS 登录项、Linux 自启动目录）；只在 Rust 侧用，不给前端权限。
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![AUTOSTART_ARG]),
+        ))
         .setup(|app| {
             start(app)?;
             Ok(())
@@ -97,6 +108,11 @@ pub fn run() {
             api::emote_import,
             api::emote_remove,
             api::emote_preview,
+            panel::vote_view,
+            panel::vote_start,
+            panel::vote_answer,
+            panel::text_send,
+            panel::text_cancel,
             team::team_view,
             team::team_create,
             team::team_join,
@@ -147,18 +163,22 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let lane = lane::Lane::start(app.handle());
+    let panel = panel::Panel::start(app.handle());
     let share = node.clone();
     let (attack_to, laning_to) = (lane.clone(), lane.clone());
+    let (text_to, panel_to) = (panel.clone(), panel.clone());
     let hooks = Hooks {
         on_toggled,
         on_live: Box::new(move |body| share.send_live(body)),
         on_attack: Box::new(move |x, y| attack_to.send(lane::LaneMsg::Attack { x, y })),
         on_laning: Box::new(move || laning_to.send(lane::LaneMsg::Set(None))),
+        on_text: Box::new(move || text_to.send(panel::PanelMsg::TextRequested)),
+        on_panel: Box::new(move |show| panel_to.send(panel::PanelMsg::Show(show))),
     };
     let overlays = Overlays::start(app.handle(), settings.overlay(), hooks);
     let sink_to = overlays.clone();
     let (input, input_error) = match input::start(
-        settings.gesture_config(true),
+        settings.gesture_config(true, false),
         Box::new(move |e| sink_to.send(Msg::Input(e))),
     ) {
         Ok(h) => (Some(h), None),
@@ -179,10 +199,16 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         lane,
         emotes: emote_store,
         emote_net,
+        panel,
     });
     tray::setup(app, true)?;
     api::apply_window_theme(app.handle(), &theme);
     team::refresh_names(app.handle());
+    if std::env::args().any(|a| a == AUTOSTART_ARG)
+        && let Some(w) = app.get_webview_window("main")
+    {
+        w.hide()?;
+    }
     let presence = app.handle().clone();
     std::thread::Builder::new()
         .name("presence".into())

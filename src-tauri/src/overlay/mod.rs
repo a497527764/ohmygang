@@ -73,6 +73,14 @@ pub enum Msg {
     },
     /// 设置页的预览：在主显示器中间放一个表情。
     EmotePreview(String),
+    /// 一句话：自己的（from 为 None）或队友的，第几号显示器、比例位置，已经清理过。
+    Text {
+        from: Option<MemberId>,
+        display: u8,
+        x: u16,
+        y: u16,
+        text: String,
+    },
     /// 队友的名字，信号下面的标签用。
     Names(Vec<(MemberId, String)>),
     /// 对线模式：对手的位置和状态、谁在对我充能（每 33 毫秒一次）。
@@ -114,6 +122,10 @@ pub struct Hooks {
     pub on_attack: Box<dyn Fn(i32, i32) + Send>,
     /// 按了对线模式快捷键。
     pub on_laning: Box<dyn Fn() + Send>,
+    /// 按了队伍文字快捷键。
+    pub on_text: Box<dyn Fn() + Send>,
+    /// 面板键按下或松开。
+    pub on_panel: Box<dyn Fn(bool) + Send>,
 }
 
 /// 透明窗口线程的把手，可以随便复制。
@@ -245,6 +257,13 @@ impl Actor {
                     emote,
                     fx,
                 } => self.remote_emote(from, display, (x, y), emote, fx),
+                Msg::Text {
+                    from,
+                    display,
+                    x,
+                    y,
+                    text,
+                } => self.text(from, display, (x, y), text),
                 Msg::Poll => self.refresh(),
                 Msg::Names(list) => self.names = list.into_iter().collect(),
                 Msg::RemotePing {
@@ -341,6 +360,8 @@ impl Actor {
             Emit::Cancel => self.cancel_wheel(),
             Emit::Attack { x, y } => (self.hooks.on_attack)(x, y),
             Emit::LaningToggled => (self.hooks.on_laning)(),
+            Emit::TextRequested => (self.hooks.on_text)(),
+            Emit::Panel { show } => (self.hooks.on_panel)(show),
             Emit::Toggled { enabled } => {
                 if !enabled {
                     self.cancel_wheel();
@@ -448,6 +469,38 @@ impl Actor {
             &d.key,
             "ping:spawn",
             json!({ "id": id, "x": from_ratio(x, w), "y": from_ratio(y, h), "tag": tag }),
+        );
+    }
+
+    /// 一句话：落到同号显示器的同一比例处，带说话人的名字；按设置在原处冒出来或者当弹幕飘过。
+    fn text(&mut self, from: Option<MemberId>, display: u8, (x, y): (u16, u16), text: String) {
+        self.refresh();
+        let target = usize::from(display)
+            .checked_sub(1)
+            .and_then(|i| self.displays.get(i))
+            .or(self.displays.first());
+        let Some(d) = target.cloned() else {
+            return;
+        };
+        let (w, h) = css_size(&d);
+        let (owner, name, color) = match from {
+            Some(m) => (
+                m[..6]
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>(),
+                self.names.get(&m).cloned().unwrap_or_else(|| "队友".into()),
+                tag_color(&m),
+            ),
+            None => ("self".into(), "我".into(), "#c8aa6e"),
+        };
+        self.show(
+            &d.key,
+            "text:spawn",
+            json!({
+                "owner": owner, "text": text, "name": name, "color": color, "style": self.settings.text_style,
+                "x": from_ratio(x, w), "y": from_ratio(y, h),
+            }),
         );
     }
 

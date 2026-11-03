@@ -8,10 +8,10 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [react()],
 
-  // 两个页面：控制面板（index.html）和每个显示器上的透明窗口（overlay.html）
+  // 页面：控制面板（index.html）、每个显示器上的透明窗口（overlay.html）、队伍面板、投票窗口、文字输入框
   build: {
     rolldownOptions: {
-      input: { main: "index.html", overlay: "overlay.html" },
+      input: { main: "index.html", overlay: "overlay.html", roster: "roster.html", vote: "vote.html", text: "text.html" },
     },
   },
 

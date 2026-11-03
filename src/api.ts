@@ -43,6 +43,17 @@ export interface Settings {
   customEmotes: CustomEmote[];
   /** 显示队友导入的表情（要传图）。 */
   friendEmotes: boolean;
+  /** 队伍文字：快捷键打开输入框。 */
+  teamText: boolean;
+  textHotkey: Hotkey;
+  /** 队友的话：在原处冒出来，或者弹幕。 */
+  textStyle: "spot" | "danmaku";
+  teamVotes: boolean;
+  /** 按住面板键显示队伍面板。 */
+  teamPanel: boolean;
+  /** 面板键的虚拟键码。 */
+  panelKey: number;
+  launchAtStartup: boolean;
 }
 
 export interface Status {

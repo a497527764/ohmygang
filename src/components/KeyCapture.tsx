@@ -6,6 +6,8 @@ import { UNSAFE_TRIGGER_VKS, codeToVk, eventMods, hotkeyParts, isModifierCode, M
 
 type Props =
   | { kind: "key"; value: number | null; onPick: (vk: number) => void }
+  /** 单独一个普通键（面板键）：Tab 也行，键撞了由 Rust 换掉。 */
+  | { kind: "plain"; value: number; onPick: (vk: number) => void }
   | { kind: "hotkey"; value: Hotkey; onPick: (h: Hotkey) => void };
 
 const PRIMARY_MODS = MOD.ctrl | MOD.alt | MOD.win;
@@ -32,8 +34,8 @@ export function KeyCapture(props: Props) {
       const vk = codeToVk(e.code);
       if (vk === null) return setHint("这个键认不出来，换一个");
       const p = latest.current;
-      if (p.kind === "key") {
-        if (UNSAFE_TRIGGER_VKS.includes(vk)) return setHint(`${vkLabel(vk)} 会影响正常打字，换一个`);
+      if (p.kind === "key" || p.kind === "plain") {
+        if (p.kind === "key" && UNSAFE_TRIGGER_VKS.includes(vk)) return setHint(`${vkLabel(vk)} 会影响正常打字，换一个`);
         p.onPick(vk);
       } else {
         const mods = eventMods(e);

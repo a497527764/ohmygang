@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "team-windows",
+  "description": "队伍面板、投票、文字输入框只需要收 Rust 发来的消息",
+  "windows": ["roster", "vote", "text"],
+  "permissions": [
+    "core:event:default"
+  ]
+}

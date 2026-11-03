@@ -86,6 +86,16 @@ fn a_saved_file_reads_back_the_same() {
             fx: 4,
         }],
         friend_emotes: false,
+        team_text: false,
+        text_hotkey: Hotkey {
+            mods: MOD_CTRL,
+            vk: 0x4D,
+        },
+        text_style: "danmaku".into(),
+        team_votes: false,
+        team_panel: false,
+        panel_key: 0xC0,
+        launch_at_startup: true,
     };
     assert_eq!(normalize(&serde_json::to_value(&s).unwrap()), s);
 }
@@ -232,7 +242,7 @@ fn gesture_config_follows_the_settings() {
         },
         ..Settings::default()
     };
-    let c = s.gesture_config(false);
+    let c = s.gesture_config(false, false);
     assert_eq!(c.trigger, GTrigger::Mouse4);
     assert!(c.click_ping && c.game_check && !c.enabled);
     assert_eq!(c.emote_trigger, GTrigger::Ctrl);
@@ -240,7 +250,10 @@ fn gesture_config_follows_the_settings() {
     assert_eq!(c.drag_threshold_px, 15);
     assert_eq!((c.toggle_mods, c.toggle_vk), (MOD_ALT, 0x4F));
     s.trigger = TriggerKey::Custom { vk: 0x47 };
-    assert_eq!(s.gesture_config(true).trigger, GTrigger::Custom(0x47));
+    assert_eq!(
+        s.gesture_config(true, false).trigger,
+        GTrigger::Custom(0x47)
+    );
 }
 
 #[test]
@@ -277,7 +290,7 @@ fn laning_hotkey_defaults_to_ctrl_alt_l_and_reaches_the_gesture() {
             vk: 0x4C
         }
     );
-    let c = d.gesture_config(true);
+    let c = d.gesture_config(true, false);
     assert_eq!((c.laning_mods, c.laning_vk), (MOD_CTRL | MOD_ALT, 0x4C));
     let bad = normalize(&json!({ "laningHotkey": { "mods": 4, "vk": 0x4C } }));
     assert_eq!(bad.laning_hotkey, d.laning_hotkey, "只有 Shift 不行");
@@ -297,7 +310,10 @@ fn emote_key_is_off_or_a_trigger_that_clashes_with_nothing() {
         serde_json::to_value(&off).unwrap()["emoteTrigger"],
         json!("off")
     );
-    assert_eq!(off.gesture_config(true).emote_trigger, GTrigger::None);
+    assert_eq!(
+        off.gesture_config(true, false).emote_trigger,
+        GTrigger::None
+    );
     assert_eq!(
         normalize(&json!({ "emoteTrigger": "mouse5" })).emote_trigger,
         Some(TriggerKey::Named(NamedTrigger::Mouse5))
@@ -350,4 +366,71 @@ fn emote_wheel_follows_the_imported_list() {
         emotes::DEFAULT_WHEEL.map(String::from).to_vec()
     );
     assert_eq!(without.click_emote, emotes::DEFAULT_CLICK);
+}
+
+#[test]
+fn team_keys_reach_the_gesture_only_inside_a_team() {
+    let d = Settings::default();
+    assert_eq!(
+        d.text_hotkey,
+        Hotkey {
+            mods: MOD_ALT,
+            vk: 0x54
+        }
+    );
+    assert_eq!(d.panel_key, 0x09);
+    assert!(d.team_text && d.team_votes && d.team_panel && !d.launch_at_startup);
+    let out = d.gesture_config(true, false);
+    assert_eq!(
+        (out.text_vk, out.panel_vk),
+        (0, 0),
+        "不在队伍里：Alt+T 和 Tab 照常给别的程序"
+    );
+    let inside = d.gesture_config(true, true);
+    assert_eq!(
+        (inside.text_mods, inside.text_vk, inside.panel_vk),
+        (MOD_ALT, 0x54, 0x09)
+    );
+    let mut off = d.clone();
+    off.team_text = false;
+    off.team_panel = false;
+    let c = off.gesture_config(true, true);
+    assert_eq!((c.text_vk, c.panel_vk), (0, 0));
+    use crate::protocol::live::{OFF_TEXT, OFF_VOTES};
+    assert_eq!(d.features_off(), 0);
+    off.team_votes = false;
+    assert_eq!(off.features_off(), OFF_TEXT | OFF_VOTES);
+}
+
+#[test]
+fn team_keys_never_share_a_key() {
+    // 文字快捷键撞上暂停快捷键：换成 Alt+Y
+    let s = normalize(
+        &json!({ "toggleHotkey": { "mods": 2, "vk": 0x54 }, "textHotkey": { "mods": 2, "vk": 0x54 } }),
+    );
+    assert_eq!(
+        s.text_hotkey,
+        Hotkey {
+            mods: MOD_ALT,
+            vk: 0x59
+        }
+    );
+    // 面板键：Esc、修饰键、被占的键都换掉
+    assert_eq!(normalize(&json!({ "panelKey": 0x1B })).panel_key, 0x09);
+    assert_eq!(normalize(&json!({ "panelKey": 0xA2 })).panel_key, 0x09);
+    assert_eq!(normalize(&json!({ "panelKey": 0x71 })).panel_key, 0x71);
+    let s = normalize(&json!({ "toggleHotkey": { "mods": 2, "vk": 0x09 }, "panelKey": 0x09 }));
+    assert_eq!(s.panel_key, 0xC0, "Tab 被暂停快捷键占了，换成 `");
+    let s = normalize(&json!({ "trigger": { "vk": 0x71 }, "panelKey": 0x71 }));
+    assert_eq!(s.panel_key, 0x09, "F2 被自定义触发键占了");
+    let s = normalize(&json!({ "emoteTrigger": { "vk": 0x72 }, "panelKey": 0x72 }));
+    assert_eq!(s.panel_key, 0x09);
+    assert_eq!(
+        normalize(&json!({ "textStyle": "danmaku" })).text_style,
+        "danmaku"
+    );
+    assert_eq!(
+        normalize(&json!({ "textStyle": "marquee" })).text_style,
+        "spot"
+    );
 }

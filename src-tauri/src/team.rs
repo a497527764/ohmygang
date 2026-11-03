@@ -4,15 +4,16 @@
 //! 1. 命令都是异步的：在节点任务里执行（`NodeHandle::call`），完了返回整份 `TeamView`，控制面板直接换上。
 //!    退出队伍时先发一帧 Bye 再写 Leave，队友马上就能看到人走了。
 //! 2. 节点的通知（`on_node_event`）在节点任务里调用，不能等节点：
-//!    队友的信号和表情交给透明窗口，导入表情的传输帧交给 `emotes::net`；在线状态记进 `TeamState`；队伍有变化（进队、退出、改名、资料、解散）就
+//!    队友的信号、表情、文字交给透明窗口，导入表情的传输帧交给 `emotes::net`，投票交给 `panel`；在线状态记进 `TeamState`；队伍有变化（进队、退出、改名、资料、解散）就
 //!    另开一个异步任务把队员名字交给透明窗口、通知控制面板刷新。
 //! 3. 本人的在线状态（`refresh_presence`）：信号关着是「暂停」，5 分钟没碰键鼠是「离开」，否则「在线」。
 //!    变了才交给节点，节点自己按周期重复发。
-//! 4. 队友的在线状态 15 秒（中继 3 个周期）没更新就当作没有。
+//! 4. 队友的在线状态 15 秒（中继 3 个周期）没更新就当作没有。投票人是本人加上在线状态新鲜、没关投票的队友。
+//! 5. 进了队伍或不在队伍里了（`refresh_names` 查到的状态变了），就让手势重新拿配置：文字快捷键和面板键只在队伍里拦。
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -26,10 +27,12 @@ use crate::identity::IdentityView;
 use crate::lane::LaneMsg;
 use crate::node::{NodeEvent, Outbox, now_ms};
 use crate::overlay::Msg;
+use crate::panel::PanelMsg;
 use crate::protocol::body::{Avatar, image_mime};
-use crate::protocol::live::{LiveBody, Status};
+use crate::protocol::live::{LiveBody, OFF_VOTES, Status};
 use crate::sync::path::{PathKind, Via};
 use crate::transport::relay::RelayState;
+use crate::votes::VoteKind;
 
 /// 多久没碰键鼠算离开电脑。
 const AWAY_AFTER_MS: u64 = 5 * 60 * 1000;
@@ -41,6 +44,8 @@ struct Seen {
     status: Status,
     laning: bool,
     platform: String,
+    /// 关掉了的功能（`OFF_TEXT`、`OFF_VOTES`）。
+    off: u8,
     at: Instant,
 }
 
@@ -49,6 +54,25 @@ pub struct TeamState {
     presence: Mutex<HashMap<MemberId, Seen>>,
     /// 最近一次交给节点的本人在线状态。
     mine: Mutex<Option<LiveBody>>,
+    /// 在一个已加入的队伍里。
+    pub active: AtomicBool,
+}
+
+/// 投票人：本人加上在线、没关投票的队友。
+pub fn voters(app: &AppHandle, me: MemberId) -> Vec<MemberId> {
+    let mut out = vec![me];
+    if let Some(state) = app.try_state::<AppState>() {
+        let presence = state.team.presence.lock().expect("在线状态锁没有中毒");
+        out.extend(
+            presence
+                .iter()
+                .filter(|(m, s)| {
+                    **m != me && s.at.elapsed() <= PRESENCE_STALE && s.off & OFF_VOTES == 0
+                })
+                .map(|(m, _)| *m),
+        );
+    }
+    out
 }
 
 pub fn hex(b: &[u8]) -> String {
@@ -406,17 +430,17 @@ pub fn refresh_presence(app: &AppHandle) {
     } else {
         Status::Online
     };
-    let announced = state
-        .settings
-        .lock()
-        .expect("设置锁没有中毒")
-        .announced_emotes();
+    let (announced, off) = {
+        let s = state.settings.lock().expect("设置锁没有中毒");
+        (s.announced_emotes(), s.features_off())
+    };
     let body = LiveBody::Presence {
         status,
         laning: state.lane.is_on(),
         version: app.package_info().version.to_string(),
         platform: platform_name().into(),
         emotes: emotes::join_announced(&announced),
+        off,
     };
     let mut mine = state.team.mine.lock().expect("在线状态锁没有中毒");
     if mine.as_ref() != Some(&body) {
@@ -444,27 +468,37 @@ pub fn refresh_names(app: &AppHandle) {
         };
         let node = state.node.clone();
         let names = node
-            .call(|core, _| -> Result<Vec<(MemberId, String)>, AppError> {
-                let Some(team) = core.current_team()? else {
-                    return Ok(Vec::new());
-                };
-                Ok(core
-                    .list_members(&team.room_id)?
-                    .into_iter()
-                    .map(|m| {
-                        (
-                            m.member_id,
-                            m.nickname
-                                .filter(|n| !n.is_empty())
-                                .unwrap_or(m.fingerprint),
-                        )
-                    })
-                    .collect())
-            })
+            .call(
+                |core, _| -> Result<(bool, Vec<(MemberId, String)>), AppError> {
+                    let Some(team) = core.current_team()? else {
+                        return Ok((false, Vec::new()));
+                    };
+                    let active = team.status == RoomStatus::Active;
+                    Ok((
+                        active,
+                        core.list_members(&team.room_id)?
+                            .into_iter()
+                            .map(|m| {
+                                (
+                                    m.member_id,
+                                    m.nickname
+                                        .filter(|n| !n.is_empty())
+                                        .unwrap_or(m.fingerprint),
+                                )
+                            })
+                            .collect(),
+                    ))
+                },
+            )
             .await;
-        if let Some(Ok(names)) = names {
+        if let Some(Ok((active, names))) = names {
             state.lane.send(LaneMsg::Names(names.clone()));
+            state.panel.send(PanelMsg::Names(names.clone()));
             state.overlays.send(Msg::Names(names));
+            if state.team.active.swap(active, Ordering::Relaxed) != active {
+                state.panel.send(PanelMsg::InTeam(active));
+                crate::api::push_gesture_config(&app);
+            }
         }
         let _ = app.emit_to("main", "team://changed", ());
     });
@@ -504,6 +538,37 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                     });
                 }
             }
+            LiveBody::Text {
+                display,
+                x,
+                y,
+                text,
+            } => {
+                let on = state.settings.lock().expect("设置锁没有中毒").team_text;
+                let text = crate::team_text::sanitize(&text);
+                if on && !text.is_empty() {
+                    state.overlays.send(Msg::Text {
+                        from: Some(from),
+                        display,
+                        x,
+                        y,
+                        text,
+                    });
+                }
+            }
+            LiveBody::Vote { id, kind, target } => {
+                if let Some(kind) = VoteKind::from_code(kind) {
+                    state.panel.send(PanelMsg::RemoteVote {
+                        from,
+                        id,
+                        kind,
+                        target,
+                    });
+                }
+            }
+            LiveBody::Ballot { id, yes } => {
+                state.panel.send(PanelMsg::RemoteBallot { from, id, yes })
+            }
             LiveBody::Want { to, hash, need } => state.emote_net.send(NetMsg::Want {
                 from,
                 to,
@@ -522,6 +587,7 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                 laning,
                 platform,
                 emotes: announced,
+                off,
                 ..
             } => {
                 state.emote_net.send(NetMsg::Announced {
@@ -538,6 +604,7 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                         status,
                         laning,
                         platform,
+                        off,
                         at: Instant::now(),
                     },
                 );
@@ -559,6 +626,7 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                     .remove(&from);
                 state.lane.send(LaneMsg::Gone(from));
                 state.emote_net.send(NetMsg::Gone(from));
+                state.panel.send(PanelMsg::Gone(from));
                 let _ = app.emit_to("main", "team://changed", ());
             }
             LiveBody::Cursor { display, x, y } => state.lane.send(LaneMsg::Cursor {

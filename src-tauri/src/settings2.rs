@@ -1,11 +1,14 @@
-//! 2.0 的设置（架构第 8 节）：信号轮盘和表情部分来自 lolPing 设计文档 8.1 节和 `src/shared/settings.ts`
-//! （MIT，© 2026 Danrui Meng），加上 1.x 的主题、队伍的网络和对线快捷键。
+//! 2.0 的设置（架构第 8 节）：信号轮盘、表情、队伍文字、面板键、功能开关来自 lolPing 设计文档 8.1 节和
+//! `src/shared/settings.ts`、`features.ts`（MIT，© 2026 Danrui Meng），加上 1.x 的主题、队伍的网络、对线快捷键、开机启动。
 //!
 //! 实现流程：
 //! 1. 存的是一份 JSON（`store` 负责读写）。读出来先过 `normalize`：缺的字段补默认，类型不对或不合法的换默认，
 //!    数字夹到范围内并对齐步长。所以旧版本、手改坏了的设置文件都能变成合法设置，新加字段只要在这里给默认值。
 //! 2. 控制面板改设置时把整份设置交回来，同样过一遍 `normalize` 再存，存下的永远合法。
 //! 3. `gesture_config` 把设置换成手势状态机的配置；`overlay` 换成透明窗口画画要用的那部分。
+//!    文字快捷键和面板键只在队伍里、对应功能开着时交给手势，别的时候 Alt+T、Tab 照常给别的程序。
+//! 4. 键不能两用：表情触发键撞了就关掉；文字快捷键撞上暂停、对线快捷键就换一个备用的；
+//!    面板键撞上任何一个键就换成备用列表里第一个没被占的（Tab、`、F2、F3、F4）。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -41,6 +44,25 @@ pub const DEFAULT_WHEEL: [&str; 8] = [
 ];
 pub const DEFAULT_CLICK_PING: &str = "generic";
 pub const THEMES: [&str; 3] = ["system", "light", "dark"];
+/// 队友文字的显示方式：在说话的位置冒出来，或者弹幕从右往左飘过。
+pub const TEXT_STYLES: [&str; 2] = ["spot", "danmaku"];
+/// 文字快捷键的候选：默认 Alt+T，撞了依次换。
+const TEXT_HOTKEYS: [Hotkey; 3] = [
+    Hotkey {
+        mods: MOD_ALT,
+        vk: 0x54,
+    },
+    Hotkey {
+        mods: MOD_ALT,
+        vk: 0x59,
+    },
+    Hotkey {
+        mods: MOD_CTRL | MOD_ALT,
+        vk: 0x54,
+    },
+];
+/// 面板键的候选：Tab，然后 `、F2、F3、F4。最多 5 个键被占，所以总有一个空着。
+const PANEL_KEYS: [u32; 5] = [0x09, 0xC0, 0x71, 0x72, 0x73];
 /// 默认中继（1.x 架构 6.4，2026-11-02 实测选定）。
 pub const DEFAULT_RELAYS: [&str; 8] = [
     "wss://relay.nostrfeed.com",
@@ -140,6 +162,19 @@ pub struct Settings {
     pub custom_emotes: Vec<CustomEmote>,
     /// 显示队友导入的表情（要传图）；关掉就不收也不发，队友的导入表情显示成问号。
     pub friend_emotes: bool,
+    /// 队伍文字：快捷键打开输入框，说的话在队友屏幕上显示。
+    pub team_text: bool,
+    pub text_hotkey: Hotkey,
+    /// spot 或 danmaku。
+    pub text_style: String,
+    /// 投票：投降、准备确认、踢人。关掉后不算投票人。
+    pub team_votes: bool,
+    /// 按住面板键显示队伍面板。
+    pub team_panel: bool,
+    /// 面板键的虚拟键码，不带修饰键。
+    pub panel_key: u32,
+    /// 开机时自动启动（只在改动时去改系统设置）。
+    pub launch_at_startup: bool,
 }
 
 impl Default for Settings {
@@ -176,6 +211,13 @@ impl Default for Settings {
             emote_sound: true,
             custom_emotes: Vec::new(),
             friend_emotes: true,
+            team_text: true,
+            text_hotkey: TEXT_HOTKEYS[0],
+            text_style: TEXT_STYLES[0].into(),
+            team_votes: true,
+            team_panel: true,
+            panel_key: PANEL_KEYS[0],
+            launch_at_startup: false,
         }
     }
 }
@@ -198,6 +240,7 @@ pub struct OverlaySettings {
     pub emote_sound: bool,
     pub custom_emotes: Vec<CustomEmote>,
     pub friend_emotes: bool,
+    pub text_style: String,
 }
 
 /// 数字设置的范围和步长（同 lolPing 的 LIMITS）。
@@ -292,13 +335,47 @@ fn emote_trigger(
         return None;
     }
     let t = trigger_or(raw, TriggerKey::Named(NamedTrigger::Ctrl));
-    let vk = match t {
+    let clash = t == ping || trigger_vk(t).is_some_and(|vk| hotkeys.iter().any(|h| h.vk == vk));
+    (!clash).then_some(t)
+}
+
+/// 文字快捷键：撞上暂停或对线快捷键时换成候选里第一个不撞的。
+fn text_hotkey(raw: Option<&Value>, taken: [Hotkey; 2]) -> Hotkey {
+    let want = hotkey(raw, TEXT_HOTKEYS[0]);
+    if !taken.contains(&want) {
+        return want;
+    }
+    TEXT_HOTKEYS
+        .into_iter()
+        .find(|h| !taken.contains(h))
+        .unwrap_or(TEXT_HOTKEYS[0])
+}
+
+/// 面板键：普通键，不是 Esc、修饰键，也不是别的快捷键或自定义触发键的键；否则换候选里第一个没被占的。
+fn panel_key(raw: Option<&Value>, taken: &[u32]) -> u32 {
+    match raw
+        .and_then(Value::as_u64)
+        .and_then(|v| u32::try_from(v).ok())
+    {
+        Some(vk)
+            if is_vk(vk) && vk != 0x1B && !MODIFIER_VKS.contains(&vk) && !taken.contains(&vk) =>
+        {
+            vk
+        }
+        _ => PANEL_KEYS
+            .into_iter()
+            .find(|k| !taken.contains(k))
+            .unwrap_or(PANEL_KEYS[0]),
+    }
+}
+
+/// 自定义触发键和 Caps Lock 的键码；其他触发方式没有。
+fn trigger_vk(t: TriggerKey) -> Option<u32> {
+    match t {
         TriggerKey::Custom { vk } => Some(vk),
         TriggerKey::Named(NamedTrigger::CapsLock) => Some(0x14),
         _ => None,
-    };
-    let clash = t == ping || vk.is_some_and(|vk| hotkeys.iter().any(|h| h.vk == vk));
-    (!clash).then_some(t)
+    }
 }
 
 fn hotkey(raw: Option<&Value>, default: Hotkey) -> Hotkey {
@@ -368,6 +445,13 @@ pub fn normalize(raw: &Value) -> Settings {
     let toggle_hotkey = hotkey(get("toggleHotkey"), d.toggle_hotkey);
     let laning_hotkey = hotkey(get("laningHotkey"), d.laning_hotkey);
     let custom = emotes::normalize_custom(get("customEmotes"));
+    let emote_trigger = emote_trigger(get("emoteTrigger"), trigger, [toggle_hotkey, laning_hotkey]);
+    let text_hotkey = text_hotkey(get("textHotkey"), [toggle_hotkey, laning_hotkey]);
+    let taken: Vec<u32> = [trigger_vk(trigger), emote_trigger.and_then(trigger_vk)]
+        .into_iter()
+        .flatten()
+        .chain([toggle_hotkey.vk, laning_hotkey.vk, text_hotkey.vk])
+        .collect();
     Settings {
         trigger,
         drag_threshold_px: num(
@@ -390,7 +474,7 @@ pub fn normalize(raw: &Value) -> Settings {
         theme: one_of(get("theme"), |t| THEMES.contains(&t), THEMES[0]),
         allow_internet: bool_or(get("allowInternet"), d.allow_internet),
         relays: relays(get("relays")),
-        emote_trigger: emote_trigger(get("emoteTrigger"), trigger, [toggle_hotkey, laning_hotkey]),
+        emote_trigger,
         emote_click: bool_or(get("emoteClick"), d.emote_click),
         emote_wheel: emotes::normalize_wheel(get("emoteWheel"), &custom),
         click_emote: emotes::normalize_click(get("clickEmote"), &custom),
@@ -398,6 +482,17 @@ pub fn normalize(raw: &Value) -> Settings {
         emote_sound: bool_or(get("emoteSound"), d.emote_sound),
         custom_emotes: custom,
         friend_emotes: bool_or(get("friendEmotes"), d.friend_emotes),
+        team_text: bool_or(get("teamText"), d.team_text),
+        text_hotkey,
+        text_style: one_of(
+            get("textStyle"),
+            |t| TEXT_STYLES.contains(&t),
+            TEXT_STYLES[0],
+        ),
+        team_votes: bool_or(get("teamVotes"), d.team_votes),
+        team_panel: bool_or(get("teamPanel"), d.team_panel),
+        panel_key: panel_key(get("panelKey"), &taken),
+        launch_at_startup: bool_or(get("launchAtStartup"), d.launch_at_startup),
     }
 }
 
@@ -420,8 +515,9 @@ impl Settings {
         }
     }
 
-    /// 手势状态机的配置。`enabled` 是当前的信号开关（托盘、暂停快捷键），不存在设置里。
-    pub fn gesture_config(&self, enabled: bool) -> gesture::Config {
+    /// 手势状态机的配置。`enabled` 是当前的信号开关（托盘、暂停快捷键），不存在设置里；
+    /// `in_team` 是现在在不在一个已加入的队伍里（文字快捷键和面板键只在队伍里拦）。
+    pub fn gesture_config(&self, enabled: bool, in_team: bool) -> gesture::Config {
         gesture::Config {
             trigger: gesture_trigger(self.trigger),
             click_ping: self.click_ping,
@@ -435,6 +531,17 @@ impl Settings {
             toggle_vk: self.toggle_hotkey.vk,
             laning_mods: self.laning_hotkey.mods,
             laning_vk: self.laning_hotkey.vk,
+            text_mods: self.text_hotkey.mods,
+            text_vk: if in_team && self.team_text {
+                self.text_hotkey.vk
+            } else {
+                0
+            },
+            panel_vk: if in_team && self.team_panel {
+                self.panel_key
+            } else {
+                0
+            },
             enabled,
         }
     }
@@ -458,7 +565,14 @@ impl Settings {
             emote_sound: self.emote_sound,
             custom_emotes: self.custom_emotes.clone(),
             friend_emotes: self.friend_emotes,
+            text_style: self.text_style.clone(),
         }
+    }
+
+    /// 在线状态里「关掉了的功能」。
+    pub fn features_off(&self) -> u8 {
+        use crate::protocol::live::{OFF_TEXT, OFF_VOTES};
+        (if self.team_text { 0 } else { OFF_TEXT }) | (if self.team_votes { 0 } else { OFF_VOTES })
     }
 
     /// 在线状态里报的导入表情哈希（关了「显示队友的表情」就不报，也就没人来要）。

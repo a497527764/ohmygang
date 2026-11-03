@@ -10,6 +10,7 @@ import { EmoteStage, type EmoteArt } from "./emoteStage";
 import { IdleWatch } from "./idleWatch";
 import { LaneStage, spawnHeartsteel, type LaneState } from "./lane";
 import { spawnPing, type PingTag } from "./pingFx";
+import { TextStage, type TextSpawn } from "./textFx";
 import { SoundBank } from "./soundBank";
 import { Wheel } from "./wheel";
 
@@ -29,6 +30,7 @@ interface OverlaySettings {
   emoteSound: boolean;
   customEmotes: CustomEmote[];
   friendEmotes: boolean;
+  textStyle: "spot" | "danmaku";
 }
 
 interface EmoteSpawn {
@@ -45,12 +47,14 @@ interface EmoteSpawn {
 
 const pingLayer = document.getElementById("pings") as HTMLElement;
 const emoteLayer = document.getElementById("emotes") as HTMLElement;
+const textLayer = document.getElementById("texts") as HTMLElement;
 const toastLayer = document.getElementById("toasts") as HTMLElement;
 const wheelSvg = document.getElementById("wheel") as unknown as SVGSVGElement;
 const emoteSvg = document.getElementById("emoteWheel") as unknown as SVGSVGElement;
 const laneLayer = document.getElementById("lane") as HTMLElement;
 const lane = new LaneStage(laneLayer);
 const stage = new EmoteStage(emoteLayer);
+const texts = new TextStage(textLayer);
 
 const sounds = new SoundBank();
 let settings: OverlaySettings | null = null;
@@ -134,6 +138,7 @@ void listen<EmoteSpawn>("emote:spawn", ({ payload: p }) => {
   stage.spawn(p.owner, artOf(p, settings), p.x, p.y, settings.emoteSizePx, p.tag);
   emoteSound(p.emote, settings);
 });
+void listen<TextSpawn>("text:spawn", (e) => texts.spawn(e.payload));
 void listen<{ title: string; body: string }>("toast:show", (e) => showToast(e.payload.title, e.payload.body));
 void listen<LaneState>("lane:state", (e) => {
   lane.render(e.payload);
@@ -144,19 +149,20 @@ void listen<{ x: number; y: number; label: string }>("lane:hit", ({ payload: p }
   if (settings) sounds.play("heartsteel", settings.volume);
 });
 
-// 信号、表情、心之钢、提示在各自的层里，对线的东西在 lane 层里，轮盘开着时它的 class 有 open。
+// 信号、表情、文字、心之钢、提示在各自的层里，对线的东西在 lane 层里，轮盘开着时它的 class 有 open。
 const idle = new IdleWatch(
   () =>
     !pingWheel.isOpen &&
     !emoteWheel.isOpen &&
     pingLayer.childElementCount === 0 &&
     stage.isEmpty &&
+    texts.isEmpty &&
     toastLayer.childElementCount === 0 &&
     lane.isEmpty,
   (v) => void invoke("overlay_idle", { idle: v }),
 );
 const changes = new MutationObserver(() => idle.check());
-for (const l of [pingLayer, emoteLayer, toastLayer]) changes.observe(l, { childList: true });
+for (const l of [pingLayer, emoteLayer, textLayer, toastLayer]) changes.observe(l, { childList: true });
 for (const w of [wheelSvg, emoteSvg]) changes.observe(w, { attributes: true, attributeFilter: ["class"] });
 
 void invoke<OverlaySettings>("overlay_hello").then((s) => {

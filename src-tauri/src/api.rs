@@ -39,6 +39,8 @@ pub struct AppState {
     /// 导入的表情和收到的队友表情。
     pub emotes: std::sync::Arc<crate::emotes::store::Store>,
     pub emote_net: crate::emotes::net::EmoteNet,
+    /// 队伍面板、投票、文字。
+    pub panel: crate::panel::Panel,
 }
 
 impl AppState {
@@ -79,6 +81,34 @@ pub fn after_toggle(app: &AppHandle, on: bool) {
     team::refresh_presence(app);
 }
 
+/// 开机启动：只在设置改了时去改系统设置。开发用的第二实例不碰。
+fn set_autostart(app: &AppHandle, on: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    if crate::is_second_instance() {
+        return Ok(());
+    }
+    let launcher = app.autolaunch();
+    let done = if on {
+        launcher.enable()
+    } else {
+        launcher.disable()
+    };
+    done.map_err(|e| format!("开机启动没设置上：{e}"))
+}
+
+/// 进出队伍后重新给手势配置（文字快捷键和面板键只在队伍里拦）。
+pub fn push_gesture_config(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    if let Some(input) = &state.input {
+        input.send(Command::Config(state.settings().gesture_config(
+            state.enabled.load(Ordering::Relaxed),
+            state.team.active.load(Ordering::Relaxed),
+        )));
+    }
+}
+
 /// 主窗口标题栏跟着主题走（跟随系统时交给系统）。
 pub fn apply_window_theme(app: &AppHandle, theme: &str) {
     let t = match theme {
@@ -109,14 +139,19 @@ pub fn settings_write(
 /// 整份设置过 `normalize` → 存库 → 交给各线程（见文件头第 2 条）。
 fn apply_settings(app: &AppHandle, state: &AppState, settings: &Value) -> Result<Settings, String> {
     let s = settings2::normalize(settings);
-    let old_relays = state.settings().active_relays();
+    let old = state.settings();
+    if s.launch_at_startup != old.launch_at_startup {
+        set_autostart(app, s.launch_at_startup)?;
+    }
+    let old_relays = old.active_relays();
     storage::settings::save(&state.db.lock().expect("数据库锁没有中毒"), &s)
         .map_err(|e| e.to_string())?;
     *state.settings.lock().expect("设置锁没有中毒") = s.clone();
     if let Some(input) = &state.input {
-        input.send(Command::Config(
-            s.gesture_config(state.enabled.load(Ordering::Relaxed)),
-        ));
+        input.send(Command::Config(s.gesture_config(
+            state.enabled.load(Ordering::Relaxed),
+            state.team.active.load(Ordering::Relaxed),
+        )));
     }
     state.overlays.send(Msg::Settings(s.overlay()));
     apply_window_theme(app, &s.theme);
