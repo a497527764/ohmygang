@@ -1,4 +1,4 @@
-//! macOS 和 Linux 的输入在 M6 才做（架构 2.3），在那之前只保证能编译：启动时报不支持，控制面板显示这句话。
+//! Windows、macOS、Linux 以外的系统没有输入监听（架构 2.3），只保证能编译：启动时报不支持，控制面板显示这句话。
 
 use super::Command;
 use super::gesture::Config;
@@ -10,5 +10,5 @@ impl Handle {
 }
 
 pub fn start(_cfg: Config, _sink: super::Sink) -> Result<Handle, String> {
-    Err("这个平台的输入还没做好".to_string())
+    Err("这个系统不支持全局键鼠".to_string())
 }

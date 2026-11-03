@@ -1,0 +1,60 @@
+# 手动打安装包：在 Actions 页面选这个工作流、点 Run workflow 才跑，推送不会触发（打包慢、产物大）。
+# Windows 出 NSIS 安装包，macOS（Apple 芯片）出 .dmg（只有临时签名、没有公证，第一次打开要在「隐私与安全性」里放行），
+# Linux 出 .deb 和 AppImage。产物作为这次运行的附件上传，不发版；正式发版和自动更新在 2.0-M7 做。macOS 和 Linux 是实验版。
+name: 打包
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            bundles: nsis
+            files: src-tauri/target/release/bundle/nsis/*.exe
+          - os: macos-latest
+            bundles: dmg
+            files: src-tauri/target/release/bundle/dmg/*.dmg
+          - os: ubuntu-22.04
+            bundles: deb,appimage
+            files: |
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/appimage/*.AppImage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux 系统库（WebKitGTK、托盘、OpenSSL、D-Bus）
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev pkg-config
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # tauri build 自己会先跑 beforeBuildCommand（pnpm build）
+      - run: pnpm tauri build --bundles ${{ matrix.bundles }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lolgang-${{ runner.os }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error

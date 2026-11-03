@@ -57,8 +57,8 @@
 | 平台 | 做法 | 依赖 |
 |---|---|---|
 | Windows | 一个线程装 `WH_MOUSE_LL` 和 `WH_KEYBOARD_LL`，跑自己的消息循环。拦下就返回 1；回放用 `SendInput`，标记放在 `dwExtraInfo`。用过 Alt、Win 后在弹起前注入无效键 `VK_NONAME`（0xFC），免得弹出菜单。 | `windows` |
-| macOS | 一个线程建会话级的 `CGEventTap`，跑自己的 `CFRunLoop`。拦下就返回空；回放用 `CGEventPost`，标记放在 `kCGEventSourceUserData`。修饰键从 `FlagsChanged` 换算成按下抬起；拖动事件一律放行（拦了会卡住光标，lolPing 的实测结论）。监听被系统因超时停用时重新启用。需要「辅助功能」权限，没有就报 `noAccess`，控制面板提示授权。不提供 Caps Lock 当触发键。 | `objc2-core-graphics`、`objc2-core-foundation`（或 `core-graphics`） |
-| Linux（X11） | 用 XInput 2.1 原始事件看键盘；对触发键加左键做被动抓取（passive grab），普通点击用 `ReplayPointer` 交还给程序；短按的回放用 XTest。启动时检查会话，Wayland 或 XWayland 直接报不支持。不提供 Caps Lock 当触发键；窗口管理器占用了同一个组合键时记日志并在控制面板提示换键。 | `x11rb`（纯 Rust，带 XInput 和 XTest 扩展） |
+| macOS | 一个线程建会话级的 `CGEventTap`，跑自己的 `CFRunLoop`。拦下就返回空；回放用 `CGEventPost`，标记放在 `kCGEventSourceUserData`。修饰键从 `FlagsChanged` 换算成按下抬起；拖动事件一律放行（拦了会卡住光标，lolPing 的实测结论）。监听被系统因超时停用时重新启用。需要「辅助功能」权限，没有就报 `noAccess`，控制面板提示授权。不提供 Caps Lock 当触发键。实现：`input/macos.rs`（实验版，未在真机上测试）。 | 直接声明 CoreGraphics、CoreFoundation 的几个函数（`extern "C"`），不加依赖 |
+| Linux（X11） | 用 XInput 2.1 原始事件看键盘；对触发键加左键做被动抓取（passive grab），普通点击用 `ReplayPointer` 交还给程序；短按的回放用 XTest。启动时检查会话，Wayland 或 XWayland 直接报不支持。不提供 Caps Lock 当触发键；窗口管理器占用了同一个组合键时记日志并在控制面板提示换键。键码按 XKB 物理键名换成 Windows 键码，认不出再看 keysym。实现：`input/linux.rs`（实验版，未在真机上测试）。 | `x11rb`（纯 Rust，带 XInput、XTest、XKB 扩展） |
 
 ### 2.4 `unsafe`
 
@@ -79,7 +79,7 @@ Windows 和 macOS 的系统接口必须用 `unsafe`。只放在这几个文件�
 | 平台 | 做法 |
 |---|---|
 | Windows | 钩子给物理像素，按显示器缩放换成窗口内的 CSS 像素。窗口底边少一个像素，免得资源管理器把它当全屏程序、压下任务栏。没东西可画时把窗口挪到显示器外（留一个像素保持缩放），QQ、微信截图工具就不会把它当成要截的窗口；有东西要画时挪回并用 `SetWindowPos(HWND_TOPMOST)` 重新置顶，用 `WS_EX_NOACTIVATE` 保证不抢焦点。 |
-| macOS | 事件坐标就是「点」，和窗口坐标一致，不用换算。Tauri 透明窗口要打开 `macOSPrivateApi`。窗口层级设为屏保级，`collectionBehavior` 设为出现在所有桌面空间、可以叠在全屏应用上、不进调度中心。Tab 面板和打字框需要不激活应用的面板（NSPanel），用 `tauri-nspanel` 或自己转换；不行就退回 lolPing 的做法（按住键时拿焦点，松开还回去）。 |
+| macOS | 事件坐标是「点」；Tauri 的显示器矩形是物理像素（点乘缩放），所以输入层按鼠标所在显示器的缩放（显示模式的像素宽 ÷ 点宽）换成物理像素，后面和 Windows 走同一套换算。Tauri 透明窗口要打开 `macOSPrivateApi`。窗口设为出现在所有桌面空间（`visible_on_all_workspaces`）。2.0 先用 Tauri 的不可聚焦窗口当 Tab 面板和投票窗口，没有转成 NSPanel；能不能叠在全屏应用上、会不会激活应用，要在真机上看（实验版）。 |
 | Linux | 需要窗口合成器才能透明；鼠标穿透用窗口的输入形状（Tauri 的 `set_ignore_cursor_events`）；置顶和不进任务栏用窗口管理器提示。缩放和 lolPing 一样固定为 1，和 X11 的根窗口坐标一致；控制面板因此不跟随桌面的高分屏缩放。 |
 
 ## 4. 队伍（`team`）和状态同步

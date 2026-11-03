@@ -508,6 +508,7 @@ impl Runner {
             .resizable(false)
             .skip_taskbar(true)
             .always_on_top(true)
+            .visible_on_all_workspaces(true)
             // 面板和投票：能点、不拿焦点；输入框要打字，得拿焦点。
             .focusable(which == Which::Text)
             .focused(false)

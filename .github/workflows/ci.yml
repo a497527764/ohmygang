@@ -1,5 +1,5 @@
 # 每次推送和拉取请求：在 Windows、macOS（Apple 芯片）、Ubuntu 上构建前端、检查 Rust 格式和 clippy、跑全部 Rust 测试。
-# macOS 和 Linux 的键鼠监听在 2.0-M6 之前是空实现，这里只保证它们能编译、纯逻辑测试能过（架构第 10 节）。
+# macOS 和 Linux 的键鼠监听是实验版（2.0-M6），CI 只能保证它们能编译、纯逻辑测试能过，真机上要人测（架构第 10 节）。
 name: CI
 
 on:

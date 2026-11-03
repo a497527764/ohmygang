@@ -1,18 +1,28 @@
 //! 全局键鼠输入（架构第 2 节）。
 //!
 //! - `gesture`：不认平台的手势状态机（纯函数）。
-//! - 各平台的监听放在自己的文件里，用 `cfg` 选：Windows 是 `win32.rs`；macOS 和 Linux 在 M6 之前用 `stub.rs`，
-//!   启动时报「这个平台的输入还没做好」。
+//! - 各平台的监听放在自己的文件里，用 `cfg` 选：Windows 是 `win32.rs`，macOS 是 `macos.rs`（CGEventTap），
+//!   Linux 是 `linux.rs`（X11，XInput2 + XTest）；macOS 和 Linux 是实验版，没在真机上测过。别的系统用 `stub.rs`。
+//! - `keymap`：macOS、X11 的按键换成 Windows 键码（纯函数，每个平台都测）。
 //! - 对外只有 `start` 和 `InputHandle`：启动后监听跑在自己的线程上，要画的东西（`Emit`）交给传进来的 `Sink`，
 //!   设置和开关通过 `InputHandle::send` 送进去。
 
 pub mod gesture;
-#[cfg(not(windows))]
+pub mod keymap;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 mod stub;
 #[cfg(windows)]
 mod win32;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+use linux as platform;
+#[cfg(target_os = "macos")]
+use macos as platform;
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 use stub as platform;
 #[cfg(windows)]
 use win32 as platform;
@@ -33,7 +43,10 @@ fn unix_ms() -> u64 {
 }
 
 /// 平台层收到一个真实（不是自己回放的）键鼠事件时调用。
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(
+    not(any(windows, target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
 fn touch() {
     LAST_INPUT_MS.store(unix_ms(), Ordering::Relaxed);
 }
@@ -42,7 +55,10 @@ fn touch() {
 static CURSOR: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// 平台层收到真实的鼠标移动时调用。
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(
+    not(any(windows, target_os = "macos", target_os = "linux")),
+    allow(dead_code)
+)]
 fn set_cursor(x: i32, y: i32) {
     CURSOR.store(
         (u64::from(x as u32) << 32) | u64::from(y as u32),
@@ -58,7 +74,7 @@ pub fn cursor() -> Option<(i32, i32)> {
     }
 }
 
-/// 多久没碰键鼠了；平台层还没报告过输入时返回 None（比如 macOS、Linux 的监听还没做）。
+/// 多久没碰键鼠了；平台层还没报告过输入时返回 None。
 pub fn idle_ms() -> Option<u64> {
     match LAST_INPUT_MS.load(Ordering::Relaxed) {
         0 => None,

@@ -1111,3 +1111,19 @@ fn panel_key_passes_through_in_a_fullscreen_game_and_when_it_is_a_trigger() {
             .contains(&Emit::Panel { show: true })
     );
 }
+
+#[test]
+fn panel_watchdog_can_be_turned_off() {
+    let mut g = with_team_keys();
+    g.set_panel_repeat_gap(0);
+    g.on_event(&kd_at(TAB, 1000));
+    assert!(g.tick(1_000_000).emits.is_empty(), "关掉后只等真正的抬起");
+    assert_eq!(
+        g.on_event(&ku(TAB)).emits,
+        vec![Emit::Panel { show: false }]
+    );
+    // 平台层发现漏了事件时可以直接收起
+    g.on_event(&kd_at(TAB, 2000));
+    assert_eq!(g.release_panel().emits, vec![Emit::Panel { show: false }]);
+    assert!(g.release_panel().emits.is_empty());
+}

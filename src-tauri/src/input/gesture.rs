@@ -277,6 +277,8 @@ pub struct Gesture {
     /// 触发键按住时按了别的普通键（Alt+Tab 之类）：这是别的程序的组合键，触发键全松开前单击都放行。
     foreign_key: bool,
     mask_menu_keys: bool,
+    /// 面板键连发停了多久算抬起丢了；0 表示不看（macOS 和 X11 收不到可靠的连发）。
+    panel_repeat_gap_ms: u64,
     /// 自定义触发键按下了但还没发给系统；拖动用掉它，单独松开就补打。0 表示没有。
     held_back_vk: u32,
     /// 扣住的键因为按了别的键被补发了（在打字）：它的连发和真正的抬起从此放行。
@@ -315,6 +317,7 @@ impl Gesture {
             need_mask: false,
             foreign_key: false,
             mask_menu_keys: true,
+            panel_repeat_gap_ms: PANEL_REPEAT_GAP_MS,
             held_back_vk: 0,
             typed_vk: 0,
             owner: WheelKind::Ping,
@@ -349,6 +352,11 @@ impl Gesture {
     /// Windows 会把单独的 Alt / Win 弹起当成打开菜单；macOS 没有这回事，由平台层关掉。
     pub fn set_mask_menu_keys(&mut self, on: bool) {
         self.mask_menu_keys = on;
+    }
+
+    /// 面板键的连发看门狗；macOS、X11 由平台层传 0 关掉（那边的抬起由事件流或重新对状态保证）。
+    pub fn set_panel_repeat_gap(&mut self, ms: u64) {
+        self.panel_repeat_gap_ms = ms;
     }
 
     pub fn set_config(&mut self, c: Config) -> Outcome {
@@ -399,8 +407,9 @@ impl Gesture {
         let mut r = Outcome::default();
         // 拦下的面板键连发停了：抬起丢了，收起面板。真正的抬起要是还来，靠 swallow_key_ups 拦下。
         if self.panel_down != 0
+            && self.panel_repeat_gap_ms != 0
             && now_ms > self.last_panel_ms
-            && now_ms - self.last_panel_ms > PANEL_REPEAT_GAP_MS
+            && now_ms - self.last_panel_ms > self.panel_repeat_gap_ms
         {
             r = self.release_panel();
         }

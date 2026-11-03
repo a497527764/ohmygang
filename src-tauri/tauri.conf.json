@@ -11,6 +11,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "钢一下",
@@ -38,6 +39,9 @@
       "icons/icon.ico"
     ],
     "publisher": "lijianqiao",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "shortDescription": "钢一下：不用服务器的开黑群聊，连发叠心之钢",
     "windows": {
       "nsis": {

@@ -675,6 +675,8 @@ fn create_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
         .resizable(false)
         .skip_taskbar(true)
         .always_on_top(true)
+        // macOS、Linux：切换桌面（Spaces、工作区）时跟着走；Windows 上不起作用
+        .visible_on_all_workspaces(true)
         .focusable(false)
         .focused(false)
         .visible(false)
