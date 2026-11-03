@@ -1,30 +1,19 @@
-// 1.x 的模块：2.0-M1 起程序不再启动它们（聊天界面已删），M2 做队伍时连同聊天代码一起删改。
-// 见 docs/superpowers/plans/2026-11-03-v2-m1-plan.md「决定」第 1 条。
+pub mod api;
 pub mod app_core;
-pub mod attention;
-pub mod backup;
 pub mod base32;
-pub mod chat;
-pub mod commands;
 pub mod crypto;
 pub mod error;
-pub mod heartsteel;
 pub mod identity;
+pub mod input;
 pub mod keystore;
 pub mod node;
+pub mod overlay;
 pub mod protocol;
 pub mod rooms;
-pub mod settings;
+pub mod settings2;
 pub mod storage;
 pub mod sync;
 pub mod transport;
-
-// 2.0
-pub mod api;
-pub mod input;
-pub mod overlay;
-pub mod settings2;
-pub mod store;
 pub mod tray;
 
 use std::sync::Mutex;
@@ -87,8 +76,8 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         dir.push("instance-2");
     }
     std::fs::create_dir_all(&dir)?;
-    let db = store::open(&dir.join("gang2.db"))?;
-    let settings = store::load_settings(&db)?;
+    let db = storage::open(&dir.join("gang2.db"))?;
+    let settings = storage::settings::load(&db)?;
 
     let handle = app.handle().clone();
     let on_toggled = Box::new(move |on: bool| {

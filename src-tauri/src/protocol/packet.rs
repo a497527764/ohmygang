@@ -11,7 +11,7 @@ use crate::crypto::{self, CryptoError, RoomId, RoomKey};
 use crate::protocol::frame::{Frame, MAX_FRAME_LEN, decode_frame, encode_frame};
 
 pub const MAGIC: &[u8; 2] = b"HS";
-pub const PROTO: u8 = 1;
+pub const PROTO: u8 = 2;
 pub const HEADER_LEN: usize = 43;
 const AAD_LEN: usize = 19;
 const TAG_LEN: usize = 16;
@@ -90,8 +90,8 @@ pub fn seal_packets(
                 vector,
             }),
             Frame::Want { to, ranges } => split(ranges, |ranges| Frame::Want { to: *to, ranges }),
-            Frame::Floors { vector } => split(vector, |vector| Frame::Floors { vector }),
-            Frame::WantFloors { .. } => vec![whole],
+            // 实时帧都很小，放得下一个包
+            Frame::Live(_) => vec![whole],
         }
     };
     frames.iter().map(|f| seal_one(key, room_id, f)).collect()
@@ -116,29 +116,20 @@ pub fn open_packet(key: &RoomKey, raw: &[u8]) -> Result<Frame, PacketError> {
 mod tests {
     use super::*;
     use crate::crypto::Identity;
-    use crate::protocol::body::{self, ChatBody};
-    use crate::protocol::event::{Stream, build_event, kind};
+    use crate::protocol::body::{self, ProfileBody};
+    use crate::protocol::event::{build_event, kind};
     use crate::protocol::frame::{HaveEntry, WireEvent};
 
     const ROOM: [u8; 16] = [1u8; 16];
     const KEY: [u8; 32] = [9u8; 32];
 
-    fn chat_wire(seq: u64, len: usize) -> WireEvent {
+    fn wire(seq: u64, len: usize) -> WireEvent {
         let me = Identity::from_secret(&[7u8; 32]);
-        let b = body::encode(&ChatBody {
-            text: "字".repeat(len / 3),
-            reply: None,
-            mentions: vec![],
+        let b = body::encode(&ProfileBody {
+            nickname: "字".repeat(len / 3),
+            avatar: None,
         });
-        WireEvent::from_signed(&build_event(
-            &me,
-            ROOM,
-            Stream::Chat,
-            seq,
-            seq * 1000,
-            kind::CHAT,
-            b,
-        ))
+        WireEvent::from_signed(&build_event(&me, ROOM, seq, seq * 1000, kind::PROFILE, b))
     }
 
     fn one(frame: &Frame) -> Vec<u8> {
@@ -151,7 +142,7 @@ mod tests {
     fn seal_open_roundtrip_and_peek() {
         let f = Frame::Events {
             live: true,
-            events: vec![chat_wire(1, 30)],
+            events: vec![wire(1, 30)],
         };
         let p = one(&f);
         assert!(p.len() <= MAX_PACKET_LEN);
@@ -163,7 +154,7 @@ mod tests {
     fn tampering_or_wrong_key_fails() {
         let p = one(&Frame::Events {
             live: true,
-            events: vec![chat_wire(1, 30)],
+            events: vec![wire(1, 30)],
         });
         for i in [0usize, 5, 20, HEADER_LEN + 3, p.len() - 1] {
             let mut bad = p.clone();
@@ -177,17 +168,17 @@ mod tests {
     fn other_protocol_and_garbage_are_rejected_before_decrypting() {
         let mut p = one(&Frame::Events {
             live: true,
-            events: vec![chat_wire(1, 30)],
+            events: vec![wire(1, 30)],
         });
-        p[2] = 2;
-        assert_eq!(open_packet(&KEY, &p), Err(PacketError::ProtocolMismatch(2)));
+        p[2] = 1; // 1.x 的包
+        assert_eq!(open_packet(&KEY, &p), Err(PacketError::ProtocolMismatch(1)));
         assert_eq!(open_packet(&KEY, b"hello"), Err(PacketError::NotOurs));
         assert_eq!(peek_room_id(b"hello"), None);
     }
 
     #[test]
     fn long_events_frame_is_split_into_several_packets() {
-        let events: Vec<WireEvent> = (1..=20).map(|i| chat_wire(i, 300)).collect();
+        let events: Vec<WireEvent> = (1..=20).map(|i| wire(i, 300)).collect();
         let packets = seal_packets(
             &KEY,
             &ROOM,
@@ -217,8 +208,7 @@ mod tests {
         let vector: Vec<HaveEntry> = (0..120u64)
             .map(|i| HaveEntry {
                 author: i.to_be_bytes(),
-                state_max: i * 1000,
-                chat_max: i * 100_000,
+                max: i * 100_000,
             })
             .collect();
         let from = [3u8; 32];

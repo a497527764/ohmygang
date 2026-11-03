@@ -4,12 +4,11 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use super::tests::{
-    TestNode, burst, create, eventually, fast_config, free_ports, join, remove_db, stacks,
-    start_with, status_is, temp_db,
+    TestNode, create, eventually, fast_config, free_ports, in_room, join, member_id, ping,
+    remove_db, start_with, status_is, temp_db, wait_for,
 };
 use super::*;
-use crate::app_core::{RoomStatus, SettingsPatch};
-use crate::chat::TimelineItem;
+use crate::app_core::RoomStatus;
 use crate::sync::path::PathKind;
 use crate::transport::fake_relay::{Behavior, FakeRelay};
 use crate::transport::relay::RelayConfig;
@@ -24,24 +23,11 @@ fn relay_config(me: SocketAddr, lan: Option<&[SocketAddr]>, relay: &str) -> Node
             connect_timeout: Duration::from_secs(1),
             ..RelayConfig::default()
         },
-        relay_urls: Some(vec![relay.to_string()]),
+        relay_urls: vec![relay.to_string()],
         relay_have_period: Duration::from_millis(300),
         relay_backfill_per_sec: 1000,
         ..fast_config(me, lan.unwrap_or(&[me]))
     }
-}
-
-async fn chats(node: &TestNode, room: RoomId) -> usize {
-    node.handle
-        .call(move |c, _| {
-            c.list_messages(&room, None, 100)
-                .unwrap()
-                .iter()
-                .filter(|i| matches!(i, TimelineItem::Chat(_)))
-                .count()
-        })
-        .await
-        .unwrap()
 }
 
 async fn path_of(node: &TestNode, room: RoomId, member: MemberId) -> PathKind {
@@ -56,36 +42,6 @@ async fn path_of(node: &TestNode, room: RoomId, member: MemberId) -> PathKind {
         .unwrap()
 }
 
-async fn member_id(node: &TestNode) -> MemberId {
-    node.handle
-        .call(|c, _| c.identity().member_id)
-        .await
-        .unwrap()
-}
-
-/// 每 20 毫秒查一次，5 秒内条件成立就返回 true。
-async fn wait_for(cond: impl Fn() -> bool) -> bool {
-    for _ in 0..250 {
-        if cond() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    false
-}
-
-/// 这个节点认为在房间里的成员数（含自己）。
-fn in_room(room: RoomId, n: usize) -> impl Fn(&mut Core) -> bool + Send + Sync + Clone + 'static {
-    move |c: &mut Core| {
-        c.list_members(&room)
-            .unwrap()
-            .iter()
-            .filter(|m| m.in_room)
-            .count()
-            == n
-    }
-}
-
 /// 每 20 毫秒查一次路径，5 秒内变成 `want` 就返回 true。
 async fn path_becomes(node: &TestNode, room: RoomId, member: MemberId, want: PathKind) -> bool {
     for _ in 0..250 {
@@ -98,7 +54,7 @@ async fn path_becomes(node: &TestNode, room: RoomId, member: MemberId, want: Pat
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn relay_only_pair_joins_chats_and_agrees_on_stacks() {
+async fn relay_only_pair_forms_a_team_and_pings() {
     let relay = FakeRelay::start(Behavior::default()).await;
     let addrs = free_ports(2);
     let (da, db) = (temp_db(), temp_db());
@@ -111,19 +67,20 @@ async fn relay_only_pair_joins_chats_and_agrees_on_stacks() {
         eventually(&b, status_is(room, RoomStatus::Active)).await,
         "只经中继也能激活"
     );
-    let a_id = member_id(&a).await;
+    let (a_id, b_id) = (member_id(&a).await, member_id(&b).await);
     assert!(path_becomes(&b, room, a_id, PathKind::Relay).await);
-    // 等 A 也收到 B 的进房事件，否则 A 的排行榜里还没有 B，两边永远对不上
-    assert!(eventually(&a, in_room(room, 2)).await, "A 应看到 B 进房");
+    assert!(eventually(&a, in_room(room, 2)).await, "甲应看到乙进队");
+    assert!(path_becomes(&a, room, b_id, PathKind::Relay).await);
 
-    burst(&a, room, 3).await;
-    let board = a.handle.call(move |c, _| stacks(c, &room)).await.unwrap();
-    assert_eq!(board.iter().map(|(_, s)| *s).max(), Some(1));
+    a.handle.send_live(ping("allin"));
     assert!(
-        eventually(&b, move |c| stacks(c, &room) == board).await,
-        "B 的层数应与 A 一致"
+        wait_for(|| b
+            .lives_from(a_id)
+            .iter()
+            .any(|(body, via)| *body == ping("allin") && *via == Via::Relay))
+        .await,
+        "信号经中继到达"
     );
-    assert_eq!(chats(&b, room).await, 3);
 
     drop((a, b));
     remove_db(&da);
@@ -131,7 +88,7 @@ async fn relay_only_pair_joins_chats_and_agrees_on_stacks() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn lan_pair_and_relay_only_member_agree() {
+async fn lan_pair_and_relay_only_member_all_get_pings() {
     let relay = FakeRelay::start(Behavior::default()).await;
     let addrs = free_ports(3);
     let lan = &addrs[0..2];
@@ -146,58 +103,34 @@ async fn lan_pair_and_relay_only_member_agree() {
     for n in [&b, &c] {
         assert!(eventually(n, status_is(room, RoomStatus::Active)).await);
     }
-    let (b_id, c_id) = (member_id(&b).await, member_id(&c).await);
+    let (a_id, b_id, c_id) = (
+        member_id(&a).await,
+        member_id(&b).await,
+        member_id(&c).await,
+    );
     assert!(
         path_becomes(&a, room, b_id, PathKind::Lan).await,
-        "A 经局域网看到 B"
+        "甲经局域网看到乙"
     );
     assert!(
         path_becomes(&a, room, c_id, PathKind::Relay).await,
-        "A 经中继看到 C"
-    );
-    // B 要先知道 C 只在中继，才会把自己的聊天也发到中继（M1 不补聊天，晚了就收不到）
-    assert!(
-        path_becomes(&b, room, c_id, PathKind::Relay).await,
-        "B 经中继看到 C"
+        "甲经中继看到丙"
     );
     for n in [&a, &b, &c] {
-        assert!(eventually(n, in_room(room, 3)).await, "三人互相知道已进房");
+        assert!(eventually(n, in_room(room, 3)).await, "三人互相知道已进队");
     }
 
-    // A、B 之间的聊天也经中继到达 C
-    burst(&a, room, 3).await;
-    burst(&b, room, 3).await;
-    let two_stacked =
-        move |c: &mut Core| stacks(c, &room).iter().filter(|(_, s)| *s == 1).count() == 2;
-    assert!(eventually(&a, two_stacked).await, "A 应看到 A、B 各 1 层");
-    let board = a.handle.call(move |c, _| stacks(c, &room)).await.unwrap();
-    let both = board.clone();
-    assert!(eventually(&b, move |c| stacks(c, &room) == both).await);
-    let both = board.clone();
+    a.handle.send_live(ping("danger"));
     assert!(
-        eventually(&c, move |c| stacks(c, &room) == both).await,
-        "C 的层数应与 A、B 一致"
+        wait_for(|| b.lives_from(a_id).iter().any(|(_, via)| *via == Via::Lan)).await,
+        "乙经局域网收到"
     );
-    let six = move |core: &mut Core| {
-        core.list_messages(&room, None, 100)
-            .unwrap()
-            .iter()
-            .filter(|i| matches!(i, TimelineItem::Chat(_)))
-            .count()
-            == 6
-    };
-    assert!(eventually(&c, six).await, "A、B 的 6 条聊天都到达 C");
-
-    burst(&c, room, 3).await;
-    let board = c.handle.call(move |c, _| stacks(c, &room)).await.unwrap();
-    assert_eq!(board.iter().filter(|(_, s)| *s == 1).count(), 3);
-    for n in [&a, &b] {
-        let want = board.clone();
-        assert!(
-            eventually(n, move |c| stacks(c, &room) == want).await,
-            "C 的叠层经中继到达"
-        );
-    }
+    assert!(
+        wait_for(|| c.lives_from(a_id).iter().any(|(_, via)| *via == Via::Relay)).await,
+        "丙经中继收到"
+    );
+    c.handle.send_live(ping("omw"));
+    assert!(wait_for(|| a.lives_from(c_id).len() == 1 && b.lives_from(c_id).len() == 1).await);
 
     drop((a, b, c));
     for d in &dbs {
@@ -206,13 +139,13 @@ async fn lan_pair_and_relay_only_member_agree() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn lan_pair_keeps_chat_off_the_relay() {
+async fn lan_pair_keeps_pings_off_the_relay() {
     let relay = FakeRelay::start(Behavior::default()).await;
     let addrs = free_ports(2);
     let (da, db) = (temp_db(), temp_db());
     let quiet = |me| NodeConfig {
         relay_have_period: Duration::from_secs(60),
-        background_relay_have_period: Duration::from_secs(60),
+        relay_presence_period: Duration::from_secs(60),
         ..relay_config(me, Some(&addrs), &relay.url)
     };
     let a = start_with(&da, 1, quiet(addrs[0])).await;
@@ -227,14 +160,12 @@ async fn lan_pair_keeps_chat_off_the_relay() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let before = relay.accepted();
-    burst(&a, room, 3).await;
-    assert!(eventually(&b, move |c| stacks(c, &room).iter().any(|(_, s)| *s == 1)).await);
+    for id in ["danger", "push", "omw"] {
+        a.handle.send_live(ping(id));
+    }
+    assert!(wait_for(|| b.lives_from(a_id).len() == 3).await);
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(
-        relay.accepted(),
-        before,
-        "全员在局域网时聊天和叠层不发到中继"
-    );
+    assert_eq!(relay.accepted(), before, "全员在局域网时信号不发到中继");
 
     drop((a, b));
     remove_db(&da);
@@ -258,28 +189,18 @@ async fn turning_internet_off_drops_relay_only_members() {
     assert!(path_becomes(&a, room, c_id, PathKind::Relay).await);
     assert!(wait_for(|| relay.connections() == 3).await);
 
-    a.handle
-        .call(|core, out| {
-            core.update_settings(SettingsPatch {
-                internet_allowed: Some(false),
-                ..SettingsPatch::default()
-            })
-            .unwrap();
-            out.settings_changed = true;
-        })
-        .await
-        .unwrap();
+    a.handle.set_relays(Vec::new()).await;
     assert_eq!(a.handle.inspect(|n| n.relay_status()).await, Some(None));
     assert!(
         path_becomes(&a, room, c_id, PathKind::Unknown).await,
-        "C 只在中继，变为离线"
+        "丙只在中继，变为离线"
     );
     assert_eq!(
         path_of(&a, room, b_id).await,
         PathKind::Lan,
-        "局域网成员不受影响"
+        "局域网队员不受影响"
     );
-    assert!(wait_for(|| relay.connections() == 2).await, "A 不再连中继");
+    assert!(wait_for(|| relay.connections() == 2).await, "甲不再连中继");
 
     drop((a, b, c));
     for d in &dbs {

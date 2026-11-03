@@ -1,28 +1,28 @@
-//! 房间码（架构第 3 节）。
+//! 队伍码（1.x 的房间码，2.0 换了前缀和校验域，和 1.x 的群码区分开）。
 //!
 //! 实现流程：
 //! 1. 组成：room_secret（16 字节随机数）‖ owner_tag（房主公钥 SHA-256 的前 10 字节）= payload 26 字节；
-//!    check = SHA-256("hs/code/v1" ‖ payload) 的前 10 位。
-//! 2. 编码：payload ‖ check 共 218 位，用 Crockford Base32 编成 44 个字符，前面加 "HS1"。
-//!    展示时每 4 个字符一组，用连字符隔开：HS1-XXXX-XXXX-…（不算连字符共 48 个字符）。
-//! 3. 解析：去掉连字符和空白、转大写，检查 "HS1" 前缀和长度，解码后重算校验位。
+//!    check = SHA-256("gang/team/v2" ‖ payload) 的前 10 位。
+//! 2. 编码：payload ‖ check 共 218 位，用 Crockford Base32 编成 44 个字符，前面加 "GT2"。
+//!    展示时每 4 个字符一组，用连字符隔开：GT2-XXXX-XXXX-…（不算连字符共 48 个字符）。
+//! 3. 解析：去掉连字符和空白、转大写，检查 "GT2" 前缀和长度，解码后重算校验位。
 //!    校验位的作用：抄错时立刻报错，而不是派生出另一把「有效」密钥、进入一个永远没人的空房间。
 //!    10 位校验能拦下约 99.9% 的单字符错误（每种错误约有 1/1024 的概率漏过）。
 //! 4. 派生：`keys()` 交给 crypto::derive_room_keys 得到 room_key 和 room_id。
 
 use crate::crypto::{self, MemberId, RoomId, RoomKey};
 
-const PREFIX: &str = "HS1";
+const PREFIX: &str = "GT2";
 const PAYLOAD_LEN: usize = 26;
 const NBITS: usize = PAYLOAD_LEN * 8 + 10;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RoomCodeError {
-    #[error("房间码应以 HS1 开头")]
+    #[error("队伍码应以 GT2 开头")]
     BadPrefix,
-    #[error("房间码长度或字符不对")]
+    #[error("队伍码长度或字符不对")]
     BadEncoding,
-    #[error("房间码校验位不对，请检查是否抄错")]
+    #[error("队伍码校验位不对，请检查是否抄错")]
     BadCheck,
 }
 
@@ -41,7 +41,7 @@ pub fn owner_tag_of(member_id: &MemberId) -> [u8; 10] {
 }
 
 fn check_bits(payload: &[u8; PAYLOAD_LEN]) -> u16 {
-    let h = crypto::sha256(&[b"hs/code/v1", payload]);
+    let h = crypto::sha256(&[b"gang/team/v2", payload]);
     (u16::from(h[0]) << 2) | u16::from(h[1] >> 6)
 }
 
@@ -107,8 +107,8 @@ mod tests {
     #[test]
     fn format_shape() {
         let s = sample().format();
-        assert!(s.starts_with("HS1-"));
-        assert_eq!(s.chars().filter(|c| *c != '-').count(), 3 + 44); // "HS1" + 44 个 Base32 字符
+        assert!(s.starts_with("GT2-"));
+        assert_eq!(s.chars().filter(|c| *c != '-').count(), 3 + 44); // "GT2" + 44 个 Base32 字符
         assert_eq!(s, GOLDEN_CODE);
     }
 
@@ -124,7 +124,7 @@ mod tests {
     fn rejects_prefix_length_and_check() {
         let s = sample().format();
         assert_eq!(
-            RoomCode::parse(&s.replacen("HS1", "HS2", 1)),
+            RoomCode::parse(&s.replacen("GT2", "HS1", 1)),
             Err(RoomCodeError::BadPrefix)
         );
         assert_eq!(
@@ -168,5 +168,5 @@ mod tests {
         assert_ne!(a.keys().1, b.keys().1);
     }
 
-    const GOLDEN_CODE: &str = "HS1-248H-248H-248H-248H-248H-248H-24H2-48H2-48H2-48H2-4A5C";
+    const GOLDEN_CODE: &str = "GT2-248H-248H-248H-248H-248H-248H-24H2-48H2-48H2-48H2-4AZW";
 }

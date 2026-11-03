@@ -1,73 +1,34 @@
-//! 本机核心：接口文档第 1 节的 `core` 模块（Rust 标准库已有 `core`，为避免重名叫 `app_core`）。
+//! 本机核心（Rust 标准库已有 `core`，为避免重名叫 `app_core`）：身份、队伍、状态事件。
 //!
 //! 实现流程：
 //! 1. 启动：从凭据管理器取本机主密钥，读出或生成本机身份。
-//! 2. 每个对外操作开一个数据库事务，调用各业务模块，全部成功才提交；
-//!    返回本次新写的事件（M1-3 交给 sync 发出去）和给界面的通知。
-//! 3. 入站（`ingest_events`，接口文档第 1 节）：无状态校验不过的丢弃；入库（重复跳过、分叉提示）；
-//!    状态事件有变化就重新推导房间缓存；建房、改规则、解散会影响所有人的层数，重算全房，否则只重算发了叠层的作者；
-//!    最后为新的聊天和系统提示、层数变化、实时叠层生成给界面的通知。整批在一个事务里。
-//! 4. 它是唯一知道所有模块的地方，业务模块之间不互相回调。
+//! 2. 每个对外操作开一个数据库事务，调用各业务模块，全部成功才提交；返回本次新写的事件（交给节点发出去）。
+//! 3. 同一时间只在一个队伍里（2.0 架构第 4 节）：建队、进队前先查有没有加入中或已加入的队伍。
+//! 4. 入站（`ingest_events`）：无状态校验不过的丢弃；入库（重复跳过、分叉提示）；有新事件就重新推导队伍缓存。
+//! 5. 实时帧：签名用本机身份（`sign_live`），收到的帧由节点验签，再用 `is_member` 查发送者是不是队员。
+//! 6. 它是唯一知道所有模块的地方，业务模块之间不互相回调。
 
-use std::collections::{BTreeSet, HashMap};
-
-use crate::backup::{self, BackupData, BackupRoom};
-use crate::chat;
 use crate::crypto::{EventId, Identity, MemberId, RoomId, RoomKey};
 use crate::error::AppResult;
-use crate::heartsteel::service::{self as hs, Replayed};
 use crate::identity::{self, IdentityView};
 use crate::keystore::KeyStore;
-use crate::keystore::{PURPOSE_IDENTITY, encrypt_local};
-use crate::protocol::body::{self, Avatar, ConfigNoticeBody, ProfileBody, RenameBody, Rule};
-use crate::protocol::event::{SignedEvent, Stream, kind, verify_stateless};
-use crate::protocol::frame::{FloorEntry, HaveEntry, ShortId, WantRange, short_id};
+use crate::protocol::body::{self, Avatar, ProfileBody, RenameBody};
+use crate::protocol::event::{SignedEvent, kind, verify_stateless};
+use crate::protocol::frame::{HaveEntry, WantRange, short_id};
+use crate::protocol::live::{LiveBody, WireLive, sign_live};
 use crate::rooms::service as rooms;
-use crate::settings;
-use crate::storage::events::{self, PutResult, StoredEvent};
-use crate::storage::{self, Connection, identity as id_store, rooms as room_store, sync_state};
+use crate::storage::events::{self, PutResult};
+use crate::storage::{Connection, rooms as room_store};
 use crate::sync::plan::Holdings;
 
-pub use crate::backup::BackupKind;
-pub use crate::chat::{ChatMessage, Draft, TimelineCursor, TimelineItem};
 pub use crate::error::AppError;
-pub use crate::rooms::service::{MemberView, RoomSummary, RuleParams};
-pub use crate::settings::{LocalSettings, SettingsPatch};
+pub use crate::rooms::service::{MemberView, RoomSummary};
 pub use crate::storage::events::Delivery;
 pub use crate::storage::rooms::RoomStatus;
 
-/// 发言的结果：消息本身、本次新写的事件（M1-3 交给 sync 发出去）、给界面的通知。
-pub struct SentMessage {
-    pub message: ChatMessage,
-    pub events: Vec<SignedEvent>,
-    pub notes: Vec<CoreEvent>,
-}
-
-/// 给界面的通知（接口文档各模块的 Events）。M1-5 把它们转发成 Tauri 事件。
+/// 给界面的通知。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CoreEvent {
-    TimelineItemAdded {
-        room_id: RoomId,
-        item: TimelineItem,
-        is_live: bool,
-        /// 要提醒本机用户（规则见 `chat::should_alert`）。
-        alert: bool,
-    },
-    /// 图片的各片后到，现在收齐了。
-    ImageReady {
-        room_id: RoomId,
-        event_id: EventId,
-    },
-    StacksChanged {
-        room_id: RoomId,
-        changes: Vec<(MemberId, u32)>,
-    },
-    HeartsteelLive {
-        room_id: RoomId,
-        member_id: MemberId,
-        new_stacks: u32,
-        event_id: EventId,
-    },
     RoomUpdated {
         room_id: RoomId,
     },
@@ -106,7 +67,7 @@ impl Core {
         &self.view
     }
 
-    /// 改全局昵称和头像，并在每个 Active 房间写一条 Profile 事件（需求 3.1）。头像为 None 表示用自动生成的头像。
+    /// 改昵称和头像，并在当前队伍写一条 Profile 事件。头像为 None 表示用自动生成的头像。
     pub fn set_profile(
         &mut self,
         nickname: &str,
@@ -128,7 +89,6 @@ impl Core {
                 &tx,
                 &self.me,
                 &row.room_id,
-                Stream::State,
                 kind::PROFILE,
                 profile.clone(),
                 now_ms,
@@ -148,17 +108,28 @@ impl Core {
         }
     }
 
-    pub fn create_room(
-        &mut self,
-        title: &str,
-        params: RuleParams,
-        now_ms: u64,
-    ) -> AppResult<CreatedRoom> {
+    /// 当前队伍：加入中或已加入的那一个。
+    pub fn current_team(&self) -> AppResult<Option<RoomSummary>> {
+        Ok(room_store::list_rooms(&self.conn)?
+            .iter()
+            .find(|r| matches!(r.status, RoomStatus::Joining | RoomStatus::Active))
+            .map(|r| rooms::summary(&self.view.member_id, r)))
+    }
+
+    fn require_no_team(&self) -> AppResult<()> {
+        if self.current_team()?.is_some() {
+            return Err(AppError::AlreadyInTeam);
+        }
+        Ok(())
+    }
+
+    pub fn create_room(&mut self, title: &str, now_ms: u64) -> AppResult<CreatedRoom> {
+        self.require_no_team()?;
         let profile = self.my_profile();
         let tx = self.conn.transaction()?;
         let (room, code, written) =
-            rooms::create_room(&tx, &self.me, &self.master, &profile, title, params, now_ms)?;
-        let summary = rooms::summary(&tx, &self.view.member_id, &rooms::get(&tx, &room)?)?;
+            rooms::create_room(&tx, &self.me, &self.master, &profile, title, now_ms)?;
+        let summary = rooms::summary(&self.view.member_id, &rooms::get(&tx, &room)?);
         tx.commit()?;
         Ok(CreatedRoom {
             summary,
@@ -168,234 +139,145 @@ impl Core {
     }
 
     pub fn join_room(&mut self, code: &str, now_ms: u64) -> AppResult<RoomSummary> {
+        self.require_no_team()?;
         let tx = self.conn.transaction()?;
         let room = rooms::join_room(&tx, &self.master, code, now_ms)?;
-        // 删除过聊天的群，用房间码进一次就重新出现在列表里
-        room_store::set_hidden(&tx, &room, false)?;
-        let summary = rooms::summary(&tx, &self.view.member_id, &rooms::get(&tx, &room)?)?;
+        let summary = rooms::summary(&self.view.member_id, &rooms::get(&tx, &room)?);
         tx.commit()?;
         Ok(summary)
     }
 
-    /// 列表里的房间（删除了聊天、暂时藏起来的不列）。
-    pub fn list_rooms(&self) -> AppResult<Vec<RoomSummary>> {
-        room_store::list_rooms(&self.conn)?
-            .iter()
-            .filter(|row| !row.hidden)
-            .map(|row| rooms::summary(&self.conn, &self.view.member_id, row))
-            .collect()
+    pub fn summary(&self, room: &RoomId) -> AppResult<RoomSummary> {
+        Ok(rooms::summary(
+            &self.view.member_id,
+            &rooms::get(&self.conn, room)?,
+        ))
     }
 
     pub fn room_code(&self, room: &RoomId) -> AppResult<String> {
         rooms::room_code(&self.conn, &self.master, room)
     }
 
-    pub fn room_rule(&self, room: &RoomId) -> AppResult<Option<Rule>> {
-        rooms::current_rule(&self.conn, room)
-    }
-
     pub fn list_members(&self, room: &RoomId) -> AppResult<Vec<MemberView>> {
         rooms::list_members(&self.conn, room)
     }
 
-    pub fn leaderboard(&self, room: &RoomId) -> AppResult<Vec<(MemberId, u32)>> {
-        rooms::leaderboard(&self.conn, room)
+    /// 现在在队里的人（不含已退出的）。
+    pub fn members_in(&self, room: &RoomId) -> AppResult<Vec<MemberId>> {
+        Ok(room_store::members(&self.conn, room)?
+            .into_iter()
+            .filter(|m| m.in_room)
+            .map(|m| m.member_id)
+            .collect())
     }
 
-    /// 只发文字（测试里常用）。
-    pub fn send_text(&mut self, room: &RoomId, text: &str, now_ms: u64) -> AppResult<SentMessage> {
-        self.send_chat(
-            room,
-            &Draft {
-                text,
-                ..Draft::default()
-            },
-            now_ms,
-        )
-    }
-
-    /// 本人发言（可带引用和 @）。和叠层判定在同一个事务里；本人实时叠层同样产生 HeartsteelLive，用于播放音效。
-    pub fn send_chat(
+    /// 队长改队名，写一条 Rename。
+    pub fn rename_room(
         &mut self,
         room: &RoomId,
-        draft: &Draft,
+        title: &str,
         now_ms: u64,
-    ) -> AppResult<SentMessage> {
-        let tx = self.conn.transaction()?;
-        let (message, written, stacked) = chat::send_chat(&tx, &self.me, room, draft, now_ms)?;
-        tx.commit()?;
-        let mut notes = Vec::new();
-        if let Some(s) = stacked {
-            let me = self.view.member_id;
-            if s.replayed.changed {
-                notes.push(CoreEvent::StacksChanged {
-                    room_id: *room,
-                    changes: vec![(me, s.replayed.stacks)],
-                });
-            }
-            if s.replayed
-                .valid
-                .iter()
-                .any(|h| h.event_id == s.event_id && hs::is_live_sound(true, h, now_ms))
-            {
-                notes.push(CoreEvent::HeartsteelLive {
-                    room_id: *room,
-                    member_id: me,
-                    new_stacks: s.replayed.stacks,
-                    event_id: s.event_id,
-                });
-            }
+    ) -> AppResult<Vec<SignedEvent>> {
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > body::TITLE_MAX_CHARS {
+            return Err(AppError::InvalidTitle);
         }
-        Ok(SentMessage {
-            message,
-            events: written,
-            notes,
-        })
-    }
-
-    /// 发一张图片（界面已压缩）。图片不参与叠层判定。
-    pub fn send_image(
-        &mut self,
-        room: &RoomId,
-        data: &[u8],
-        size: (u16, u16),
-        now_ms: u64,
-    ) -> AppResult<SentMessage> {
         let tx = self.conn.transaction()?;
-        let (message, events) = chat::send_image(&tx, &self.me, room, data, size, now_ms)?;
+        require_active_owner(&tx, &self.view.member_id, room)?;
+        let b = body::encode(&RenameBody {
+            title: title.to_string(),
+        });
+        let e = events::append_own(&tx, &self.me, room, kind::RENAME, b, now_ms)?;
+        rooms::apply_state(&tx, room)?;
         tx.commit()?;
-        Ok(SentMessage {
-            message,
-            events,
-            notes: Vec::new(),
-        })
+        Ok(vec![e])
     }
 
-    /// 图片的完整内容；还没收齐时为 None。
-    pub fn image_data(&self, room: &RoomId, id: &EventId) -> AppResult<Option<Vec<u8>>> {
-        chat::image_data(&self.conn, room, id)
-    }
-
-    /// 在本房间的文字消息里搜索，从新到旧最多 50 条。
-    pub fn search_chat(&self, room: &RoomId, query: &str) -> AppResult<Vec<TimelineItem>> {
-        chat::search(&self.conn, room, query, 50)
-    }
-
-    /// 清空本机的聊天记录显示（只影响本机，层数和同步不受影响）。
-    pub fn clear_history(&mut self, room: &RoomId, now_ms: u64) -> AppResult<RoomSummary> {
+    /// 退出队伍：写一条 Leave，状态改为 Left。用队伍码可以重新进队。
+    pub fn leave_room(&mut self, room: &RoomId, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
         let tx = self.conn.transaction()?;
-        chat::clear_history(&tx, room, now_ms)?;
-        let summary = rooms::summary(&tx, &self.view.member_id, &rooms::get(&tx, room)?)?;
-        tx.commit()?;
-        Ok(summary)
-    }
-
-    /// 聊天窗口的一页（正序）。`before` 为 None 时取最新一页；翻页时传入上一页第一条的 `cursor()`。
-    pub fn list_messages(
-        &self,
-        room: &RoomId,
-        before: Option<TimelineCursor>,
-        limit: u32,
-    ) -> AppResult<Vec<TimelineItem>> {
-        chat::list_messages(&self.conn, room, before, limit)
-    }
-
-    pub fn unread(&self, room: &RoomId) -> AppResult<u32> {
-        chat::unread(&self.conn, room, &self.view.member_id)
-    }
-
-    pub fn mark_read(&mut self, room: &RoomId) -> AppResult<()> {
-        chat::mark_read(&self.conn, room)
-    }
-
-    /// 房间的本机偏好（免打扰、置顶），`None` 表示不改。只影响本机。
-    pub fn set_room_prefs(
-        &mut self,
-        room: &RoomId,
-        muted: Option<bool>,
-        pinned: Option<bool>,
-    ) -> AppResult<RoomSummary> {
-        if !room_store::set_prefs(&self.conn, room, muted, pinned)? {
-            return Err(AppError::RoomNotFound);
+        if rooms::get(&tx, room)?.status != RoomStatus::Active {
+            return Err(AppError::RoomNotActive);
         }
-        rooms::summary(
-            &self.conn,
-            &self.view.member_id,
-            &rooms::get(&self.conn, room)?,
-        )
+        let e = events::append_own(&tx, &self.me, room, kind::LEAVE, vec![], now_ms)?;
+        rooms::apply_state(&tx, room)?;
+        room_store::set_status(&tx, room, RoomStatus::Left)?;
+        tx.commit()?;
+        Ok(vec![e])
     }
 
-    /// 导出备份（架构 8.3）。完整备份带上每个房间的房间码和全部事件。
-    pub fn export_backup(&self, kind: BackupKind, passphrase: &str) -> AppResult<Vec<u8>> {
-        let rooms = match kind {
-            BackupKind::IdentityOnly => Vec::new(),
-            BackupKind::Full => room_store::list_rooms(&self.conn)?
-                .iter()
-                .map(|r| {
-                    Ok(BackupRoom {
-                        code: self.room_code(&r.room_id)?,
-                        events: self.room_events(&r.room_id)?,
-                    })
-                })
-                .collect::<AppResult<Vec<_>>>()?,
+    /// 取消加入：从没在这个队伍写过事件的，删除本机记录；以前是队员、退出后又重新进队的，退回 Left。
+    pub fn cancel_join(&mut self, room: &RoomId) -> AppResult<()> {
+        let me = self.view.member_id;
+        let tx = self.conn.transaction()?;
+        if rooms::get(&tx, room)?.status != RoomStatus::Joining {
+            return Err(AppError::RoomNotJoining);
+        }
+        if events::query_by_author(&tx, room, &me)?.is_empty() {
+            room_store::delete_room(&tx, room)?;
+        } else {
+            room_store::set_status(&tx, room, RoomStatus::Left)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// 队长解散队伍（不可撤销）。返回新写的解散事件。
+    pub fn dissolve_room(&mut self, room: &RoomId, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
+        let tx = self.conn.transaction()?;
+        require_active_owner(&tx, &self.view.member_id, room)?;
+        let e = events::append_own(&tx, &self.me, room, kind::DISSOLVE, vec![], now_ms)?;
+        rooms::apply_state(&tx, room)?;
+        tx.commit()?;
+        Ok(vec![e])
+    }
+
+    /// 队长最早的一条解散事件，用于告诉还不知道解散的同伴。
+    pub fn dissolve_event(&self, room: &RoomId) -> AppResult<Option<SignedEvent>> {
+        let Some(owner) = rooms::get(&self.conn, room)?.owner_id else {
+            return Ok(None);
         };
-        backup::encode(
-            &BackupData {
-                kind,
-                secret: self.me.secret(),
-                nickname: self.view.nickname.clone(),
-                avatar: self.view.avatar.clone(),
-                rooms,
-            },
-            passphrase,
+        Ok(
+            events::query_kind_by_author(&self.conn, room, &owner, kind::DISSOLVE)?
+                .into_iter()
+                .next()
+                .map(|s| s.event),
         )
     }
 
-    /// 导入备份：本机已有房间时必须确认覆盖（`overwrite`），覆盖会先清空本机的身份、房间和事件。
-    /// 带来的房间都进入 Joining，事件按非实时入库（不会触发叠层），和同伴同步后才能发言。
-    pub fn import_backup(
+    /// 处理收到的一批事件。
+    pub fn ingest_events(
         &mut self,
-        bytes: &[u8],
-        passphrase: &str,
-        overwrite: bool,
-        now_ms: u64,
-    ) -> AppResult<IdentityView> {
-        let data = backup::decode(bytes, passphrase)?;
-        if !overwrite && !room_store::list_rooms(&self.conn)?.is_empty() {
-            return Err(AppError::IdentityExists);
-        }
-        let restored = Identity::from_secret(&data.secret);
+        room: &RoomId,
+        incoming: &[SignedEvent],
+    ) -> AppResult<Vec<CoreEvent>> {
         let tx = self.conn.transaction()?;
-        storage::clear_local_data(&tx)?;
-        id_store::insert(
-            &tx,
-            &id_store::IdentityRow {
-                member_id: restored.member_id(),
-                nickname: data.nickname.clone(),
-                secret_cipher: encrypt_local(&self.master, PURPOSE_IDENTITY, &data.secret)?,
-                avatar: data.avatar.as_ref().map(body::encode),
-            },
-        )?;
-        tx.commit()?;
-        let (me, view) = identity::bootstrap(&self.conn, &self.master)?;
-        self.me = me;
-        self.view = view;
-        for r in &data.rooms {
-            let summary = self.join_room(&r.code, now_ms)?;
-            self.ingest_events(&summary.room_id, &r.events, false, now_ms)?;
+        rooms::get(&tx, room)?;
+        let mut notes = Vec::new();
+        let mut changed = false;
+        for e in incoming {
+            if verify_stateless(e, room).is_err() {
+                continue;
+            }
+            match events::put_event(&tx, e, None)? {
+                PutResult::Duplicate => continue,
+                PutResult::Fork(_) => notes.push(CoreEvent::ForkDetected {
+                    room_id: *room,
+                    member_id: e.event.author_id,
+                }),
+                PutResult::Inserted(_) => {}
+            }
+            changed = true;
         }
-        Ok(self.view.clone())
+        if changed {
+            rooms::apply_state(&tx, room)?;
+            notes.push(CoreEvent::RoomUpdated { room_id: *room });
+        }
+        tx.commit()?;
+        Ok(notes)
     }
 
-    pub fn settings(&self) -> AppResult<LocalSettings> {
-        settings::load(&self.conn)
-    }
-
-    pub fn update_settings(&mut self, patch: SettingsPatch) -> AppResult<LocalSettings> {
-        settings::update(&self.conn, patch)
-    }
-
-    // ---- 以下供同步（节点）使用 ----
+    // ---- 以下供节点使用 ----
 
     pub fn room_key(&self, room: &RoomId) -> AppResult<RoomKey> {
         rooms::room_key(&self.conn, &self.master, room)
@@ -405,7 +287,7 @@ impl Core {
         Ok(rooms::get(&self.conn, room)?.status)
     }
 
-    /// 需要联网的房间：除了已退出的都要（架构 7.5）。
+    /// 需要联网的队伍：除了已退出的都要。
     pub fn sync_rooms(&self) -> AppResult<Vec<(RoomId, RoomStatus)>> {
         Ok(room_store::list_rooms(&self.conn)?
             .into_iter()
@@ -416,38 +298,10 @@ impl Core {
 
     pub fn holdings(&self, room: &RoomId) -> AppResult<Holdings> {
         let mut h = Holdings::default();
-        for (author, stream, seq) in events::holdings_rows(&self.conn, room)? {
-            h.add(short_id(&author), stream, seq);
-        }
-        for (author, floor) in sync_state::floors(&self.conn, room)? {
-            h.set_chat_floor(author, floor);
+        for (author, seq) in events::holdings_rows(&self.conn, room)? {
+            h.add(short_id(&author), seq);
         }
         Ok(h)
-    }
-
-    /// 每位作者的聊天补齐分界（架构 7.3）；没有记录的作者从 1 开始。
-    pub fn chat_floors(&self, room: &RoomId) -> AppResult<HashMap<ShortId, u64>> {
-        sync_state::floors(&self.conn, room)
-    }
-
-    pub fn set_chat_floors(&mut self, room: &RoomId, floors: &[(ShortId, u64)]) -> AppResult<()> {
-        let tx = self.conn.transaction()?;
-        for (author, floor) in floors {
-            sync_state::set_floor(&tx, room, author, *floor)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// 回答 WantFloors：最近 n 条消息里每位作者最早的序号（架构 7.4；图片算到它的第一片）。
-    pub fn floors_for_last(&self, room: &RoomId, n: u32) -> AppResult<Vec<FloorEntry>> {
-        Ok(chat::floors_for_last(&self.conn, room, n)?
-            .into_iter()
-            .map(|(author, floor)| FloorEntry {
-                author: short_id(&author),
-                floor,
-            })
-            .collect())
     }
 
     pub fn have_vector(&self, room: &RoomId) -> AppResult<Vec<HaveEntry>> {
@@ -459,26 +313,20 @@ impl Core {
         let authors = events::room_authors(&self.conn, room)?;
         let mut out = Vec::new();
         for r in ranges {
-            let stream = if r.stream == 0 {
-                Stream::State
-            } else {
-                Stream::Chat
-            };
             for a in authors.iter().filter(|a| short_id(a) == r.author) {
-                let found = events::query_range(&self.conn, room, a, stream, r.from_seq, r.to_seq)?;
+                let found = events::query_range(&self.conn, room, a, r.from_seq, r.to_seq)?;
                 out.extend(found.into_iter().map(|s| s.event));
             }
         }
         Ok(out)
     }
 
-    /// 已拿到能对上 owner_tag 的建房事件。
+    /// 已拿到能对上 owner_tag 的建队事件。
     pub fn owner_known(&self, room: &RoomId) -> AppResult<bool> {
         Ok(rooms::get(&self.conn, room)?.owner_id.is_some())
     }
 
-    /// Joining 转 Active（架构 7.4）：写入本人的 Join（还不是成员时）和 Profile，已读游标移到当前最大值。
-    /// 不是 Joining 时什么都不做。返回新写的事件。
+    /// Joining 转 Active：写入本人的 Join（还不是队员时）和 Profile。不是 Joining 时什么都不做。返回新写的事件。
     pub fn activate(&mut self, room: &RoomId, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
         let profile = self.my_profile();
         let tx = self.conn.transaction()?;
@@ -496,7 +344,6 @@ impl Core {
                 &tx,
                 &self.me,
                 room,
-                Stream::State,
                 kind::JOIN,
                 vec![],
                 now_ms,
@@ -507,317 +354,24 @@ impl Core {
                 &tx,
                 &self.me,
                 room,
-                Stream::State,
                 kind::PROFILE,
                 body::encode(&profile),
                 now_ms,
             )?);
         }
         rooms::apply_state(&tx, room)?;
-        chat::mark_read(&tx, room)?;
         tx.commit()?;
         Ok(written)
     }
 
-    /// 房主改群名（需求 3.5），写一条 Rename。
-    pub fn rename_room(
-        &mut self,
-        room: &RoomId,
-        title: &str,
-        now_ms: u64,
-    ) -> AppResult<Vec<SignedEvent>> {
-        let title = title.trim();
-        if title.is_empty() || title.chars().count() > body::TITLE_MAX_CHARS {
-            return Err(AppError::InvalidTitle);
-        }
-        let tx = self.conn.transaction()?;
-        require_active_owner(&tx, &self.view.member_id, room)?;
-        let b = body::encode(&RenameBody {
-            title: title.to_string(),
-        });
-        let e = events::append_own(&tx, &self.me, room, Stream::State, kind::RENAME, b, now_ms)?;
-        rooms::apply_state(&tx, room)?;
-        tx.commit()?;
-        Ok(vec![e])
-    }
-
-    /// 房主改心之钢规则（需求 3.4），写一条 ConfigNotice，epoch 在当前最大值上加 1。
-    /// 以前的叠层按当时的规则算，不受影响；为保险起见仍重算全房。
-    pub fn set_room_rule(
-        &mut self,
-        room: &RoomId,
-        params: RuleParams,
-        now_ms: u64,
-    ) -> AppResult<Vec<SignedEvent>> {
-        let tx = self.conn.transaction()?;
-        require_active_owner(&tx, &self.view.member_id, room)?;
-        let rule = Rule {
-            rule_epoch: rooms::current_rule(&tx, room)?.map_or(0, |r| r.rule_epoch) + 1,
-            window_ms: params.window_ms,
-            threshold: params.threshold,
-            cooldown_ms: params.cooldown_ms,
-        };
-        if !rule.is_valid() {
-            return Err(AppError::InvalidRule);
-        }
-        let b = body::encode(&ConfigNoticeBody { rule });
-        let e = events::append_own(
-            &tx,
-            &self.me,
-            room,
-            Stream::State,
-            kind::CONFIG_NOTICE,
-            b,
-            now_ms,
-        )?;
-        rooms::apply_state(&tx, room)?;
-        hs::recompute_room(&tx, room)?;
-        tx.commit()?;
-        Ok(vec![e])
-    }
-
-    /// 退出房间（需求 3.2）：写一条 Leave，状态改为 Left。聊天记录保留只读，层数保留，用房间码可以重新进房。
-    pub fn leave_room(&mut self, room: &RoomId, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
-        let tx = self.conn.transaction()?;
-        if rooms::get(&tx, room)?.status != RoomStatus::Active {
-            return Err(AppError::RoomNotActive);
-        }
-        let e = events::append_own(
-            &tx,
-            &self.me,
-            room,
-            Stream::State,
-            kind::LEAVE,
-            vec![],
-            now_ms,
-        )?;
-        rooms::apply_state(&tx, room)?;
-        room_store::set_status(&tx, room, RoomStatus::Left)?;
-        tx.commit()?;
-        Ok(vec![e])
-    }
-
-    /// 删除聊天（像微信的「删除聊天」，只影响本机）：
-    /// 还在的群清空本机显示并从列表里藏起来，人还在群里、层数不变，来了新消息再出现；
-    /// 已退出、已解散的群删除本机记录；正在加入的等于取消加入。
-    pub fn delete_chat(&mut self, room: &RoomId, now_ms: u64) -> AppResult<()> {
-        match rooms::get(&self.conn, room)?.status {
-            RoomStatus::Joining => self.cancel_join(room),
-            RoomStatus::Active => {
-                let tx = self.conn.transaction()?;
-                chat::clear_history(&tx, room, now_ms)?;
-                room_store::set_hidden(&tx, room, true)?;
-                tx.commit()?;
-                Ok(())
-            }
-            RoomStatus::Left | RoomStatus::Dissolved => {
-                let tx = self.conn.transaction()?;
-                room_store::delete_room(&tx, room)?;
-                tx.commit()?;
-                Ok(())
-            }
-        }
-    }
-
-    /// 取消加入（架构 8.2）：从没在这个群写过事件的，删除本机记录；以前是成员、退出后又重新进房的，退回 Left，保留聊天记录。
-    pub fn cancel_join(&mut self, room: &RoomId) -> AppResult<()> {
-        let me = self.view.member_id;
-        let tx = self.conn.transaction()?;
-        if rooms::get(&tx, room)?.status != RoomStatus::Joining {
-            return Err(AppError::RoomNotJoining);
-        }
-        let was_member = !events::query_by_author(&tx, room, &me, Stream::State)?.is_empty();
-        if was_member {
-            room_store::set_status(&tx, room, RoomStatus::Left)?;
-        } else {
-            room_store::delete_room(&tx, room)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// 房主解散房间（需求 3.2，不可撤销）。解散后的叠层无效，所以重算全房层数。返回新写的解散事件。
-    pub fn dissolve_room(&mut self, room: &RoomId, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
-        let tx = self.conn.transaction()?;
-        let row = rooms::get(&tx, room)?;
-        if crate::protocol::room_code::owner_tag_of(&self.view.member_id) != row.owner_tag {
-            return Err(AppError::NotOwner);
-        }
-        if row.status != RoomStatus::Active {
-            return Err(AppError::RoomNotActive);
-        }
-        let e = events::append_own(
-            &tx,
-            &self.me,
-            room,
-            Stream::State,
-            kind::DISSOLVE,
-            vec![],
-            now_ms,
-        )?;
-        rooms::apply_state(&tx, room)?;
-        hs::recompute_room(&tx, room)?;
-        tx.commit()?;
-        Ok(vec![e])
-    }
-
-    /// 房主最早的一条解散事件，用于告诉还不知道解散的同伴（架构 7.5）。
-    pub fn dissolve_event(&self, room: &RoomId) -> AppResult<Option<SignedEvent>> {
-        let Some(owner) = rooms::get(&self.conn, room)?.owner_id else {
-            return Ok(None);
-        };
-        Ok(
-            events::query_kind_by_author(&self.conn, room, &owner, kind::DISSOLVE)?
-                .into_iter()
-                .find(|s| s.event.event.stream == Stream::State)
-                .map(|s| s.event),
-        )
-    }
-
-    /// 处理收到的一批事件。`is_live` 表示来自实时帧（会影响显示时间和是否播放音效）。
-    pub fn ingest_events(
-        &mut self,
-        room: &RoomId,
-        incoming: &[SignedEvent],
-        is_live: bool,
-        now_ms: u64,
-    ) -> AppResult<Vec<CoreEvent>> {
-        let tx = self.conn.transaction()?;
-        rooms::get(&tx, room)?;
-        let mut notes = Vec::new();
-        let mut state_changed = false;
-        let mut room_wide = false;
-        let mut hs_authors = BTreeSet::new();
-        let mut new_hs = Vec::new();
-        let mut new_items = Vec::new();
-
-        for e in incoming {
-            if verify_stateless(e, room).is_err() {
-                continue;
-            }
-            let ev = &e.event;
-            let shown = chat::display_ts(ev.ts_ms, now_ms, is_live);
-            let local_seq = match events::put_event(&tx, e, shown, None)? {
-                PutResult::Duplicate => continue,
-                PutResult::Fork(l) => {
-                    notes.push(CoreEvent::ForkDetected {
-                        room_id: *room,
-                        member_id: ev.author_id,
-                    });
-                    l
-                }
-                PutResult::Inserted(l) => l,
-            };
-            if ev.stream == Stream::State {
-                if ev.kind == kind::HEARTSTEEL {
-                    hs_authors.insert(ev.author_id);
-                    new_hs.push((ev.author_id, e.event_id));
-                } else {
-                    state_changed = true;
-                    room_wide |= matches!(
-                        ev.kind,
-                        kind::ROOM_CREATE | kind::CONFIG_NOTICE | kind::DISSOLVE
-                    );
-                }
-            }
-            new_items.push(StoredEvent {
-                event: e.clone(),
-                local_seq,
-                display_ts: shown,
-                delivery: None,
-                is_fork: false,
-            });
-        }
-
-        if state_changed {
-            rooms::apply_state(&tx, room)?;
-            notes.push(CoreEvent::RoomUpdated { room_id: *room });
-        }
-
-        let replayed: Vec<(MemberId, Replayed)> = if room_wide {
-            hs::recompute_room(&tx, room)?
-        } else {
-            hs_authors
-                .iter()
-                .map(|a| Ok((*a, hs::recompute_author(&tx, room, a)?)))
-                .collect::<AppResult<_>>()?
-        };
-        let changes: Vec<(MemberId, u32)> = replayed
-            .iter()
-            .filter(|(_, r)| r.changed)
-            .map(|(a, r)| (*a, r.stacks))
-            .collect();
-        if !changes.is_empty() {
-            notes.push(CoreEvent::StacksChanged {
-                room_id: *room,
-                changes,
-            });
-        }
-        for (author, id) in &new_hs {
-            let Some((_, r)) = replayed.iter().find(|(a, _)| a == author) else {
-                continue;
-            };
-            if r.valid
-                .iter()
-                .any(|h| h.event_id == *id && hs::is_live_sound(is_live, h, now_ms))
-            {
-                notes.push(CoreEvent::HeartsteelLive {
-                    room_id: *room,
-                    member_id: *author,
-                    new_stacks: r.stacks,
-                    event_id: *id,
-                });
-            }
-        }
-
-        let row = rooms::get(&tx, room)?;
-        let me = self.view.member_id;
-        let mut latest = 0;
-        for s in &new_items {
-            if let Some(item) = chat::to_item(&tx, s, &row)? {
-                if let TimelineItem::Chat(m) = &item {
-                    latest = latest.max(m.display_ts);
-                }
-                notes.push(CoreEvent::TimelineItemAdded {
-                    room_id: *room,
-                    alert: chat::should_alert(&item, is_live, &row, &me),
-                    item,
-                    is_live,
-                });
-            }
-        }
-        // 收到新消息也算房间活跃：房间列表的时间和排序跟着最后一条消息走；删除过的聊天重新出现
-        if latest > 0 {
-            room_store::touch(&tx, room, latest)?;
-            room_store::set_hidden(&tx, room, false)?;
-        }
-        let chunks: Vec<&StoredEvent> = new_items
-            .iter()
-            .filter(|s| s.event.event.kind == kind::IMAGE_CHUNK)
-            .collect();
-        for event_id in chat::images_completed_by(&tx, room, &chunks)? {
-            // 图片消息本身也在这一批里时，上面的条目已经带着「收齐」了
-            if !new_items.iter().any(|s| s.event.event_id == event_id) {
-                notes.push(CoreEvent::ImageReady {
-                    room_id: *room,
-                    event_id,
-                });
-            }
-        }
-        tx.commit()?;
-        Ok(notes)
-    }
-
-    /// 房间里本机持有的全部事件（按入库顺序）。M1-3 的补齐从这里取数据；测试里用它模拟把事件交给另一个人。
-    /// 同伴的 Have 覆盖到的本人事件标记为已发送（架构 7.1），返回改了的事件 ID。
+    /// 同伴的 Have 覆盖到的本人事件标记为已发送，返回改了的事件 ID。
     pub fn mark_delivered(&mut self, room: &RoomId, peer: &[HaveEntry]) -> AppResult<Vec<EventId>> {
         let me = self.view.member_id;
         let Some(e) = peer.iter().find(|e| e.author == short_id(&me)) else {
             return Ok(Vec::new());
         };
         let tx = self.conn.transaction()?;
-        let mut ids = events::mark_sent(&tx, room, &me, Stream::State, e.state_max)?;
-        ids.extend(events::mark_sent(&tx, room, &me, Stream::Chat, e.chat_max)?);
+        let ids = events::mark_sent(&tx, room, &me, e.max)?;
         tx.commit()?;
         Ok(ids)
     }
@@ -831,14 +385,16 @@ impl Core {
     }
 
     pub fn room_events(&self, room: &RoomId) -> AppResult<Vec<SignedEvent>> {
-        Ok(events::query_room(&self.conn, room)?
-            .into_iter()
-            .map(|s| s.event)
-            .collect())
+        rooms::all_events(&self.conn, room)
+    }
+
+    /// 用本机身份签一帧实时帧。
+    pub fn sign_live(&self, room: &RoomId, seq: u64, ts_ms: u64, body: &LiveBody) -> WireLive {
+        sign_live(&self.me, room, seq, ts_ms, body)
     }
 }
 
-/// 只有房主、且房间是 Active 时才能改群名、改规则。
+/// 只有队长、且队伍是 Active 时才能改名、解散。
 fn require_active_owner(conn: &Connection, me: &MemberId, room: &RoomId) -> AppResult<()> {
     let row = rooms::get(conn, room)?;
     if crate::protocol::room_code::owner_tag_of(me) != row.owner_tag {
@@ -852,27 +408,3 @@ fn require_active_owner(conn: &Connection, me: &MemberId, room: &RoomId) -> AppR
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod ingest_tests;
-
-#[cfg(test)]
-mod send_tests;
-
-#[cfg(test)]
-mod timeline_tests;
-
-#[cfg(test)]
-mod restart_tests;
-
-#[cfg(test)]
-mod sync_tests;
-
-#[cfg(test)]
-mod backup_tests;
-
-#[cfg(test)]
-mod manage_tests;
-
-#[cfg(test)]
-mod chat_tests;

@@ -1,24 +1,15 @@
-//! 事件内容（body）与房间规则（架构 4.2、5.1）。
+//! 事件内容（body）。
 //!
 //! 实现流程：
 //! 1. 每种事件的内容是一个结构体，用 CBOR 编码成字节放进事件。CBOR 是二进制版的 JSON，体积小、字段可扩展。
 //! 2. body 只由作者编码一次；收端按原始字节验 ID，需要时再解码，解码失败就当作这条事件不生效。
-//! 3. 事件 ID 用 serde_bytes 编成 CBOR 字节串（34 字节），否则会被编成 32 个整数的数组，体积大一倍。
-//! 4. `Rule::is_valid` 检查取值范围；超出范围的规则无效（架构 5.1）。
-//! 5. 新字段只能是可选的、追加在末尾（V1.1 的头像）：旧版本解码时忽略不认识的字段，照样能用原有的字段；
-//!    新版本解码旧事件时，缺的字段取默认值。所以加字段不需要升协议版本。
-//! 6. 头像（`Avatar`）放在 Profile 里随昵称一起同步，不分片：内置头像只是两个小数字；
+//! 3. 新字段只能是可选的、追加在末尾：旧版本解码时忽略不认识的字段，新版本解码旧事件时缺的字段取默认值。
+//! 4. 头像（`Avatar`）放在 Profile 里随昵称一起同步，不分片：内置头像只是两个小数字；
 //!    上传的图片由界面压到 800 字节以内，只认 WebP、PNG、JPEG 的文件头。
-//! 7. 聊天可带引用（原消息 ID 和最多 60 字节的摘要）和 @（8 字节短 ID 列表），都是可选字段。
-//! 8. 图片消息（V1.1）：图片切成每片不超过 900 字节的 `ImageChunkBody`，紧接着一条 `ImageBody`
-//!    记下片数、总字节数、SHA-256 和宽高。各片就是这条图片消息前面连续的 n 个聊天序号。
+//! 5. 2.0 去掉了 1.x 的聊天、图片、改规则和聊天叠层的内容；对线命中（Hit）在 M3 加。
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::crypto::EventId;
-use crate::protocol::frame::ShortId;
-
-pub const CHAT_TEXT_MAX_BYTES: usize = 900;
 pub const NICKNAME_MAX_CHARS: usize = 32;
 pub const TITLE_MAX_CHARS: usize = 64;
 /// 上传头像图片的上限。加上 32 个字的昵称，整个 Profile 仍在 1024 字节以内。
@@ -26,84 +17,10 @@ pub const AVATAR_IMAGE_MAX_BYTES: usize = 800;
 /// 内置头像的图标数和底色数。界面里的列表只能在末尾追加，已有的下标不能改。
 pub const AVATAR_PRESET_ICONS: u16 = 48;
 pub const AVATAR_PRESET_COLORS: u8 = 12;
-/// 引用摘要的上限。
-pub const REPLY_EXCERPT_MAX_BYTES: usize = 60;
-/// 一条消息最多 @ 多少人。
-pub const MAX_MENTIONS: usize = 20;
-/// 图片每片的字节数和整张图的上限（约 219 片）。
-pub const IMAGE_CHUNK_BYTES: usize = 900;
-pub const IMAGE_MAX_BYTES: usize = 192 * 1024;
-pub const IMAGE_MAX_CHUNKS: u64 = IMAGE_MAX_BYTES.div_ceil(IMAGE_CHUNK_BYTES) as u64;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Rule {
-    pub rule_epoch: u32,
-    pub window_ms: u32,
-    pub threshold: u32,
-    pub cooldown_ms: u32,
-}
-
-impl Rule {
-    pub const DEFAULT: Rule = Rule {
-        rule_epoch: 0,
-        window_ms: 5000,
-        threshold: 3,
-        cooldown_ms: 30_000,
-    };
-
-    pub fn is_valid(&self) -> bool {
-        (1000..=60_000).contains(&self.window_ms)
-            && (2..=10).contains(&self.threshold)
-            && (1000..=3_600_000).contains(&self.cooldown_ms)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChatBody {
-    pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reply: Option<ReplyRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mentions: Vec<Mention>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReplyRef {
-    #[serde(with = "serde_bytes")]
-    pub id: EventId,
-    pub excerpt: String,
-}
-
-/// 被 @ 的人的短 ID（公钥前 8 字节）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Mention(#[serde(with = "serde_bytes")] pub ShortId);
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImageChunkBody {
-    #[serde(with = "serde_bytes")]
-    pub data: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImageBody {
-    pub chunks: u16,
-    pub size: u32,
-    #[serde(with = "serde_bytes")]
-    pub sha256: [u8; 32],
-    pub width: u16,
-    pub height: u16,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomCreateBody {
     pub title: String,
-    pub rule: Rule,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConfigNoticeBody {
-    pub rule: Rule,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,7 +31,7 @@ pub struct RenameBody {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileBody {
     pub nickname: String,
-    /// V1.1 新增；没有时用按指纹自动生成的头像。
+    /// 没有时用按指纹自动生成的头像。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<Avatar>,
 }
@@ -159,19 +76,6 @@ pub fn image_mime(b: &[u8]) -> Option<&'static str> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Trigger {
-    #[serde(with = "serde_bytes")]
-    pub event_id: EventId,
-    pub ts_ms: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HeartsteelBody {
-    pub rule_epoch: u32,
-    pub triggers: Vec<Trigger>,
-}
-
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("事件内容无法解码")]
 pub struct BodyError;
@@ -193,43 +97,21 @@ mod tests {
 
     #[test]
     fn roundtrip_all_bodies() {
-        let chat = ChatBody {
-            text: "你好".into(),
-            reply: None,
-            mentions: vec![],
-        };
-        assert_eq!(decode::<ChatBody>(&encode(&chat)), Ok(chat));
-        let image = ImageBody {
-            chunks: 3,
-            size: 2000,
-            sha256: [5; 32],
-            width: 640,
-            height: 480,
-        };
-        assert_eq!(decode::<ImageBody>(&encode(&image)), Ok(image));
         let create = RoomCreateBody {
             title: "开黑".into(),
-            rule: Rule::DEFAULT,
         };
         assert_eq!(decode::<RoomCreateBody>(&encode(&create)), Ok(create));
-        let hs = HeartsteelBody {
-            rule_epoch: 3,
-            triggers: vec![Trigger {
-                event_id: [9u8; 32],
-                ts_ms: 42,
-            }],
+        let rename = RenameBody {
+            title: "五黑".into(),
         };
-        assert_eq!(decode::<HeartsteelBody>(&encode(&hs)), Ok(hs));
+        assert_eq!(decode::<RenameBody>(&encode(&rename)), Ok(rename));
     }
 
     #[test]
     fn garbage_does_not_decode() {
-        assert_eq!(decode::<ChatBody>(&[0xff, 0x00, 0x13]), Err(BodyError));
+        assert_eq!(decode::<ProfileBody>(&[0xff, 0x00, 0x13]), Err(BodyError));
         assert_eq!(
-            decode::<ChatBody>(&encode(&ProfileBody {
-                nickname: "x".into(),
-                avatar: None,
-            })),
+            decode::<ProfileBody>(&encode(&RenameBody { title: "x".into() })),
             Err(BodyError)
         );
     }
@@ -241,80 +123,31 @@ mod tests {
     }
 
     #[test]
-    fn profile_with_avatar_is_compatible_both_ways() {
-        // 旧版本的 Profile 结构只有昵称
+    fn profile_without_avatar_omits_the_field() {
         #[derive(Debug, PartialEq, Serialize, Deserialize)]
-        struct OldProfile {
+        struct NameOnly {
             nickname: String,
         }
-        let new = ProfileBody {
+        let with = ProfileBody {
             nickname: "阿钢".into(),
             avatar: Some(Avatar::Image(webp(100))),
         };
-        assert_eq!(decode::<ProfileBody>(&encode(&new)), Ok(new.clone()));
-        assert_eq!(
-            decode::<OldProfile>(&encode(&new)),
-            Ok(OldProfile {
-                nickname: "阿钢".into()
-            })
-        );
-        let old = encode(&OldProfile {
+        assert_eq!(decode::<ProfileBody>(&encode(&with)), Ok(with));
+        let without = ProfileBody {
             nickname: "乙".into(),
-        });
+            avatar: None,
+        };
         assert_eq!(
-            decode::<ProfileBody>(&old),
-            Ok(ProfileBody {
-                nickname: "乙".into(),
-                avatar: None
+            encode(&without),
+            encode(&NameOnly {
+                nickname: "乙".into()
             })
-        );
-        // 没有头像时不写这个字段，和旧格式一模一样
-        assert_eq!(
-            encode(&ProfileBody {
-                nickname: "乙".into(),
-                avatar: None
-            }),
-            old
         );
         let preset = ProfileBody {
             nickname: String::new(),
             avatar: Some(Avatar::Preset { icon: 3, color: 7 }),
         };
         assert_eq!(decode::<ProfileBody>(&encode(&preset)), Ok(preset));
-    }
-
-    #[test]
-    fn chat_with_reply_and_mentions_is_compatible() {
-        #[derive(Debug, PartialEq, Serialize, Deserialize)]
-        struct OldChat {
-            text: String,
-        }
-        let new = ChatBody {
-            text: "@乙 看这个".into(),
-            reply: Some(ReplyRef {
-                id: [3; 32],
-                excerpt: "原话".into(),
-            }),
-            mentions: vec![Mention([9; 8])],
-        };
-        let bytes = encode(&new);
-        assert_eq!(decode::<ChatBody>(&bytes), Ok(new));
-        assert_eq!(
-            decode::<OldChat>(&bytes),
-            Ok(OldChat {
-                text: "@乙 看这个".into()
-            })
-        );
-        let plain = ChatBody {
-            text: "冲".into(),
-            reply: None,
-            mentions: vec![],
-        };
-        // 没有引用和 @ 时和旧格式一模一样
-        assert_eq!(encode(&plain), encode(&OldChat { text: "冲".into() }));
-        // 短 ID 编成 CBOR 字节串：每个 @ 只占 9 字节
-        let one = encode(&vec![Mention([1; 8])]);
-        assert_eq!(one.len(), 1 + 9);
     }
 
     #[test]
@@ -350,30 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn largest_bodies_fit() {
-        // 阈值 10 的叠层事件、900 字节的聊天都放得下
-        let hs = HeartsteelBody {
-            rule_epoch: u32::MAX,
-            triggers: (0..10)
-                .map(|i| Trigger {
-                    event_id: [0xab; 32],
-                    ts_ms: u64::MAX - i,
-                })
-                .collect(),
-        };
-        let n = encode(&hs).len();
-        assert!(n <= MAX_BODY_LEN, "叠层 body {n} 字节");
-        let chat = ChatBody {
-            text: "a".repeat(CHAT_TEXT_MAX_BYTES),
-            reply: None,
-            mentions: vec![],
-        };
-        assert!(encode(&chat).len() <= MAX_BODY_LEN);
-        let chunk = ImageChunkBody {
-            data: vec![0xab; IMAGE_CHUNK_BYTES],
-        };
-        assert!(encode(&chunk).len() <= MAX_BODY_LEN);
-        assert!(IMAGE_MAX_CHUNKS <= u64::from(u16::MAX));
+    fn largest_profile_fits() {
         // 32 个四字节字符的昵称加上最大的头像图片
         let profile = ProfileBody {
             nickname: "😀".repeat(NICKNAME_MAX_CHARS),
@@ -381,61 +191,5 @@ mod tests {
         };
         let n = encode(&profile).len();
         assert!(n <= MAX_BODY_LEN, "Profile body {n} 字节");
-    }
-
-    #[test]
-    fn rule_ranges() {
-        assert!(Rule::DEFAULT.is_valid());
-        assert!(
-            !Rule {
-                window_ms: 999,
-                ..Rule::DEFAULT
-            }
-            .is_valid()
-        );
-        assert!(
-            !Rule {
-                window_ms: 60_001,
-                ..Rule::DEFAULT
-            }
-            .is_valid()
-        );
-        assert!(
-            !Rule {
-                threshold: 1,
-                ..Rule::DEFAULT
-            }
-            .is_valid()
-        );
-        assert!(
-            !Rule {
-                threshold: 11,
-                ..Rule::DEFAULT
-            }
-            .is_valid()
-        );
-        assert!(
-            !Rule {
-                cooldown_ms: 999,
-                ..Rule::DEFAULT
-            }
-            .is_valid()
-        );
-        assert!(
-            !Rule {
-                cooldown_ms: 3_600_001,
-                ..Rule::DEFAULT
-            }
-            .is_valid()
-        );
-        assert!(
-            Rule {
-                window_ms: 1000,
-                threshold: 10,
-                cooldown_ms: 3_600_000,
-                rule_epoch: 9
-            }
-            .is_valid()
-        );
     }
 }

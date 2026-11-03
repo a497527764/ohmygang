@@ -1,17 +1,19 @@
-//! 表结构（架构 9.1）。每个元素是一次升级，下标 + 1 就是升级后的版本号，只能在末尾追加，不能改已有的。
-//! 第 2 版（M1-4）加入 `settings`；第 3 版（M2）加入 `sync_state`（每位作者的聊天补齐分界）；
-//! 第 4 版（V1.1）给本机身份和成员加头像（CBOR 编码的 `Avatar`，没有为 NULL）；
-//! 第 5 版（V1.1）给房间加 `cleared_seq`、`cleared_ts`：本机清空聊天记录时的入库序号和时刻；
-//! 第 6 版（V1.1）给房间加 `hidden`：在列表里「删除聊天」后先藏起来，来了新消息再出现。
+//! `gang2.db` 的表结构（2.0 架构第 8 节）。每个元素是一次升级，下标 + 1 就是升级后的版本号，只能在末尾追加，不能改已有的。
+//! 第 1 版（2.0-M1）只有设置；第 2 版（2.0-M2）加入身份、队伍、成员和状态事件。
+//! 和 1.x 的 `lolgang.db` 相比去掉了聊天要的表和列：已读游标、聊天补齐分界、清空记录、隐藏、心之钢规则、事件的 stream 和显示时间。
 
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
+pub const MIGRATIONS: &[&str] = &[V1, V2];
 
-const V1: &str = "
+const V1: &str =
+    "CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL);";
+
+const V2: &str = "
 CREATE TABLE identity (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     member_id BLOB NOT NULL,
     nickname TEXT NOT NULL DEFAULT '',
-    secret_cipher BLOB NOT NULL
+    secret_cipher BLOB NOT NULL,
+    avatar BLOB
 );
 
 CREATE TABLE rooms (
@@ -22,24 +24,14 @@ CREATE TABLE rooms (
     title TEXT,
     owner_id BLOB,
     dissolve_ts INTEGER,
-    last_active INTEGER NOT NULL DEFAULT 0,
-    muted INTEGER NOT NULL DEFAULT 0,
-    pinned INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE room_rules (
-    room_id BLOB NOT NULL,
-    rule_epoch INTEGER NOT NULL,
-    window_ms INTEGER NOT NULL,
-    threshold INTEGER NOT NULL,
-    cooldown_ms INTEGER NOT NULL,
-    PRIMARY KEY (room_id, rule_epoch)
+    last_active INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE members (
     room_id BLOB NOT NULL,
     member_id BLOB NOT NULL,
     nickname TEXT,
+    avatar BLOB,
     in_room INTEGER NOT NULL DEFAULT 0,
     stacks INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (room_id, member_id)
@@ -51,52 +43,14 @@ CREATE TABLE events (
     room_id BLOB NOT NULL,
     author_id BLOB NOT NULL,
     format INTEGER NOT NULL,
-    stream INTEGER NOT NULL,
     seq INTEGER NOT NULL,
     ts_ms INTEGER NOT NULL,
     kind INTEGER NOT NULL,
     body BLOB NOT NULL,
     sig BLOB NOT NULL,
-    display_ts INTEGER NOT NULL,
     delivery INTEGER,
     is_fork INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX events_by_author ON events (room_id, author_id, stream, seq);
-CREATE INDEX events_by_display ON events (room_id, display_ts, event_id);
+CREATE INDEX events_by_author ON events (room_id, author_id, seq);
 CREATE INDEX events_by_local ON events (room_id, local_seq);
-
-CREATE TABLE read_state (
-    room_id BLOB PRIMARY KEY,
-    read_local_seq INTEGER NOT NULL DEFAULT 0
-);
-";
-
-const V2: &str = "
-CREATE TABLE settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-";
-
-const V3: &str = "
-CREATE TABLE sync_state (
-    room_id BLOB NOT NULL,
-    author BLOB NOT NULL,
-    chat_floor INTEGER NOT NULL,
-    PRIMARY KEY (room_id, author)
-);
-";
-
-const V4: &str = "
-ALTER TABLE identity ADD COLUMN avatar BLOB;
-ALTER TABLE members ADD COLUMN avatar BLOB;
-";
-
-const V5: &str = "
-ALTER TABLE rooms ADD COLUMN cleared_seq INTEGER;
-ALTER TABLE rooms ADD COLUMN cleared_ts INTEGER;
-";
-
-const V6: &str = "
-ALTER TABLE rooms ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
 ";

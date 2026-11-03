@@ -40,6 +40,19 @@ pub const DEFAULT_WHEEL: [&str; 8] = [
 ];
 pub const DEFAULT_CLICK_PING: &str = "generic";
 pub const THEMES: [&str; 3] = ["system", "light", "dark"];
+/// 默认中继（1.x 架构 6.4，2026-11-02 实测选定）。
+pub const DEFAULT_RELAYS: [&str; 8] = [
+    "wss://relay.nostrfeed.com",
+    "wss://relay.ditto.pub",
+    "wss://purplerelay.com",
+    "wss://relay.mostro.network",
+    "wss://relay.wisp.talk",
+    "wss://data-space.world/r/relais-public-2",
+    "wss://relay.dreamith.to",
+    "wss://relay.gulugulu.moe",
+];
+/// 自己填的中继最多这么多个。
+const MAX_RELAYS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -88,6 +101,10 @@ pub struct Settings {
     pub muted: bool,
     pub tick_sound: bool,
     pub theme: String,
+    /// 不在同一局域网时经公共中继转发；关掉就只用局域网。
+    pub allow_internet: bool,
+    /// 自己填的中继；空表示用默认列表（以后默认列表更新了，没改过的人自动用上新的）。
+    pub relays: Vec<String>,
 }
 
 impl Default for Settings {
@@ -110,6 +127,8 @@ impl Default for Settings {
             muted: false,
             tick_sound: true,
             theme: THEMES[0].into(),
+            allow_internet: true,
+            relays: Vec::new(),
         }
     }
 }
@@ -234,6 +253,26 @@ fn wheel(raw: Option<&Value>) -> Vec<String> {
     }
 }
 
+/// 只留 wss:// 开头、不含空白的地址，去掉重复的，最多 16 个。
+fn relays(raw: Option<&Value>) -> Vec<String> {
+    let list = raw
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+        .unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for url in list {
+        let url = url.trim();
+        let host = url.strip_prefix("wss://").unwrap_or("");
+        if !host.is_empty()
+            && !host.chars().any(char::is_whitespace)
+            && !out.iter().any(|u| u == url)
+        {
+            out.push(url.to_string());
+        }
+    }
+    out.truncate(MAX_RELAYS);
+    out
+}
+
 fn one_of(raw: Option<&Value>, ok: impl Fn(&str) -> bool, default: &str) -> String {
     raw.and_then(Value::as_str)
         .filter(|s| ok(s))
@@ -264,10 +303,21 @@ pub fn normalize(raw: &Value) -> Settings {
         muted: bool_or(get("muted"), d.muted),
         tick_sound: bool_or(get("tickSound"), d.tick_sound),
         theme: one_of(get("theme"), |t| THEMES.contains(&t), THEMES[0]),
+        allow_internet: bool_or(get("allowInternet"), d.allow_internet),
+        relays: relays(get("relays")),
     }
 }
 
 impl Settings {
+    /// 实际用的中继：自己填了就用自己的，否则用默认列表。
+    pub fn relay_list(&self) -> Vec<String> {
+        if self.relays.is_empty() {
+            DEFAULT_RELAYS.map(String::from).to_vec()
+        } else {
+            self.relays.clone()
+        }
+    }
+
     /// 手势状态机的配置。`enabled` 是当前的信号开关（托盘、暂停快捷键），不存在设置里。
     pub fn gesture_config(&self, enabled: bool) -> gesture::Config {
         let trigger = match self.trigger {

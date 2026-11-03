@@ -1,23 +1,24 @@
-//! 节点（架构第 7 节的 M1 部分）：独占 Core，把界面命令、局域网和中继收包、定时器串在一个后台任务里。
+//! 节点：独占 Core，把控制面板的命令、局域网和中继收包、定时器串在一个后台任务里。
 //!
 //! 实现流程：
-//! 1. 命令：界面通过 `NodeHandle::call` 发来一个闭包，在节点任务里拿到 `&mut Core` 执行；
-//!    闭包把新写的事件放进 `Outbox`，节点随后用 `Events { live: true }` 广播出去；改了本机设置时按新设置重建中继连接池。
-//!    `NodeHandle::inspect` 读取节点自己的状态（成员路径、中继状态）。
-//! 2. 两条路径（架构 6.5）：局域网 UDP 始终广播；按设置启动中继连接池，关闭「允许互联网」时没有连接池。
+//! 1. 命令：控制面板通过 `NodeHandle::call` 发来一个闭包，在节点任务里拿到 `&mut Core` 执行；
+//!    闭包把新写的事件放进 `Outbox`，节点随后用 `Events { live: true }` 广播出去。
+//!    `NodeHandle::inspect` 读取节点自己的状态（队员路径、中继状态）。
+//! 2. 两条路径：局域网 UDP 始终广播；有中继列表时启动中继连接池（`set_relays` 可以随时换，空列表就不连）。
 //!    局域网端口被占（多半是别的软件）时不退出，退回随机端口：局域网只能发不能收，中继照常，界面据此提示。
-//!    本人的事件在有成员只能经中继联系、或局域网上没人在线时，再发一份到中继。
-//! 3. 收包：两条路径的包走同一套处理，只是记下来源。按包头 room_id 找到房间密钥解密。Events 交给 Core 入库；
+//!    本人的包在有队员只能经中继联系、或局域网上没人在线时，再发一份到中继。
+//! 3. 收包：两条路径的包走同一套处理，只是记下来源。按包头 room_id 找到队伍密钥解密。Events 交给 Core 入库；
 //!    Have 记下同伴（局域网地址、向量、每条路径的出现时间和周期），再做抑制、补齐和激活检查；
 //!    Want 把对方要的事件放进回应队列，从哪条路径来就从哪条路径回：局域网每秒 50 包，中继每秒 3 包。
-//! 4. 定时器：当前打开的房间局域网 Have 每 5 秒、中继每 30 秒，其余房间降频到 30 秒、120 秒（都有 ±20% 抖动）；
-//!    每 5 秒看一次网卡有没有变，变了就当作网络恢复：所有房间 0–2 秒内发 Have，中继立刻重连；延迟 Have（收到实时事件后 1–5 秒、
-//!    发现新同伴后 0–2 秒，期间被别人的 Have 覆盖就取消），需要时也发一份到中继；Want 超时换人；
-//!    同伴在两条路径上都超过 3 个周期没消息视为离线；Joining 房间检查能否激活。
-//! 5. 送达（架构 7.1）：本人的新事件广播后排进重发计划，没被确认就在 6、15、30 秒各重发一次；
-//!    同伴的 Have 覆盖到的本人事件标记为已发送并通知界面。启动时把仍未确认的本人事件重新排进计划。
-//! 6. 已解散的房间不主动发 Have；同伴的 Have 显示它还不知道解散时，回一次解散事件（同一同伴 1 分钟内最多一次）。
-//! 7. 通知通过 sink 交出去：测试里收集起来检查，界面层转发成 Tauri 事件。
+//!    Live（实时帧）：验签 → 发送者必须是队员 → 挡重放，通过的交给界面（`NodeEvent::Live`），不入库。
+//! 4. 定时器：Have 局域网 5 秒、中继 30 秒（±20% 抖动）；在线状态局域网 2 秒、中继 5 秒；
+//!    每 5 秒看一次网卡有没有变，变了就当作网络恢复：马上发 Have，中继立刻重连；延迟 Have（收到实时事件后 1–5 秒、
+//!    发现新同伴后 0–2 秒，期间被别人的 Have 覆盖就取消）；Want 超时换人；
+//!    同伴在两条路径上都超过 3 个周期没消息视为离线；Joining 队伍检查能否激活。
+//! 5. 送达：本人的新事件广播后排进重发计划，没被确认就在 6、15、30 秒各重发一次；
+//!    同伴的 Have 覆盖到的本人事件标记为已发送。启动时把仍未确认的本人事件重新排进计划。
+//! 6. 已解散的队伍不主动发 Have；同伴的 Have 显示它还不知道解散时，回一次解散事件（同一同伴 1 分钟内最多一次）。
+//! 7. 通知通过 sink 交出去：测试里收集起来检查，程序里转发给控制面板和透明窗口。
 //!
 //! 注意：Core 里的 SQLite 连接不能被多线程共享，所以等待网络发送时不能借用着 Core；
 //! 发包的函数只拿传输层和密钥（`send_frame`），不借用整个节点。
@@ -32,15 +33,12 @@ use tokio::time::MissedTickBehavior;
 
 use crate::app_core::{Core, CoreEvent, RoomStatus};
 use crate::crypto::{EventId, MemberId, RoomId, RoomKey};
-use crate::protocol::event::{SignedEvent, kind};
-use crate::protocol::frame::{
-    FloorEntry, Frame, HaveEntry, ShortId, WantRange, WireEvent, short_id,
-};
+use crate::protocol::event::SignedEvent;
+use crate::protocol::frame::{Frame, HaveEntry, ShortId, WantRange, WireEvent, short_id};
+use crate::protocol::live::{LiveBody, LiveSeq, ReplayGuard, WireLive, open_live};
 use crate::protocol::packet::{PacketError, open_packet, peek_room_id, seal_packets};
 use crate::sync::path::{self, PathKind, PeerPaths, Via};
-use crate::sync::plan::{
-    MAX_WANT_EVENTS, chat_gaps, dominates, missing_total, ready_to_activate, state_gaps,
-};
+use crate::sync::plan::{MAX_WANT_EVENTS, dominates, missing_total, ready_to_activate, state_gaps};
 use crate::sync::resend::ResendQueue;
 use crate::transport::budget::Priority;
 use crate::transport::lan::{Inbox, LanConfig, LanTransport};
@@ -60,10 +58,17 @@ pub enum NodeEvent {
         room_id: RoomId,
         remote_proto: u8,
     },
-    /// 本人这些事件已被同伴确认持有（界面把「发送中」去掉）。
+    /// 本人这些事件已被同伴确认持有。
     Delivered {
         room_id: RoomId,
         event_ids: Vec<EventId>,
+    },
+    /// 队友的一帧实时帧（已验签、是队员、不是重放）。
+    Live {
+        room_id: RoomId,
+        from: MemberId,
+        body: LiveBody,
+        via: Via,
     },
 }
 
@@ -80,12 +85,12 @@ pub struct LanStatus {
 #[derive(Clone, Debug)]
 pub struct NodeConfig {
     pub lan: LanConfig,
-    /// 当前打开的房间的 Have 周期：局域网、中继。
+    /// Have 周期：局域网、中继。
     pub have_period: Duration,
     pub relay_have_period: Duration,
-    /// 其余房间（后台）的 Have 周期：局域网、中继。
-    pub background_have_period: Duration,
-    pub background_relay_have_period: Duration,
+    /// 在线状态的周期：局域网、中继。
+    pub presence_period: Duration,
+    pub relay_presence_period: Duration,
     pub live_have_delay: (Duration, Duration),
     pub new_peer_have_delay: (Duration, Duration),
     pub want_timeout: Duration,
@@ -96,9 +101,9 @@ pub struct NodeConfig {
     pub relay_backfill_per_sec: u32,
     pub tick: Duration,
     pub relay: RelayConfig,
-    /// 设置后不用本机设置里的中继列表（测试用）；空列表表示不连中继。
-    pub relay_urls: Option<Vec<String>>,
-    /// 未确认的本人事件在首次发送后多久重发（架构 7.1：6、15、30 秒）。
+    /// 启动时连的中继；空列表表示不连（关了「允许互联网」）。
+    pub relay_urls: Vec<String>,
+    /// 未确认的本人事件在首次发送后多久重发（6、15、30 秒）。
     pub resend_after: [Duration; 3],
 }
 
@@ -108,8 +113,8 @@ impl Default for NodeConfig {
             lan: LanConfig::default(),
             have_period: path::LAN_HAVE_PERIOD,
             relay_have_period: path::RELAY_HAVE_PERIOD,
-            background_have_period: Duration::from_secs(30),
-            background_relay_have_period: Duration::from_secs(120),
+            presence_period: Duration::from_secs(2),
+            relay_presence_period: Duration::from_secs(5),
             live_have_delay: (Duration::from_secs(1), Duration::from_secs(5)),
             new_peer_have_delay: (Duration::ZERO, Duration::from_secs(2)),
             want_timeout: Duration::from_secs(5),
@@ -118,7 +123,7 @@ impl Default for NodeConfig {
             relay_backfill_per_sec: 3,
             tick: Duration::from_millis(100),
             relay: RelayConfig::default(),
-            relay_urls: None,
+            relay_urls: Vec::new(),
             resend_after: [
                 Duration::from_secs(6),
                 Duration::from_secs(15),
@@ -132,9 +137,9 @@ impl Default for NodeConfig {
 #[derive(Default)]
 pub struct Outbox {
     broadcasts: Vec<(RoomId, Vec<SignedEvent>)>,
+    /// 先于事件发出去的实时帧（比如退出前的 Bye）。
+    lives: Vec<(RoomId, LiveBody)>,
     pub notes: Vec<NodeEvent>,
-    /// 改了本机设置，节点要按新设置重建中继连接池。
-    pub settings_changed: bool,
 }
 
 impl Outbox {
@@ -142,6 +147,11 @@ impl Outbox {
         if !events.is_empty() {
             self.broadcasts.push((room, events));
         }
+    }
+
+    /// 在这批事件之前，先给这个队伍发一帧实时帧。
+    pub fn live(&mut self, room: RoomId, body: LiveBody) {
+        self.lives.push((room, body));
     }
 }
 
@@ -169,16 +179,7 @@ impl NodeHandle {
         rx.await.ok()
     }
 
-    /// 界面当前打开的房间（None 表示没打开任何房间）。这个房间用活跃周期发 Have，其余降频。
-    pub async fn set_active_room(&self, room: Option<RoomId>) {
-        let job: Job = Box::new(move |node| {
-            node.set_active_room(room);
-            Outbox::default()
-        });
-        let _ = self.jobs.send(job).await;
-    }
-
-    /// 在节点任务里读取节点自己的状态（成员路径、中继状态）。节点已停止时返回 None。
+    /// 在节点任务里读取节点自己的状态（队员路径、中继状态）。节点已停止时返回 None。
     pub async fn inspect<R, F>(&self, f: F) -> Option<R>
     where
         F: FnOnce(&Node) -> R + Send + 'static,
@@ -192,12 +193,52 @@ impl NodeHandle {
         self.jobs.send(job).await.ok()?;
         rx.await.ok()
     }
+
+    /// 给所有已加入的队伍发一帧实时帧（信号、表情……）。不等发完，队列满时丢掉（实时帧丢了就丢了）。
+    pub fn send_live(&self, body: LiveBody) {
+        let job: Job = Box::new(move |node| {
+            let mut out = Outbox::default();
+            for room in node.active_rooms() {
+                out.live(room, body.clone());
+            }
+            out
+        });
+        let _ = self.jobs.try_send(job);
+    }
+
+    /// 换掉要定时发的在线状态，并马上发一次。
+    pub fn set_presence(&self, presence: LiveBody) {
+        let job: Job = Box::new(move |node| {
+            node.presence = Some(presence.clone());
+            node.next_presence = Instant::now();
+            node.next_relay_presence = Instant::now();
+            Outbox::default()
+        });
+        let _ = self.jobs.try_send(job);
+    }
+
+    /// 换中继列表（改了「允许互联网」或中继设置）；空列表表示不连。
+    pub async fn set_relays(&self, urls: Vec<String>) {
+        let job: Job = Box::new(move |node| {
+            node.cfg.relay_urls = urls;
+            node.apply_relays();
+            Outbox::default()
+        });
+        let _ = self.jobs.send(job).await;
+    }
 }
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn now_us() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
         .unwrap_or(0)
 }
 
@@ -285,6 +326,14 @@ async fn recv_relay(inbox: &mut Option<RelayInbox>) -> Option<RelayPacket> {
     }
 }
 
+/// 实时帧在中继上的优先级：信号这类人要立刻看到的排在前面，在线状态和控制帧一样。
+fn live_priority(body: &LiveBody) -> Priority {
+    match body {
+        LiveBody::Presence { .. } => Priority::Control,
+        LiveBody::Ping { .. } | LiveBody::Bye => Priority::Live,
+    }
+}
+
 struct Peer {
     /// 最近一次经局域网联系时的地址。
     lan_addr: Option<SocketAddr>,
@@ -303,21 +352,15 @@ struct RoomSync {
     key: RoomKey,
     status: RoomStatus,
     peers: HashMap<MemberId, Peer>,
+    /// 现在的队员，实时帧只收他们的。
+    members: HashSet<MemberId>,
+    guard: ReplayGuard,
     next_have: Instant,
     next_relay_have: Instant,
     pending_have: Option<Instant>,
     want: Option<InFlightWant>,
     failures: HashMap<MemberId, u32>,
     told_dissolve: HashMap<MemberId, Instant>,
-    floors: FloorAsk,
-}
-
-/// 新成员问「最近 n 条聊天从哪开始」的进度（架构 7.4）。已经是成员的房间一开始就是 Done，聊天从 1 开始补。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FloorAsk {
-    Needed,
-    Asked { at: Instant },
-    Done,
 }
 
 pub struct Node {
@@ -335,9 +378,13 @@ pub struct Node {
     /// 下一个中继补齐包最早什么时候发。
     relay_backfill_at: Instant,
     resend: ResendQueue<SignedEvent>,
-    active_room: Option<RoomId>,
     net_signature: Vec<std::net::IpAddr>,
     next_net_check: Instant,
+    live_seq: LiveSeq,
+    /// 要定时发的在线状态；还没设置时不发。
+    presence: Option<LiveBody>,
+    next_presence: Instant,
+    next_relay_presence: Instant,
 }
 
 /// 多久看一次网卡有没有变。
@@ -362,9 +409,10 @@ impl Node {
                 (lan, inbox, true)
             }
         };
-        let (tx, rx) = mpsc::channel::<Job>(64);
+        let (tx, rx) = mpsc::channel::<Job>(256);
         let me = core.identity().member_id;
         let cfg_resend = cfg.resend_after;
+        let now = Instant::now();
         let mut node = Node {
             core,
             lan,
@@ -377,14 +425,17 @@ impl Node {
             rooms: HashMap::new(),
             backfill: VecDeque::new(),
             relay_backfill: VecDeque::new(),
-            relay_backfill_at: Instant::now(),
+            relay_backfill_at: now,
             resend: ResendQueue::new(cfg_resend),
-            active_room: None,
             net_signature: crate::transport::lan::interface_signature(),
-            next_net_check: Instant::now() + NET_CHECK,
+            next_net_check: now + NET_CHECK,
+            live_seq: LiveSeq::default(),
+            presence: None,
+            next_presence: now,
+            next_relay_presence: now,
         };
         node.refresh_rooms();
-        node.apply_settings();
+        node.apply_relays();
         node.queue_pending();
         tokio::spawn(node.run(rx, inbox));
         Ok(NodeHandle { jobs: tx })
@@ -398,17 +449,10 @@ impl Node {
                 job = jobs.recv() => {
                     let Some(job) = job else { break };
                     let out = job(&mut self);
-                    // 导入备份可能换了身份：原来记的同伴状态和重发计划都属于旧身份，全部丢掉重新同步
-                    let me = self.core.identity().member_id;
-                    if me != self.me {
-                        self.me = me;
-                        self.rooms.clear();
-                        self.resend = ResendQueue::new(self.cfg.resend_after);
-                    }
-                    // 先只加新房间、不移走已退出的：退出时写的 Leave 还要发出去
+                    // 先只加新队伍、不移走已退出的：退出时写的 Leave 和 Bye 还要发出去
                     self.sync_rooms(false);
-                    if out.settings_changed {
-                        self.apply_settings();
+                    for (room, body) in out.lives {
+                        self.send_live(room, body).await;
                     }
                     for (room, events) in out.broadcasts {
                         self.send_events(room, events).await;
@@ -431,12 +475,12 @@ impl Node {
         }
     }
 
-    /// 和 Core 的房间列表对齐：新房间取密钥，已有的更新状态，已退出的移除；房间有增减时更新中继订阅。
+    /// 和 Core 的队伍列表对齐：新队伍取密钥，已有的更新状态和队员，已退出的移除；队伍有增减时更新中继订阅。
     fn refresh_rooms(&mut self) {
         self.sync_rooms(true);
     }
 
-    /// `prune` 为 false 时不移走已退出的房间。
+    /// `prune` 为 false 时不移走已退出的队伍。
     fn sync_rooms(&mut self, prune: bool) {
         let Ok(list) = self.core.sync_rooms() else {
             return;
@@ -446,8 +490,15 @@ impl Node {
             self.rooms.retain(|id, _| list.iter().any(|(r, _)| r == id));
         }
         for (room, status) in list {
+            let members: HashSet<MemberId> = self
+                .core
+                .members_in(&room)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
             if let Some(rs) = self.rooms.get_mut(&room) {
                 rs.status = status;
+                rs.members = members;
                 continue;
             }
             let Ok(key) = self.core.room_key(&room) else {
@@ -460,17 +511,14 @@ impl Node {
                     key,
                     status,
                     peers: HashMap::new(),
+                    members,
+                    guard: ReplayGuard::default(),
                     next_have: now,
                     next_relay_have: now,
                     pending_have: None,
                     want: None,
                     failures: HashMap::new(),
                     told_dissolve: HashMap::new(),
-                    floors: if status == RoomStatus::Joining {
-                        FloorAsk::Needed
-                    } else {
-                        FloorAsk::Done
-                    },
                 },
             );
         }
@@ -482,28 +530,31 @@ impl Node {
         }
     }
 
-    /// 按本机设置（测试可用 `relay_urls` 覆盖中继列表）重建中继连接池；关闭互联网或列表为空时不连。
-    fn apply_settings(&mut self) {
+    /// 已加入（Active）的队伍。
+    fn active_rooms(&self) -> Vec<RoomId> {
+        self.rooms
+            .iter()
+            .filter(|(_, rs)| rs.status == RoomStatus::Active)
+            .map(|(r, _)| *r)
+            .collect()
+    }
+
+    /// 按 `cfg.relay_urls` 重建中继连接池；列表为空时不连。
+    fn apply_relays(&mut self) {
         // 先丢弃旧连接池，它的连接随之断开
         self.relay = None;
         self.relay_in = None;
-        let Ok(settings) = self.core.settings() else {
-            return;
-        };
-        if !settings.internet_allowed {
-            return;
-        }
-        let urls = self.cfg.relay_urls.clone().unwrap_or(settings.relays);
-        if urls.is_empty() {
+        if self.cfg.relay_urls.is_empty() {
             return;
         }
         let rooms = self.rooms.keys().copied().collect();
-        let (handle, inbox) = RelayPool::start(urls, rooms, self.cfg.relay.clone());
+        let (handle, inbox) =
+            RelayPool::start(self.cfg.relay_urls.clone(), rooms, self.cfg.relay.clone());
         self.relay = Some(handle);
         self.relay_in = Some(inbox);
     }
 
-    /// 某个房间里每位在线同伴当前的联系路径。
+    /// 某个队伍里每位在线同伴当前的联系路径。
     pub fn member_paths(&self, room: &RoomId) -> Vec<(MemberId, PathKind)> {
         let now = Instant::now();
         self.rooms
@@ -524,32 +575,7 @@ impl Node {
         }
     }
 
-    fn set_active_room(&mut self, room: Option<RoomId>) {
-        if self.active_room == room {
-            return;
-        }
-        self.active_room = room;
-        // 刚切到的房间可能还在后台周期里，马上报一次
-        if let Some(rs) = room.and_then(|r| self.rooms.get_mut(&r)) {
-            let now = Instant::now();
-            rs.next_have = now;
-            rs.next_relay_have = now;
-        }
-    }
-
-    /// 某个房间现在用的 Have 周期：(局域网, 中继)。
-    pub fn have_periods(&self, room: &RoomId) -> (Duration, Duration) {
-        if self.active_room.as_ref() == Some(room) {
-            (self.cfg.have_period, self.cfg.relay_have_period)
-        } else {
-            (
-                self.cfg.background_have_period,
-                self.cfg.background_relay_have_period,
-            )
-        }
-    }
-
-    /// 网卡变了，当作网络恢复：所有房间尽快发 Have，中继不再等退避。
+    /// 网卡变了，当作网络恢复：所有队伍尽快发 Have，中继不再等退避。
     fn check_network(&mut self, now: Instant) {
         if now < self.next_net_check {
             return;
@@ -597,9 +623,7 @@ impl Node {
         let rooms: Vec<RoomId> = self.rooms.keys().copied().collect();
         for room in rooms {
             for e in self.core.pending_events(&room).unwrap_or_default() {
-                if worth_resending(&e) {
-                    self.resend.add(room, e.event_id, e, now);
-                }
+                self.resend.add(room, e.event_id, e, now);
             }
         }
     }
@@ -607,7 +631,7 @@ impl Node {
     /// 本人新写的事件：实时广播，需要时也发到中继；排进重发计划，等同伴确认。
     async fn send_events(&mut self, room: RoomId, events: Vec<SignedEvent>) {
         let now = Instant::now();
-        for e in events.iter().filter(|e| worth_resending(e)) {
+        for e in &events {
             self.resend.add(room, e.event_id, e.clone(), now);
         }
         self.broadcast_events(room, events).await;
@@ -622,8 +646,71 @@ impl Node {
             events: events.iter().map(WireEvent::from_signed).collect(),
         };
         let relay = self.needs_relay(&room).then_some(Priority::Live);
-        let route = Route::Broadcast { relay };
-        send_frame(&self.lan, self.relay.as_ref(), &key, &room, &frame, route).await;
+        send_frame(
+            &self.lan,
+            self.relay.as_ref(),
+            &key,
+            &room,
+            &frame,
+            Route::Broadcast { relay },
+        )
+        .await;
+    }
+
+    fn sign_live(&mut self, room: &RoomId, body: &LiveBody) -> WireLive {
+        let seq = self.live_seq.next(now_us());
+        self.core.sign_live(room, seq, now_ms(), body)
+    }
+
+    /// 发一帧实时帧：局域网广播，需要时也发到中继。
+    async fn send_live(&mut self, room: RoomId, body: LiveBody) {
+        let Some(key) = self.key_of(&room) else {
+            return;
+        };
+        let frame = Frame::Live(self.sign_live(&room, &body));
+        let relay = self.needs_relay(&room).then_some(live_priority(&body));
+        send_frame(
+            &self.lan,
+            self.relay.as_ref(),
+            &key,
+            &room,
+            &frame,
+            Route::Broadcast { relay },
+        )
+        .await;
+    }
+
+    /// 在线状态：局域网和中继各按自己的周期发。
+    async fn send_presence(&mut self, now: Instant) {
+        let Some(body) = self.presence.clone() else {
+            return;
+        };
+        let lan_due = now >= self.next_presence;
+        let relay_due = self.relay.is_some() && now >= self.next_relay_presence;
+        if !lan_due && !relay_due {
+            return;
+        }
+        if lan_due {
+            self.next_presence = now + self.cfg.presence_period;
+        }
+        if relay_due {
+            self.next_relay_presence = now + self.cfg.relay_presence_period;
+        }
+        for room in self.active_rooms() {
+            let Some(key) = self.key_of(&room) else {
+                continue;
+            };
+            let frame = Frame::Live(self.sign_live(&room, &body));
+            let route = match (lan_due, relay_due && self.needs_relay(&room)) {
+                (true, true) => Route::Broadcast {
+                    relay: Some(Priority::Control),
+                },
+                (true, false) => Route::Broadcast { relay: None },
+                (false, true) => Route::Relay(Priority::Control),
+                (false, false) => continue,
+            };
+            send_frame(&self.lan, self.relay.as_ref(), &key, &room, &frame, route).await;
+        }
     }
 
     /// 在一条路径上发 Have，周期按这条路径填。
@@ -631,10 +718,9 @@ impl Node {
         let (Some(key), Ok(vector)) = (self.key_of(&room), self.core.have_vector(&room)) else {
             return;
         };
-        let (lan_period, relay_period) = self.have_periods(&room);
         let (period, route) = match via {
-            Via::Lan => (lan_period, Route::Broadcast { relay: None }),
-            Via::Relay => (relay_period, Route::Relay(Priority::Control)),
+            Via::Lan => (self.cfg.have_period, Route::Broadcast { relay: None }),
+            Via::Relay => (self.cfg.relay_have_period, Route::Relay(Priority::Control)),
         };
         let period_s = (period.as_millis() as u64).div_ceil(1000).max(1) as u16;
         let frame = Frame::Have {
@@ -658,7 +744,7 @@ impl Node {
         (self.sink)(e);
     }
 
-    /// 入库等操作可能改变房间状态（比如收到解散），变了就刷新并通知界面。
+    /// 入库等操作可能改变队伍状态（比如收到解散），变了就刷新并通知界面。
     fn note_status_change(&mut self, room: RoomId, before: Option<RoomStatus>) {
         let after = self.core.room_status(&room).ok();
         if after != before {
@@ -677,7 +763,7 @@ impl Node {
             return;
         };
         let Some(key) = self.key_of(&room) else {
-            return; // 不是本机加入的房间
+            return; // 不是本机加入的队伍
         };
         let frame = match open_packet(&key, bytes) {
             Ok(f) => f,
@@ -698,30 +784,67 @@ impl Node {
                 vector,
             } => self.on_have(room, source, member, period_s, vector).await,
             Frame::Want { to, ranges } => self.on_want(room, source, to, ranges),
-            Frame::WantFloors { to, n } => self.on_want_floors(room, source, to, n).await,
-            Frame::Floors { vector } => self.on_floors(room, vector).await,
+            Frame::Live(w) => self.on_live(room, source, &w),
         }
         self.maybe_activate(room).await;
     }
 
     fn on_events(&mut self, room: RoomId, live: bool, wire: Vec<WireEvent>) {
-        let events: Vec<SignedEvent> = wire
-            .into_iter()
-            .filter_map(|w| w.into_signed(room))
-            .collect();
+        let events: Vec<SignedEvent> = wire.into_iter().map(|w| w.into_signed(room)).collect();
         let before = self.core.room_status(&room).ok();
-        let Ok(notes) = self.core.ingest_events(&room, &events, live, now_ms()) else {
+        let Ok(notes) = self.core.ingest_events(&room, &events) else {
             return;
         };
         let got_new = !notes.is_empty();
         for n in notes {
             self.emit(NodeEvent::Core(n));
         }
+        if got_new {
+            let members = self.core.members_in(&room).unwrap_or_default();
+            if let Some(rs) = self.rooms.get_mut(&room) {
+                for gone in rs
+                    .members
+                    .iter()
+                    .filter(|m| !members.contains(m))
+                    .copied()
+                    .collect::<Vec<_>>()
+                {
+                    rs.guard.forget(&gone);
+                }
+                rs.members = members.into_iter().collect();
+            }
+        }
         self.note_status_change(room, before);
         if live && got_new {
             let delay = self.cfg.live_have_delay;
             self.schedule_have(&room, delay);
         }
+    }
+
+    /// 实时帧：验签、是队员、不是重放，才交给界面。
+    fn on_live(&mut self, room: RoomId, source: Source, w: &WireLive) {
+        let Some(opened) = open_live(w, &room) else {
+            return;
+        };
+        if opened.from == self.me {
+            return; // 自己的广播绕回来了
+        }
+        let Some(rs) = self.rooms.get_mut(&room) else {
+            return;
+        };
+        if !rs.members.contains(&opened.from)
+            || !rs
+                .guard
+                .accept(&opened.from, opened.seq, opened.ts_ms, now_ms())
+        {
+            return;
+        }
+        self.emit(NodeEvent::Live {
+            room_id: room,
+            from: opened.from,
+            body: opened.body,
+            via: source.via(),
+        });
     }
 
     async fn on_have(
@@ -795,7 +918,7 @@ impl Node {
         let owner = short_id(&d.event.author_id);
         if vector
             .iter()
-            .any(|e| e.author == owner && e.state_max >= d.event.seq)
+            .any(|e| e.author == owner && e.max >= d.event.seq)
         {
             return; // 对方已经知道
         }
@@ -848,8 +971,7 @@ impl Node {
         }
     }
 
-    /// 没有在途的 Want 时，挑最近联系过、还没失败太多次的同伴，要它有、本机缺的事件：
-    /// 先补状态事件（任何同伴有就先要），都齐了再补聊天（新成员要等问到分界之后）。
+    /// 没有在途的 Want 时，挑最近联系过、还没失败太多次的同伴，要它有、本机缺的事件。
     async fn plan_want(&mut self, room: RoomId) {
         let Ok(holdings) = self.core.holdings(&room) else {
             return;
@@ -867,17 +989,9 @@ impl Node {
             .filter(|(m, _)| rs.failures.get(*m).copied().unwrap_or(0) < self.cfg.want_max_tries)
             .collect();
         candidates.sort_by_key(|(_, p)| std::cmp::Reverse(p.last_seen));
-        let floors = self.floors_if_known(&room);
-        let state = candidates.iter().find_map(|(m, p)| {
+        let choice = candidates.iter().find_map(|(m, p)| {
             let gaps = state_gaps(&holdings, &p.vector);
             (!gaps.is_empty()).then_some((**m, route_to(p, now), gaps))
-        });
-        let choice = state.or_else(|| {
-            let floors = floors.as_ref()?;
-            candidates.iter().find_map(|(m, p)| {
-                let gaps = chat_gaps(&holdings, &p.vector, floors);
-                (!gaps.is_empty()).then_some((**m, route_to(p, now), gaps))
-            })
         });
         let Some((peer, route, gaps)) = choice else {
             return;
@@ -886,7 +1000,7 @@ impl Node {
         let missing_before = rs
             .peers
             .get(&peer)
-            .map_or(0, |p| missing_total(&holdings, &p.vector, floors.as_ref()));
+            .map_or(0, |p| missing_total(&holdings, &p.vector));
         let frame = Frame::Want {
             to: short_id(&peer),
             ranges: gaps,
@@ -901,19 +1015,11 @@ impl Node {
         }
     }
 
-    /// 聊天补齐分界已知（不是正在问分界的新成员）时返回分界表。
-    fn floors_if_known(&self, room: &RoomId) -> Option<HashMap<ShortId, u64>> {
-        let done = self.rooms.get(room)?.floors == FloorAsk::Done;
-        done.then(|| self.core.chat_floors(room).unwrap_or_default())
-    }
-
     /// 在途的 Want 有进展（缺的总数变少）就放行下一个；超时没进展记一次失败，换人。
-    /// 缺的总数不受每次 64 个的限制，否则缺得多时每批都会被误判为没进展。
     fn check_want(&mut self, room: RoomId) {
         let Ok(holdings) = self.core.holdings(&room) else {
             return;
         };
-        let floors = self.floors_if_known(&room);
         let timeout = self.cfg.want_timeout;
         let Some(rs) = self.rooms.get_mut(&room) else {
             return;
@@ -924,7 +1030,7 @@ impl Node {
         let missing_now = rs
             .peers
             .get(&w.peer)
-            .map_or(0, |p| missing_total(&holdings, &p.vector, floors.as_ref()));
+            .map_or(0, |p| missing_total(&holdings, &p.vector));
         if missing_now < w.missing_before {
             rs.failures.remove(&w.peer);
             rs.want = None;
@@ -932,85 +1038,6 @@ impl Node {
             *rs.failures.entry(w.peer).or_default() += 1;
             rs.want = None;
         }
-    }
-
-    /// 新成员（Joining）先问一位同伴最近 n 条聊天从哪开始（架构 7.4），n 按到这位同伴的路径取本机上限。
-    /// 问了一直没回（比如对方是旧版本）就放弃，聊天从 1 开始补。
-    async fn maybe_ask_floors(&mut self, room: RoomId) {
-        let Some(rs) = self.rooms.get_mut(&room) else {
-            return;
-        };
-        match rs.floors {
-            FloorAsk::Done => return,
-            FloorAsk::Asked { at, .. } => {
-                if at.elapsed() > self.cfg.want_timeout * 2 {
-                    rs.floors = FloorAsk::Done;
-                }
-                return;
-            }
-            FloorAsk::Needed => {}
-        }
-        let now = Instant::now();
-        let Some((peer, p)) = rs.peers.iter().max_by_key(|(_, p)| p.last_seen) else {
-            return;
-        };
-        let (peer, route, key) = (*peer, route_to(p, now), rs.key);
-        let Ok(settings) = self.core.settings() else {
-            return;
-        };
-        let n = match route {
-            Route::Lan(_) => settings.history_limit_lan,
-            _ => settings.history_limit_relay,
-        };
-        let frame = Frame::WantFloors {
-            to: short_id(&peer),
-            n,
-        };
-        send_frame(&self.lan, self.relay.as_ref(), &key, &room, &frame, route).await;
-        if let Some(rs) = self.rooms.get_mut(&room) {
-            rs.floors = FloorAsk::Asked { at: now };
-        }
-    }
-
-    /// 回答 WantFloors：n 取对方要的和本机这条路径上限的较小值。
-    async fn on_want_floors(&mut self, room: RoomId, source: Source, to: ShortId, n: u32) {
-        if to != short_id(&self.me) {
-            return;
-        }
-        let (Some(key), Ok(settings)) = (self.key_of(&room), self.core.settings()) else {
-            return;
-        };
-        let limit = match source {
-            Source::Lan(_) => settings.history_limit_lan,
-            Source::Relay => settings.history_limit_relay,
-        };
-        let Ok(vector) = self.core.floors_for_last(&room, n.min(limit)) else {
-            return;
-        };
-        let frame = Frame::Floors { vector };
-        let route = source.reply(Priority::Control);
-        send_frame(&self.lan, self.relay.as_ref(), &key, &room, &frame, route).await;
-    }
-
-    /// 收到分界：列出的作者按列出的记；没列出但回答者有聊天的作者，分界设在回答者已有的之后（不要旧的）。
-    /// 没在问分界时收到的（比如回答别人的）不理。
-    async fn on_floors(&mut self, room: RoomId, vector: Vec<FloorEntry>) {
-        let Some(rs) = self.rooms.get_mut(&room) else {
-            return;
-        };
-        if !matches!(rs.floors, FloorAsk::Asked { .. }) {
-            return;
-        }
-        let mut floors: Vec<(ShortId, u64)> = vector.iter().map(|f| (f.author, f.floor)).collect();
-        let newest = rs.peers.values().max_by_key(|p| p.last_seen);
-        for e in newest.map(|p| p.vector.as_slice()).unwrap_or_default() {
-            if e.chat_max > 0 && !floors.iter().any(|(a, _)| *a == e.author) {
-                floors.push((e.author, e.chat_max + 1));
-            }
-        }
-        rs.floors = FloorAsk::Done;
-        let _ = self.core.set_chat_floors(&room, &floors);
-        self.plan_want(room).await;
     }
 
     async fn maybe_activate(&mut self, room: RoomId) {
@@ -1026,7 +1053,7 @@ impl Node {
         else {
             return;
         };
-        if !ready_to_activate(owner_known, &holdings, &peers, short_id(&self.me)) {
+        if !ready_to_activate(owner_known, &holdings, &peers) {
             return;
         }
         let Ok(written) = self.core.activate(&room, now_ms()) else {
@@ -1040,6 +1067,9 @@ impl Node {
         });
         let delay = self.cfg.new_peer_have_delay;
         self.schedule_have(&room, delay);
+        // 刚进队：马上报一次在线状态
+        self.next_presence = Instant::now();
+        self.next_relay_presence = Instant::now();
     }
 
     async fn on_tick(&mut self) {
@@ -1049,7 +1079,7 @@ impl Node {
         self.check_network(now);
         for room in rooms {
             let needs_relay = self.needs_relay(&room);
-            let (lan_period, relay_period) = self.have_periods(&room);
+            let (lan_period, relay_period) = (self.cfg.have_period, self.cfg.relay_have_period);
             let (mut lan_have, mut relay_have) = (false, false);
             if let Some(rs) = self.rooms.get_mut(&room) {
                 rs.peers
@@ -1074,10 +1104,10 @@ impl Node {
                 self.send_have(room, Via::Relay).await;
             }
             self.check_want(room);
-            self.maybe_ask_floors(room).await;
             self.plan_want(room).await;
             self.maybe_activate(room).await;
         }
+        self.send_presence(now).await;
         let per_tick =
             (u64::from(self.cfg.backfill_per_sec) * self.cfg.tick.as_millis() as u64 / 1000).max(1);
         for _ in 0..per_tick {
@@ -1112,11 +1142,6 @@ impl Node {
             self.relay_backfill_at += interval;
         }
     }
-}
-
-/// 图片的各片不进重发计划：一张图上百片，重发三遍太占中继预算；丢了的片靠 Have/Want 补齐。
-fn worth_resending(e: &SignedEvent) -> bool {
-    e.event.kind != kind::IMAGE_CHUNK
 }
 
 #[cfg(test)]

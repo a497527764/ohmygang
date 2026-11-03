@@ -55,6 +55,8 @@ fn a_saved_file_reads_back_the_same() {
         muted: true,
         tick_sound: false,
         theme: "dark".into(),
+        allow_internet: false,
+        relays: vec!["wss://my.relay".into()],
     };
     assert_eq!(normalize(&serde_json::to_value(&s).unwrap()), s);
 }
@@ -217,4 +219,20 @@ fn overlay_gets_volume_as_a_fraction_and_zero_when_muted() {
     assert_eq!(s.overlay().volume, 0.7);
     s.muted = true;
     assert_eq!(s.overlay().volume, 0.0);
+}
+
+#[test]
+fn relays_keep_valid_unique_wss_addresses() {
+    let s = normalize(
+        &json!({ "relays": [" wss://a.example ", "ws://b.example", "wss://", "wss://a b", "wss://a.example", "wss://c.example"] }),
+    );
+    assert_eq!(
+        s.relays,
+        vec!["wss://a.example".to_string(), "wss://c.example".to_string()]
+    );
+    assert_eq!(s.relay_list(), s.relays);
+    let d = Settings::default();
+    assert!(d.allow_internet && d.relays.is_empty());
+    assert_eq!(d.relay_list(), DEFAULT_RELAYS.map(String::from).to_vec());
+    assert!(!normalize(&json!({ "allowInternet": false })).allow_internet);
 }

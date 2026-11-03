@@ -1,4 +1,4 @@
-//! SQLite 存储（架构第 9 节）。
+//! SQLite 存储：`gang2.db`（2.0 架构第 8 节）。1.x 的 `lolgang.db` 不读、不删。
 //!
 //! 实现流程：
 //! 1. `open`：打开数据库文件，开启 WAL 模式（写入时不阻塞读取，意外断电也不容易损坏），再升级表结构。
@@ -11,7 +11,6 @@ pub mod identity;
 pub mod rooms;
 mod schema;
 pub mod settings;
-pub mod sync_state;
 
 use std::path::Path;
 
@@ -30,15 +29,6 @@ pub fn open_in_memory() -> AppResult<Connection> {
     let conn = Connection::open_in_memory()?;
     migrate(&conn)?;
     Ok(conn)
-}
-
-/// 恢复备份前清空本机的身份、房间和全部事件（设置保留）。由调用方放进事务。
-pub fn clear_local_data(conn: &Connection) -> AppResult<()> {
-    conn.execute_batch(
-        "DELETE FROM identity; DELETE FROM rooms; DELETE FROM room_rules; DELETE FROM members;
-         DELETE FROM events; DELETE FROM read_state; DELETE FROM sync_state;",
-    )?;
-    Ok(())
 }
 
 fn migrate(conn: &Connection) -> AppResult<()> {

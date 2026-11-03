@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use crate::input::{Command, InputHandle};
 use crate::overlay::{Msg, Overlays};
 use crate::settings2::{self, OverlaySettings, Settings};
-use crate::{store, tray};
+use crate::{storage, tray};
 
 pub struct AppState {
     pub db: Mutex<Connection>,
@@ -91,7 +91,7 @@ pub fn settings_write(
     settings: Value,
 ) -> Result<Settings, String> {
     let s = settings2::normalize(&settings);
-    store::save_settings(&state.db.lock().expect("数据库锁没有中毒"), &s)
+    storage::settings::save(&state.db.lock().expect("数据库锁没有中毒"), &s)
         .map_err(|e| e.to_string())?;
     *state.settings.lock().expect("设置锁没有中毒") = s.clone();
     if let Some(input) = &state.input {

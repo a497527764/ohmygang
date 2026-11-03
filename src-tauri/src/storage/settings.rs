@@ -1,27 +1,26 @@
-//! 本机设置表（键值）。值存 JSON 文本，含义和默认值由 `settings` 模块决定。
+//! 设置：一行，存整份设置的 JSON。读的时候过 `settings2::normalize`，所以坏数据也能读出合法设置。
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::AppResult;
+use crate::settings2::{self, Settings};
 
-pub fn get(conn: &Connection, key: &str) -> AppResult<Option<String>> {
-    Ok(conn
-        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
-            r.get(0)
-        })
-        .optional()?)
+/// 读设置。没存过或存的东西坏了，得到默认值或修正后的值。
+pub fn load(conn: &Connection) -> AppResult<Settings> {
+    let json: Option<String> = conn
+        .query_row("SELECT json FROM settings WHERE id = 1", [], |r| r.get(0))
+        .optional()?;
+    let raw = json
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or(serde_json::Value::Null);
+    Ok(settings2::normalize(&raw))
 }
 
-pub fn delete(conn: &Connection, key: &str) -> AppResult<()> {
-    conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
-    Ok(())
-}
-
-pub fn set(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
+pub fn save(conn: &Connection, s: &Settings) -> AppResult<()> {
+    let json = serde_json::to_string(s).expect("设置总能写成 JSON");
     conn.execute(
-        "INSERT INTO settings (key, value) VALUES (?1, ?2)
-         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        params![key, value],
+        "INSERT INTO settings (id, json) VALUES (1, ?1) ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+        [json],
     )?;
     Ok(())
 }
