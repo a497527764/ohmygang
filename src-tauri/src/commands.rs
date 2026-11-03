@@ -705,7 +705,7 @@ pub async fn chat_list(
     .await
 }
 
-/// 导出备份，写到「文档\心之钢群聊备份」，返回完整路径。`stamp` 是界面给的本地时间（如 20261103-1530），只用来起文件名。
+/// 导出备份，写到「文档\钢一下备份」，返回完整路径。`stamp` 是界面给的本地时间（如 20261103-1530），只用来起文件名。
 /// 写文件在 Rust 侧做，不需要给前端开文件系统权限。
 #[tauri::command]
 pub async fn backup_export(
@@ -728,9 +728,9 @@ pub async fn backup_export(
         .path()
         .document_dir()
         .map_err(|e| format!("找不到文档目录：{e}"))?
-        .join("心之钢群聊备份");
+        .join("钢一下备份");
     std::fs::create_dir_all(&dir).map_err(|e| format!("无法创建备份目录：{e}"))?;
-    let path = dir.join(format!("心之钢备份-{label}-{stamp}.hsbk"));
+    let path = dir.join(format!("钢一下备份-{label}-{stamp}.hsbk"));
     std::fs::write(&path, bytes).map_err(|e| format!("写入备份文件失败：{e}"))?;
     Ok(path.display().to_string())
 }

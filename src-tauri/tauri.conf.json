@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "心之钢群聊",
+  "productName": "钢一下",
   "mainBinaryName": "lolgang",
   "version": "0.1.0",
   "identifier": "com.lijia.lolgang",
@@ -13,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "心之钢群聊",
+        "title": "钢一下",
         "width": 1000,
         "height": 700,
         "minWidth": 720,
@@ -37,7 +37,7 @@
       "icons/icon.ico"
     ],
     "publisher": "lolGang",
-    "shortDescription": "心之钢群聊：不用服务器的开黑群聊，连发叠心之钢",
+    "shortDescription": "钢一下：不用服务器的开黑群聊，连发叠心之钢",
     "windows": {
       "nsis": {
         "installMode": "currentUser",

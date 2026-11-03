@@ -1,4 +1,4 @@
-# 心之钢群聊 — 模块接口草图
+# 钢一下（原名心之钢群聊） — 模块接口草图
 
 > 版本：修订版（2026-11-02 设计审查后）  
 > 对应：[architecture.md](./architecture.md)、[requirements.md](./requirements.md)  

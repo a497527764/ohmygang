@@ -31,9 +31,9 @@ pub enum AppError {
     InvalidHistoryLimit,
     #[error("备份口令至少 6 个字符")]
     BackupPassphraseTooShort,
-    #[error("口令不对，或者这不是心之钢群聊的备份文件、文件已损坏")]
+    #[error("口令不对，或者这不是钢一下的备份文件、文件已损坏")]
     BackupInvalid,
-    #[error("这个备份来自更新版本的心之钢群聊，请先升级")]
+    #[error("这个备份来自更新版本的钢一下，请先升级")]
     BackupUnsupported,
     #[error("本机已有身份和房间，导入会把它们清空，请确认覆盖后再导入")]
     IdentityExists,
