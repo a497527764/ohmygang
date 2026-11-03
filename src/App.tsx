@@ -25,7 +25,7 @@ import { Dialog } from "./components/Dialog";
 import { GroupDrawer } from "./components/GroupDrawer";
 import { Icon } from "./components/Icon";
 import { ProfilePanel } from "./components/ProfileDialog";
-import { RoomList } from "./components/RoomList";
+import { RoomList, type RoomAction } from "./components/RoomList";
 import { RuleDialog } from "./components/RuleDialog";
 import { SearchPanel } from "./components/SearchPanel";
 import { SettingsPanel } from "./components/SettingsPage";
@@ -39,7 +39,7 @@ const PAGE = 100;
 const MAX_JUMP_PAGES = 60;
 
 type DialogKind = "create" | "join" | "rename";
-type ConfirmKind = "leave" | "dissolve" | "cancelJoin" | "clearHistory";
+type ConfirmKind = "leave" | "dissolve" | "cancelJoin" | "clearHistory" | "deleteChat";
 type Panel = "drawer" | "search" | null;
 
 function App() {
@@ -56,7 +56,8 @@ function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [left, setLeft] = useState<"chats" | "settings" | "profile">("chats");
   const [dialog, setDialog] = useState<DialogKind | null>(null);
-  const [confirmKind, setConfirmKind] = useState<ConfirmKind | null>(null);
+  /// 待确认的操作和它针对的群（可能是右键的那个群，不一定是当前打开的）。
+  const [confirm, setConfirm] = useState<{ kind: ConfirmKind; roomId: string } | null>(null);
   const [ruleEdit, setRuleEdit] = useState<RoomRule | null>(null);
   const [panel, setPanel] = useState<Panel>(null);
   const [pulse, setPulse] = useState<Pulse | null>(null);
@@ -249,9 +250,17 @@ function App() {
     setBoardKey((k) => k + 1);
   }
 
-  async function confirmManage(kind: ConfirmKind) {
-    if (!active) return;
-    const roomId = active;
+  /// 当前打开的群没了（取消加入、删除聊天）：回到欢迎页。
+  function closeRoom(roomId: string) {
+    if (activeRef.current !== roomId) return;
+    activeRef.current = null;
+    setActive(null);
+    setPanel(null);
+    setMessages([]);
+    api.setActiveRoom(null).catch(fail);
+  }
+
+  async function confirmManage(kind: ConfirmKind, roomId: string) {
     if (kind === "leave") {
       await api.leaveRoom(roomId);
       await afterManage(roomId);
@@ -260,19 +269,32 @@ function App() {
       await afterManage(roomId);
     } else if (kind === "clearHistory") {
       await api.clearHistory(roomId);
-      setMessages([]);
-      setHasOlder(false);
+      if (activeRef.current === roomId) {
+        setMessages([]);
+        setHasOlder(false);
+      }
       await loadRooms();
       setToast("本机的聊天记录已清空");
+    } else if (kind === "deleteChat") {
+      await api.deleteChat(roomId);
+      closeRoom(roomId);
+      await loadRooms();
+      setToast("聊天已删除");
     } else {
       await api.cancelJoin(roomId);
-      activeRef.current = null;
-      setActive(null);
-      setPanel(null);
-      api.setActiveRoom(null).catch(fail);
+      closeRoom(roomId);
       await loadRooms();
     }
-    setConfirmKind(null);
+    setConfirm(null);
+  }
+
+  /// 群列表右键菜单：置顶、免打扰直接改；清空、退出、删除先确认。
+  function roomAction(roomId: string, action: RoomAction) {
+    if (action === "pin" || action === "unpin") setPrefs(roomId, { pinned: action === "pin" });
+    else if (action === "mute" || action === "unmute") setPrefs(roomId, { muted: action === "mute" });
+    else if (action === "clear") setConfirm({ kind: "clearHistory", roomId });
+    else if (action === "leave") setConfirm({ kind: "leave", roomId });
+    else setConfirm({ kind: "deleteChat", roomId });
   }
 
   async function send(text: string, replyTo: string | null, mentions: string[]): Promise<boolean> {
@@ -341,10 +363,9 @@ function App() {
     else setToast("原消息不在本机（可能早于同步范围或已清空）");
   }
 
-  async function setPrefs(prefs: { muted?: boolean; pinned?: boolean }) {
-    if (!active) return;
+  async function setPrefs(roomId: string, prefs: { muted?: boolean; pinned?: boolean }) {
     try {
-      await api.setRoomPrefs(active, prefs);
+      await api.setRoomPrefs(roomId, prefs);
       await loadRooms();
     } catch (e) {
       fail(e);
@@ -363,7 +384,14 @@ function App() {
     join: { title: "用房间码进群", confirm: "进群", placeholder: "粘贴群友发来的房间码（HS1- 开头）" },
     rename: { title: "修改群名称", confirm: "保存", placeholder: "最多 64 个字", maxLength: 64, initial: room?.title ?? "" },
   };
-  const roomTitle = room?.title ?? "这个群";
+  const target = rooms.find((r) => r.roomId === confirm?.roomId);
+  const roomTitle = target?.title ?? "这个群";
+  const deleteMessage =
+    target?.status === "active"
+      ? `「${roomTitle}」会从列表里移除，这台电脑上的聊天记录也一起清空。你仍在群里，心之钢层数不变，群里来了新消息它会重新出现。`
+      : target?.status === "joining"
+        ? `不再等待加入「${roomTitle}」。以后想进还可以再用房间码进群。`
+        : `这台电脑上「${roomTitle}」的聊天记录和层数记录都会删除，不能恢复。群友那里不受影响，以后用房间码还能进群。`;
   const confirmProps: Record<ConfirmKind, { title: string; message: string; confirm: string; danger?: boolean }> = {
     leave: {
       title: "退出群聊",
@@ -386,6 +414,12 @@ function App() {
       title: "清空聊天记录",
       message: `清空后，这台电脑上不再显示「${roomTitle}」现在的聊天记录。只影响你自己：群友那里的记录不变，心之钢层数不变，之后的新消息照常显示。`,
       confirm: "清空",
+      danger: true,
+    },
+    deleteChat: {
+      title: "删除聊天",
+      message: deleteMessage,
+      confirm: "删除",
       danger: true,
     },
   };
@@ -437,6 +471,7 @@ function App() {
             onOpen={openRoom}
             onCreate={() => setDialog("create")}
             onJoin={() => setDialog("join")}
+            onAction={roomAction}
           />
         )}
         {left === "settings" && settings && (
@@ -484,7 +519,8 @@ function App() {
             onJump={jumpTo}
             onOpenDrawer={() => setPanel((p) => (p === "drawer" ? null : "drawer"))}
             onOpenSearch={() => setPanel((p) => (p === "search" ? null : "search"))}
-            onCancelJoin={() => setConfirmKind("cancelJoin")}
+            onCancelJoin={() => active && setConfirm({ kind: "cancelJoin", roomId: active })}
+            onBlankClick={() => setPanel(null)}
             onToast={setToast}
           />
         ) : (
@@ -518,12 +554,12 @@ function App() {
           onClose={() => setPanel(null)}
           onCopyCode={copyCode}
           onSearch={() => setPanel("search")}
-          onPrefs={setPrefs}
+          onPrefs={(prefs) => setPrefs(room.roomId, prefs)}
           onRename={() => setDialog("rename")}
           onEditRule={setRuleEdit}
-          onClearHistory={() => setConfirmKind("clearHistory")}
-          onLeave={() => setConfirmKind("leave")}
-          onDissolve={() => setConfirmKind("dissolve")}
+          onClearHistory={() => setConfirm({ kind: "clearHistory", roomId: room.roomId })}
+          onLeave={() => setConfirm({ kind: "leave", roomId: room.roomId })}
+          onDissolve={() => setConfirm({ kind: "dissolve", roomId: room.roomId })}
           onError={fail}
         />
       )}
@@ -541,12 +577,12 @@ function App() {
           {toast}
         </div>
       )}
-      {confirmKind && (
+      {confirm && (
         <ConfirmDialog
-          key={confirmKind}
-          {...confirmProps[confirmKind]}
-          onConfirm={() => confirmManage(confirmKind)}
-          onCancel={() => setConfirmKind(null)}
+          key={confirm.kind + confirm.roomId}
+          {...confirmProps[confirm.kind]}
+          onConfirm={() => confirmManage(confirm.kind, confirm.roomId)}
+          onCancel={() => setConfirm(null)}
         />
       )}
       {ruleEdit && active && (

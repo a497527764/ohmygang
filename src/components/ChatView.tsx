@@ -1,8 +1,8 @@
 // 聊天区（V1.1 第二版，参考 WhatsApp 的布局）：
 // 顶栏是群头像、群名和在线人数（点一下打开群资料），右边是我的心之钢层数、搜索和群资料按钮。
 // 消息区铺着淡淡的底纹；按天插入「今天」「昨天」分隔；同一个人 3 分钟内连发合并，第一条带小尾巴、头像和名字；
-// 时间和发送状态（时钟 = 发送中，双勾 = 群友已收到）放在气泡右下角。鼠标移到气泡上，右上角出现小箭头，
-// 点开有回复、复制、@TA。引用块点一下跳到原消息；@ 到的人名用绿色标出。
+// 时间和发送状态（时钟 = 发送中，双勾 = 群友已收到）放在气泡右下角。右键气泡，或点气泡右上角的小箭头，
+// 弹出回复、复制（选中了一部分就复制选中的）、@TA。点消息区的空白处会关掉右侧的群资料或搜索记录。引用块点一下跳到原消息；@ 到的人名用绿色标出。
 // 新消息只在已经看到底部或是自己发的时候才自动滚到底，否则右下角的圆按钮上显示有新消息。
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import heartsteel from "../assets/heartsteel.png";
@@ -12,6 +12,7 @@ import { firstImage } from "../image";
 import { clockText, dayText, displayName, noticeText, timeText } from "../names";
 import { Avatar } from "./Avatar";
 import { Composer } from "./Composer";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Icon } from "./Icon";
 import { ImageViewer, MessageImage } from "./Images";
 import { RoomAvatar } from "./RoomList";
@@ -47,6 +48,8 @@ interface Props {
   onJump: (eventId: string) => void;
   onOpenDrawer: () => void;
   onOpenSearch: () => void;
+  /// 点了消息区的空白处（用来关掉右侧面板）。
+  onBlankClick: () => void;
   onCancelJoin: () => void;
   onToast: (text: string) => void;
 }
@@ -76,7 +79,7 @@ export function ChatView(p: Props) {
   const [mentionRequest, setMentionRequest] = useState<{ memberId: string; key: number } | null>(null);
   const [viewing, setViewing] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [menuAt, setMenuAt] = useState<{ m: Message; x: number; y: number } | null>(null);
 
   const last = p.messages[p.messages.length - 1];
   const first = p.messages[0];
@@ -84,18 +87,9 @@ export function ChatView(p: Props) {
   useEffect(() => {
     setReplyTo(null);
     setUnseen(0);
-    setMenuFor(null);
+    setMenuAt(null);
     atBottom.current = true;
   }, [p.room.roomId]);
-
-  useEffect(() => {
-    if (!menuFor) return;
-    const close = (e: MouseEvent) => {
-      if (!(e.target as HTMLElement).closest(".bubble-menu, .bubble-menu-btn")) setMenuFor(null);
-    };
-    window.addEventListener("mousedown", close);
-    return () => window.removeEventListener("mousedown", close);
-  }, [menuFor]);
 
   // 往前翻页时保持当前看到的位置不动
   useLayoutEffect(() => {
@@ -172,6 +166,30 @@ export function ChatView(p: Props) {
     }
   }
 
+  /// 一条消息的菜单：能发言时可以回复和 @TA；文字消息可以复制（选中了这条里的一部分就只复制选中的）。
+  function messageMenu(m: Message, bubble: HTMLElement | null): MenuItem[] {
+    const items: MenuItem[] = [];
+    const mine = m.authorId === p.me?.memberId;
+    if (canSend) items.push({ label: "回复", icon: "reply", onSelect: () => setReplyTo(m) });
+    if (m.text) {
+      const sel = window.getSelection();
+      const picked = sel && !sel.isCollapsed && bubble?.contains(sel.anchorNode) ? sel.toString() : "";
+      items.push({ label: picked ? "复制选中的文字" : "复制", icon: "copy", onSelect: () => copy(picked || m.text!) });
+    }
+    if (canSend && !mine && member(m.authorId)?.inRoom) {
+      items.push({
+        label: "@TA",
+        icon: "at",
+        onSelect: () => setMentionRequest({ memberId: m.authorId, key: Date.now() }),
+      });
+    }
+    return items;
+  }
+
+  const menuItems = menuAt
+    ? messageMenu(menuAt.m, list.current?.querySelector(`[data-id="${menuAt.m.eventId}"] .bubble`) ?? null)
+    : [];
+
   function toBottom() {
     const el = list.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -213,7 +231,7 @@ export function ChatView(p: Props) {
             {myStacks}
           </button>
         )}
-        <button className="icon-button" onClick={p.onOpenSearch} title="搜索聊天记录" aria-label="搜索聊天记录">
+        <button className="icon-button" onClick={p.onOpenSearch} title="搜索记录" aria-label="搜索记录">
           <Icon name="search" size={20} />
         </button>
         <button className="icon-button" onClick={p.onOpenDrawer} title="群资料" aria-label="群资料">
@@ -221,7 +239,13 @@ export function ChatView(p: Props) {
         </button>
       </header>
 
-      <div className={dragging ? "chat-body dragging" : "chat-body"}>
+      <div
+        className={dragging ? "chat-body dragging" : "chat-body"}
+        onMouseDown={(e) => {
+          const t = e.target as HTMLElement;
+          if (!t.closest(".bubble, .load-older, .to-bottom, .context-menu")) p.onBlankClick();
+        }}
+      >
         <div
           className="messages"
           ref={list}
@@ -309,7 +333,13 @@ export function ChatView(p: Props) {
                         )}
                       </span>
                     )}
-                    <div className={m.image ? "bubble image" : "bubble"}>
+                    <div
+                      className={`${m.image ? "bubble image" : "bubble"}${menuAt?.m.eventId === m.eventId ? " menu-open" : ""}`}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setMenuAt({ m, x: e.clientX, y: e.clientY });
+                      }}
+                    >
                       {!mine && lead && (
                         <div className="sender" style={nameStyle(author?.fingerprint ?? m.authorId)}>
                           {displayName(m.authorId, p.members)}
@@ -343,53 +373,16 @@ export function ChatView(p: Props) {
                           {meta}
                         </>
                       )}
-                      {canSend && (
-                        <button
-                          className="bubble-menu-btn"
-                          aria-label="更多操作"
-                          onClick={() => setMenuFor(menuFor === m.eventId ? null : m.eventId)}
-                        >
-                          <Icon name="chevronDown" size={18} />
-                        </button>
-                      )}
-                      {menuFor === m.eventId && (
-                        <div className="menu bubble-menu" role="menu">
-                          <button
-                            role="menuitem"
-                            onClick={() => {
-                              setReplyTo(m);
-                              setMenuFor(null);
-                            }}
-                          >
-                            <Icon name="reply" size={17} />
-                            回复
-                          </button>
-                          {m.text && (
-                            <button
-                              role="menuitem"
-                              onClick={() => {
-                                copy(m.text!);
-                                setMenuFor(null);
-                              }}
-                            >
-                              <Icon name="copy" size={17} />
-                              复制
-                            </button>
-                          )}
-                          {!mine && author?.inRoom && (
-                            <button
-                              role="menuitem"
-                              onClick={() => {
-                                setMentionRequest({ memberId: m.authorId, key: Date.now() });
-                                setMenuFor(null);
-                              }}
-                            >
-                              <Icon name="at" size={17} />
-                              @TA
-                            </button>
-                          )}
-                        </div>
-                      )}
+                      <button
+                        className="bubble-menu-btn"
+                        aria-label="更多操作"
+                        onClick={(e) => {
+                          const r = e.currentTarget.getBoundingClientRect();
+                          setMenuAt(menuAt?.m.eventId === m.eventId ? null : { m, x: r.left, y: r.bottom + 4 });
+                        }}
+                      >
+                        <Icon name="chevronDown" size={18} />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -440,6 +433,9 @@ export function ChatView(p: Props) {
         />
       )}
       {viewing && <ImageViewer url={viewing} onClose={() => setViewing(null)} />}
+      {menuAt && menuItems.length > 0 && (
+        <ContextMenu x={menuAt.x} y={menuAt.y} items={menuItems} onClose={() => setMenuAt(null)} />
+      )}
     </main>
   );
 }

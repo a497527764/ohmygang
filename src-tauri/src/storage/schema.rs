@@ -1,9 +1,10 @@
 //! 表结构（架构 9.1）。每个元素是一次升级，下标 + 1 就是升级后的版本号，只能在末尾追加，不能改已有的。
 //! 第 2 版（M1-4）加入 `settings`；第 3 版（M2）加入 `sync_state`（每位作者的聊天补齐分界）；
 //! 第 4 版（V1.1）给本机身份和成员加头像（CBOR 编码的 `Avatar`，没有为 NULL）；
-//! 第 5 版（V1.1）给房间加 `cleared_seq`、`cleared_ts`：本机清空聊天记录时的入库序号和时刻。
+//! 第 5 版（V1.1）给房间加 `cleared_seq`、`cleared_ts`：本机清空聊天记录时的入库序号和时刻；
+//! 第 6 版（V1.1）给房间加 `hidden`：在列表里「删除聊天」后先藏起来，来了新消息再出现。
 
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
 
 const V1: &str = "
 CREATE TABLE identity (
@@ -94,4 +95,8 @@ ALTER TABLE members ADD COLUMN avatar BLOB;
 const V5: &str = "
 ALTER TABLE rooms ADD COLUMN cleared_seq INTEGER;
 ALTER TABLE rooms ADD COLUMN cleared_ts INTEGER;
+";
+
+const V6: &str = "
+ALTER TABLE rooms ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
 ";

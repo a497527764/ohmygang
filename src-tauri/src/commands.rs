@@ -860,6 +860,13 @@ pub async fn chat_search(
     .await
 }
 
+/// 删除聊天（只影响本机）：还在的群藏起来、来新消息再出现，已退出或已解散的删除本机记录。
+#[tauri::command]
+pub async fn rooms_delete_chat(node: State<'_, NodeHandle>, room_id: String) -> Result<(), String> {
+    let room = unhex::<16>(&room_id)?;
+    on_node(&node, move |core, _| core.delete_chat(&room, now_ms())).await
+}
+
 /// 清空本机的聊天记录显示（只影响本机）。
 #[tauri::command]
 pub async fn rooms_clear_history(
@@ -949,13 +956,27 @@ pub async fn settings_get(node: State<'_, NodeHandle>) -> Result<SettingsDto, St
     on_node(&node, |core, _| Ok(SettingsDto::from(&core.settings()?))).await
 }
 
+/// 窗口标题栏跟着界面主题：浅色、深色，跟随系统时交给 Windows。只在 Rust 侧调用，不给前端开窗口权限。
+pub fn apply_window_theme(app: &tauri::AppHandle, theme: &str) {
+    let t = match theme {
+        "light" => Some(tauri::Theme::Light),
+        "dark" => Some(tauri::Theme::Dark),
+        _ => None,
+    };
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_theme(t);
+    }
+}
+
 #[tauri::command]
 pub async fn settings_update(
+    app: tauri::AppHandle,
     node: State<'_, NodeHandle>,
     patch: SettingsPatchDto,
 ) -> Result<SettingsDto, String> {
+    let theme_changed = patch.theme.is_some();
     let net_changed = patch.internet_allowed.is_some() || patch.relays.is_some();
-    on_node(&node, move |core, out| {
+    let dto = on_node(&node, move |core, out| {
         let s = core.update_settings(SettingsPatch {
             internet_allowed: patch.internet_allowed,
             relays: patch.relays,
@@ -969,7 +990,11 @@ pub async fn settings_update(
         out.settings_changed = net_changed;
         Ok(SettingsDto::from(&s))
     })
-    .await
+    .await?;
+    if theme_changed {
+        apply_window_theme(&app, &dto.theme);
+    }
+    Ok(dto)
 }
 
 #[cfg(test)]

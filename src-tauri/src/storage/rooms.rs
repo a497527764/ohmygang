@@ -53,6 +53,8 @@ pub struct RoomRow {
     /// 本机清空聊天记录时的最大入库序号和时刻（规则见 chat.rs）。
     pub cleared_seq: Option<i64>,
     pub cleared_ts: Option<u64>,
+    /// 在列表里删除了聊天，暂时不显示。
+    pub hidden: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,7 +67,7 @@ pub struct MemberRow {
     pub avatar: Option<Vec<u8>>,
 }
 
-const SELECT_ROOM: &str = "SELECT room_id, code_cipher, owner_tag, status, title, owner_id, dissolve_ts, last_active, muted, pinned, cleared_seq, cleared_ts FROM rooms";
+const SELECT_ROOM: &str = "SELECT room_id, code_cipher, owner_tag, status, title, owner_id, dissolve_ts, last_active, muted, pinned, cleared_seq, cleared_ts, hidden FROM rooms";
 
 fn read_room(r: &rusqlite::Row) -> rusqlite::Result<RoomRow> {
     Ok(RoomRow {
@@ -81,6 +83,7 @@ fn read_room(r: &rusqlite::Row) -> rusqlite::Result<RoomRow> {
         pinned: r.get(9)?,
         cleared_seq: r.get(10)?,
         cleared_ts: r.get(11)?,
+        hidden: r.get(12)?,
     })
 }
 
@@ -124,6 +127,14 @@ pub fn set_cleared(conn: &Connection, room: &RoomId, seq: i64, ts: u64) -> AppRe
     conn.execute(
         "UPDATE rooms SET cleared_seq = ?2, cleared_ts = ?3 WHERE room_id = ?1",
         params![room, seq, ts],
+    )?;
+    Ok(())
+}
+
+pub fn set_hidden(conn: &Connection, room: &RoomId, hidden: bool) -> AppResult<()> {
+    conn.execute(
+        "UPDATE rooms SET hidden = ?2 WHERE room_id = ?1",
+        params![room, hidden],
     )?;
     Ok(())
 }

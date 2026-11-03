@@ -171,6 +171,8 @@ export const api = {
   search: (roomId: string, query: string) => invoke<Message[]>("chat_search", { roomId, query }),
   /// 只清空本机的显示。
   clearHistory: (roomId: string) => invoke<Room>("rooms_clear_history", { roomId }),
+  /// 删除聊天（只影响本机）：还在的群藏起来、来新消息再出现，已退出或已解散的删除本机记录。
+  deleteChat: (roomId: string) => invoke<void>("rooms_delete_chat", { roomId }),
   messages: (roomId: string, before: Cursor | null, limit: number) =>
     invoke<Message[]>("chat_list", { roomId, before, limit }),
   settings: () => invoke<Settings>("settings_get"),

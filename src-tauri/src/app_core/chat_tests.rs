@@ -306,6 +306,59 @@ fn floors_count_messages_and_include_image_chunks() {
 }
 
 #[test]
+fn deleting_an_active_chat_hides_it_until_a_new_message_arrives() {
+    let (mut a, mut b, room) = pair();
+    let old = b.send_text(&room, "旧消息", 1_000_000).unwrap();
+    a.ingest_events(&room, &old.events, true, 1_000_100)
+        .unwrap();
+    a.delete_chat(&room, 1_200_000).unwrap();
+    assert!(a.list_rooms().unwrap().is_empty(), "从列表里藏起来");
+    assert_eq!(
+        a.room_status(&room).unwrap(),
+        RoomStatus::Active,
+        "人还在群里"
+    );
+    assert!(
+        a.sync_rooms().unwrap().iter().any(|(r, _)| *r == room),
+        "照常同步"
+    );
+
+    let new = b.send_text(&room, "新消息", 1_300_000).unwrap();
+    a.ingest_events(&room, &new.events, true, 1_300_100)
+        .unwrap();
+    let rooms = a.list_rooms().unwrap();
+    assert_eq!(rooms.len(), 1, "来了新消息重新出现");
+    assert_eq!(rooms[0].preview.as_deref(), Some("乙：新消息"));
+    let shown: Vec<String> = a
+        .list_messages(&room, None, 50)
+        .unwrap()
+        .iter()
+        .map(|i| chat_of(i).text.clone())
+        .collect();
+    assert_eq!(shown, vec!["新消息"], "旧消息不再显示");
+}
+
+#[test]
+fn deleting_a_left_chat_removes_it_and_joining_again_brings_it_back() {
+    let (a, mut b, room) = pair();
+    let code = b.room_code(&room).unwrap();
+    b.send_text(&room, "我说过的话", 10_000).unwrap();
+    b.leave_room(&room, 20_000).unwrap();
+    b.delete_chat(&room, 30_000).unwrap();
+    assert!(b.list_rooms().unwrap().is_empty());
+    assert!(
+        matches!(b.room_status(&room), Err(AppError::RoomNotFound)),
+        "本机记录删掉了"
+    );
+
+    // 删除只影响本机：A 那边照常
+    assert_eq!(a.list_rooms().unwrap().len(), 1);
+    // 再用房间码进群，又出现在列表里（等同步后才能发言）
+    b.join_room(&code, 40_000).unwrap();
+    assert_eq!(b.list_rooms().unwrap()[0].status, RoomStatus::Joining);
+}
+
+#[test]
 fn clearing_history_hides_old_messages_only_on_this_machine() {
     let (mut a, mut b, room) = pair();
     let before = b.send_text(&room, "清空前", 1_000_000).unwrap();

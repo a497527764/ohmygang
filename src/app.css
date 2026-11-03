@@ -353,6 +353,49 @@ input[role="switch"]:checked::before {
   cursor: pointer;
 }
 
+::selection {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+/* 应用自己的右键菜单：跟着鼠标弹出，危险操作红字 */
+.context-menu {
+  position: fixed;
+  z-index: 90;
+  min-width: 168px;
+  padding: 6px 0;
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-m);
+  transform-origin: top left;
+  animation: menu-in 0.1s ease-out;
+}
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+.context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 9px 18px;
+  text-align: left;
+  color: var(--text);
+  white-space: nowrap;
+}
+.context-menu button svg {
+  color: var(--text-2);
+}
+.context-menu button:hover {
+  background: var(--hover);
+}
+.context-menu button.danger,
+.context-menu button.danger svg {
+  color: var(--danger);
+}
+
 /* ---------- 整体布局 ---------- */
 .app {
   display: flex;
@@ -634,7 +677,8 @@ input[role="switch"]:checked::before {
 .chat-row:hover {
   background: var(--hover);
 }
-.chat-row.selected {
+.chat-row.selected,
+.chat-row.menu-open {
   background: var(--selected);
 }
 .row-main {
@@ -1300,8 +1344,13 @@ input[role="switch"]:checked::before {
   text-align: center;
   box-shadow: var(--shadow-s);
 }
+/* 系统提示比日期更轻：不加阴影、底色半透明，不和消息抢眼 */
 .notice {
   margin: 6px 0;
+}
+.notice span {
+  box-shadow: none;
+  background: color-mix(in srgb, var(--pill) 72%, transparent);
 }
 
 .msg {
@@ -1455,6 +1504,7 @@ input[role="switch"]:checked::before {
   transition: opacity 0.12s;
 }
 .bubble:hover .bubble-menu-btn,
+.bubble.menu-open .bubble-menu-btn,
 .bubble-menu-btn:focus-visible {
   opacity: 1;
 }
@@ -1467,11 +1517,6 @@ input[role="switch"]:checked::before {
   box-shadow: none;
   background: rgba(11, 20, 26, 0.45);
   color: #fff;
-}
-.bubble-menu {
-  top: 26px;
-  right: 2px;
-  min-width: 150px;
 }
 .msg.flash-hl .bubble {
   animation: flash-hl 1.6s ease-out;

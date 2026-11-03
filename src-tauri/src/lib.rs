@@ -84,6 +84,13 @@ pub fn run() {
         .setup(|app| {
             setup_tray(app)?;
             let node = start_node(app.handle())?;
+            // 标题栏按上次选的主题上色
+            let theme = tauri::async_runtime::block_on(
+                node.call(|core, _| core.settings().map(|s| s.theme)),
+            );
+            if let Some(Ok(theme)) = theme {
+                commands::apply_window_theme(app.handle(), &theme);
+            }
             app.manage(node);
             Ok(())
         })
@@ -120,6 +127,7 @@ pub fn run() {
             commands::chat_image,
             commands::chat_search,
             commands::rooms_clear_history,
+            commands::rooms_delete_chat,
             commands::chat_list,
             commands::settings_get,
             commands::settings_update,

@@ -1,11 +1,15 @@
 // 左栏的聊天列表：标题「聊天」和新建按钮（建一个群、用房间码进群），搜索框，筛选（全部、未读、@我），
 // 每行是群头像、群名、时间、最后一条消息和未读数。置顶的在前（Rust 已排好）；免打扰的未读数是灰色的；
-// 有人 @ 我时预览前面有「[有人@我]」。
+// 有人 @ 我时预览前面有「[有人@我]」。右键一个群弹出菜单：置顶、免打扰、清空聊天记录、退出群聊、删除聊天。
 import { useEffect, useRef, useState } from "react";
 import type { Room } from "../api";
 import { hueOf } from "../avatars";
 import { shortTime } from "../names";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { Icon } from "./Icon";
+
+/// 群列表右键菜单里的操作，由 App 执行（要确认的会先弹确认框）。
+export type RoomAction = "pin" | "unpin" | "mute" | "unmute" | "clear" | "leave" | "delete";
 
 interface Props {
   rooms: Room[];
@@ -13,6 +17,7 @@ interface Props {
   onOpen: (roomId: string) => void;
   onCreate: () => void;
   onJoin: () => void;
+  onAction: (roomId: string, action: RoomAction) => void;
 }
 
 type Filter = "all" | "unread" | "mentioned";
@@ -41,8 +46,9 @@ export function RoomAvatar({ room, size = 48 }: { room: Room; size?: number }) {
   );
 }
 
-export function RoomList({ rooms, active, onOpen, onCreate, onJoin }: Props) {
+export function RoomList({ rooms, active, onOpen, onCreate, onJoin, onAction }: Props) {
   const [query, setQuery] = useState("");
+  const [menuAt, setMenuAt] = useState<{ room: Room; x: number; y: number } | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [menu, setMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -140,8 +146,12 @@ export function RoomList({ rooms, active, onOpen, onCreate, onJoin }: Props) {
           return (
             <button
               key={r.roomId}
-              className={`chat-row${r.roomId === active ? " selected" : ""}`}
+              className={`chat-row${r.roomId === active ? " selected" : ""}${menuAt?.room.roomId === r.roomId ? " menu-open" : ""}`}
               onClick={() => onOpen(r.roomId)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setMenuAt({ room: r, x: e.clientX, y: e.clientY });
+              }}
             >
               <RoomAvatar room={r} />
               <span className="row-main">
@@ -175,6 +185,25 @@ export function RoomList({ rooms, active, onOpen, onCreate, onJoin }: Props) {
           );
         })}
       </div>
+      {menuAt && (
+        <ContextMenu x={menuAt.x} y={menuAt.y} items={roomMenu(menuAt.room, onAction)} onClose={() => setMenuAt(null)} />
+      )}
     </>
   );
+}
+
+function roomMenu(r: Room, act: Props["onAction"]): MenuItem[] {
+  const id = r.roomId;
+  const items: MenuItem[] = [
+    r.pinned
+      ? { label: "取消置顶", icon: "pin", onSelect: () => act(id, "unpin") }
+      : { label: "置顶聊天", icon: "pin", onSelect: () => act(id, "pin") },
+    r.muted
+      ? { label: "取消免打扰", icon: "bellOff", onSelect: () => act(id, "unmute") }
+      : { label: "消息免打扰", icon: "bellOff", onSelect: () => act(id, "mute") },
+    { label: "清空聊天记录", icon: "trash", onSelect: () => act(id, "clear") },
+  ];
+  if (r.status === "active") items.push({ label: "退出群聊", icon: "logout", danger: true, onSelect: () => act(id, "leave") });
+  items.push({ label: "删除聊天", icon: "close", danger: true, onSelect: () => act(id, "delete") });
+  return items;
 }

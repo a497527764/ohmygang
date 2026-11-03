@@ -1,4 +1,4 @@
-// 聊天记录搜索（V1.1）：右侧面板，在当前群的文字消息里找关键字，点结果跳到那条消息。
+// 搜索记录（V1.1）：右侧面板，在当前群的文字消息里找关键字，点结果跳到那条消息。
 // 搜索在 Rust 侧做（解码聊天文字逐条匹配），这里输入停顿 250 毫秒后再查。
 import { useEffect, useState } from "react";
 import { api, type Member, type Message, type Room } from "../api";
@@ -53,7 +53,7 @@ export function SearchPanel({ room, members, onJump, onClose }: Props) {
   return (
     <aside
       className="side-panel"
-      aria-label="搜索聊天记录"
+      aria-label="搜索记录"
       onKeyDown={(e) => {
         if (e.key === "Escape") onClose();
       }}
@@ -62,7 +62,7 @@ export function SearchPanel({ room, members, onJump, onClose }: Props) {
         <button className="icon-button" onClick={onClose} aria-label="关闭" title="关闭">
           <Icon name="close" size={20} />
         </button>
-        <h2>搜索消息</h2>
+        <h2>搜索记录</h2>
       </header>
       <div className="panel-body search-body">
         <label className="search-pill">

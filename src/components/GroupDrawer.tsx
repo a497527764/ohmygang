@@ -91,7 +91,7 @@ export function GroupDrawer(p: Props) {
             )}
             <button className="hero-action" onClick={p.onSearch}>
               <Icon name="search" size={20} />
-              搜索
+              搜索记录
             </button>
           </div>
         </section>

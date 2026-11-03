@@ -170,14 +170,18 @@ impl Core {
     pub fn join_room(&mut self, code: &str, now_ms: u64) -> AppResult<RoomSummary> {
         let tx = self.conn.transaction()?;
         let room = rooms::join_room(&tx, &self.master, code, now_ms)?;
+        // 删除过聊天的群，用房间码进一次就重新出现在列表里
+        room_store::set_hidden(&tx, &room, false)?;
         let summary = rooms::summary(&tx, &self.view.member_id, &rooms::get(&tx, &room)?)?;
         tx.commit()?;
         Ok(summary)
     }
 
+    /// 列表里的房间（删除了聊天、暂时藏起来的不列）。
     pub fn list_rooms(&self) -> AppResult<Vec<RoomSummary>> {
         room_store::list_rooms(&self.conn)?
             .iter()
+            .filter(|row| !row.hidden)
             .map(|row| rooms::summary(&self.conn, &self.view.member_id, row))
             .collect()
     }
@@ -593,6 +597,28 @@ impl Core {
         Ok(vec![e])
     }
 
+    /// 删除聊天（像微信的「删除聊天」，只影响本机）：
+    /// 还在的群清空本机显示并从列表里藏起来，人还在群里、层数不变，来了新消息再出现；
+    /// 已退出、已解散的群删除本机记录；正在加入的等于取消加入。
+    pub fn delete_chat(&mut self, room: &RoomId, now_ms: u64) -> AppResult<()> {
+        match rooms::get(&self.conn, room)?.status {
+            RoomStatus::Joining => self.cancel_join(room),
+            RoomStatus::Active => {
+                let tx = self.conn.transaction()?;
+                chat::clear_history(&tx, room, now_ms)?;
+                room_store::set_hidden(&tx, room, true)?;
+                tx.commit()?;
+                Ok(())
+            }
+            RoomStatus::Left | RoomStatus::Dissolved => {
+                let tx = self.conn.transaction()?;
+                room_store::delete_room(&tx, room)?;
+                tx.commit()?;
+                Ok(())
+            }
+        }
+    }
+
     /// 取消加入（架构 8.2）：从没在这个群写过事件的，删除本机记录；以前是成员、退出后又重新进房的，退回 Left，保留聊天记录。
     pub fn cancel_join(&mut self, room: &RoomId) -> AppResult<()> {
         let me = self.view.member_id;
@@ -760,9 +786,10 @@ impl Core {
                 });
             }
         }
-        // 收到新消息也算房间活跃：房间列表的时间和排序跟着最后一条消息走
+        // 收到新消息也算房间活跃：房间列表的时间和排序跟着最后一条消息走；删除过的聊天重新出现
         if latest > 0 {
             room_store::touch(&tx, room, latest)?;
+            room_store::set_hidden(&tx, room, false)?;
         }
         let chunks: Vec<&StoredEvent> = new_items
             .iter()
