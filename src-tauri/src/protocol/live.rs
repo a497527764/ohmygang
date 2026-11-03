@@ -1,4 +1,4 @@
-//! 实时帧（2.0 架构第 5 节）：在线状态、信号，以后加上鼠标、充能、表情、文字、投票。
+//! 实时帧（2.0 架构第 5 节）：在线状态、信号、对线的鼠标和充能，以后加上表情、文字、投票。
 //! 不入库、不补齐，丢了就丢了。做法参考 lolPing 设计文档 12 节（MIT，© 2026 Danrui Meng）。
 //!
 //! 实现流程：
@@ -72,6 +72,24 @@ pub enum LiveBody {
         y: u16,
         #[serde(rename = "i")]
         id: String,
+    },
+    /// 对线模式下本人鼠标的位置：第几号显示器、0–65535 的比例。只在开着对线模式、鼠标动了时发。
+    #[serde(rename = "C")]
+    Cursor {
+        #[serde(rename = "d")]
+        display: u8,
+        #[serde(rename = "x")]
+        x: u16,
+        #[serde(rename = "y")]
+        y: u16,
+    },
+    /// 对某人开始充能（on = true）或充能中断（false）。目标会看到提示。
+    #[serde(rename = "K")]
+    Charge {
+        #[serde(rename = "t", with = "serde_bytes")]
+        target: MemberId,
+        #[serde(rename = "o")]
+        on: bool,
     },
     /// 离开队伍或退出程序。
     #[serde(rename = "Y")]

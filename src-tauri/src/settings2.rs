@@ -95,6 +95,8 @@ pub struct Settings {
     pub wheel: Vec<String>,
     pub wheel_size_px: u32,
     pub toggle_hotkey: Hotkey,
+    /// 开关对线模式。
+    pub laning_hotkey: Hotkey,
     pub ping_size_px: u32,
     pub ping_duration_s: f64,
     pub volume: u32,
@@ -120,6 +122,10 @@ impl Default for Settings {
             toggle_hotkey: Hotkey {
                 mods: MOD_CTRL | MOD_ALT,
                 vk: 0x50,
+            },
+            laning_hotkey: Hotkey {
+                mods: MOD_CTRL | MOD_ALT,
+                vk: 0x4C, // L
             },
             ping_size_px: 110,
             ping_duration_s: 3.2,
@@ -220,8 +226,7 @@ fn trigger(raw: Option<&Value>) -> TriggerKey {
     }
 }
 
-fn hotkey(raw: Option<&Value>) -> Hotkey {
-    let default = Settings::default().toggle_hotkey;
+fn hotkey(raw: Option<&Value>, default: Hotkey) -> Hotkey {
     match raw.and_then(|v| serde_json::from_value::<Hotkey>(v.clone()).ok()) {
         // 必须带 Ctrl、Alt 或 Win：只有 Shift 的快捷键会把全系统的大写字母吞掉。
         Some(h)
@@ -296,7 +301,8 @@ pub fn normalize(raw: &Value) -> Settings {
         game_check: bool_or(get("gameCheck"), d.game_check),
         wheel: wheel(get("wheel")),
         wheel_size_px: num(get("wheelSizePx"), &WHEEL_SIZE, f64::from(d.wheel_size_px)) as u32,
-        toggle_hotkey: hotkey(get("toggleHotkey")),
+        toggle_hotkey: hotkey(get("toggleHotkey"), d.toggle_hotkey),
+        laning_hotkey: hotkey(get("laningHotkey"), d.laning_hotkey),
         ping_size_px: num(get("pingSizePx"), &PING_SIZE, f64::from(d.ping_size_px)) as u32,
         ping_duration_s: num(get("pingDurationS"), &DURATION, d.ping_duration_s),
         volume: num(get("volume"), &VOLUME, f64::from(d.volume)) as u32,
@@ -348,6 +354,8 @@ impl Settings {
             drag_threshold_px: self.drag_threshold_px as i32,
             toggle_mods: self.toggle_hotkey.mods,
             toggle_vk: self.toggle_hotkey.vk,
+            laning_mods: self.laning_hotkey.mods,
+            laning_vk: self.laning_hotkey.vk,
             enabled,
         }
     }

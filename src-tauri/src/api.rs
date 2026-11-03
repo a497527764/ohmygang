@@ -34,6 +34,8 @@ pub struct AppState {
     /// 队伍的网络（局域网 + 中继）。
     pub node: NodeHandle,
     pub team: TeamState,
+    /// 对线模式。
+    pub lane: crate::lane::Lane,
 }
 
 impl AppState {
@@ -49,6 +51,7 @@ pub struct Status {
     pub enabled: bool,
     /// 输入监听没起来的原因；正常时为 null。
     pub input_error: Option<String>,
+    pub laning: bool,
 }
 
 /// 开关信号，并让托盘、控制面板跟上。
@@ -122,6 +125,7 @@ pub fn status_get(state: State<'_, AppState>) -> Status {
     Status {
         enabled: state.enabled.load(Ordering::Relaxed),
         input_error: state.input_error.clone(),
+        laning: state.lane.is_on(),
     }
 }
 

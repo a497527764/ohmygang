@@ -6,7 +6,7 @@
 }
 
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; user-select: none; }
-#pings, #toasts { position: fixed; inset: 0; pointer-events: none; }
+#lane, #pings, #toasts { position: fixed; inset: 0; pointer-events: none; }
 
 /* ---------- 轮盘 ---------- */
 #wheel {
@@ -84,3 +84,50 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 @media (prefers-reduced-motion: reduce) {
   #wheel { transition: none; }
 }
+
+/* ---------- 对线：对手的小英雄、范围圈、充能圈、冷却 ---------- */
+.minion { position: absolute; width: 0; height: 0; --tag: #4fc3f7; transition: left .03s linear, top .03s linear; }
+.minion .range {
+  position: absolute; left: 0; top: 0; border-radius: 50%; box-sizing: border-box;
+  border: 1.5px dashed color-mix(in srgb, var(--tag) 35%, transparent); opacity: .5; transition: opacity .2s, border-color .2s;
+}
+.minion.charging .range, .minion.charged .range { opacity: 1; border-style: solid; border-color: color-mix(in srgb, var(--tag) 60%, transparent); }
+.minion .charge { position: absolute; left: -30px; top: -30px; width: 60px; height: 60px; transform: rotate(-90deg); }
+.minion .charge .track { fill: none; stroke: rgba(8, 12, 16, .45); stroke-width: 4; }
+.minion .charge .fill { fill: none; stroke: #c8aa6e; stroke-width: 4; stroke-linecap: round; transition: stroke-dashoffset .05s linear; }
+.minion .face {
+  position: absolute; left: -18px; top: -18px; width: 36px; height: 36px; border-radius: 50%;
+  display: grid; place-items: center; background: rgba(8, 18, 24, .85); border: 2px solid var(--tag);
+  color: #f0e6d2; font: 700 16px/1 var(--sans); box-shadow: 0 2px 8px rgba(0, 0, 0, .45);
+}
+.minion.charged .face { border-color: #f2c94c; box-shadow: 0 0 14px #f2c94c, 0 0 4px #fff; animation: charged 0.8s ease-in-out infinite alternate; }
+.minion.cooldown .face { filter: grayscale(1) brightness(.75); }
+.minion .cd { position: absolute; left: -18px; top: -18px; width: 36px; height: 36px; display: grid; place-items: center; color: #fff; font: 700 15px/1 var(--sans); text-shadow: 0 1px 3px #000; }
+.minion .label {
+  position: absolute; left: 0; top: 24px; transform: translateX(-50%); white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+  padding: 1px 7px; border-radius: 4px; background: rgba(8, 12, 16, .62); color: var(--tag); font: 600 12px/17px var(--sans); text-shadow: 0 1px 2px #000;
+}
+@keyframes charged { to { transform: scale(1.12); } }
+.lane-warn {
+  position: absolute; left: 50%; top: 56px; transform: translate(-50%, -12px); opacity: 0; padding: 8px 16px; border-radius: 10px;
+  background: rgba(120, 20, 30, .88); border: 1px solid #ff6b81; color: #fff; font: 700 15px/20px var(--sans);
+  transition: opacity .15s, transform .15s; white-space: nowrap;
+}
+.lane-warn.on { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- 心之钢爆炸 ---------- */
+.hs-fx { position: absolute; width: 0; height: 0; pointer-events: none; }
+.hs-icon { position: absolute; left: -48px; top: -48px; width: 96px; height: 96px; animation: hsPop 1.6s cubic-bezier(.2, 1.4, .4, 1) forwards; filter: drop-shadow(0 0 16px #ff4d6d); }
+.hs-ring {
+  position: absolute; left: -70px; top: -70px; width: 140px; height: 140px; border-radius: 50%; box-sizing: border-box;
+  border: 4px solid #ff4d6d; box-shadow: 0 0 24px #ff4d6d, inset 0 0 16px #ff4d6d; opacity: 0; animation: hsRing .7s ease-out forwards;
+}
+.hs-ring.r2 { animation-delay: .18s; border-color: #ffd166; box-shadow: 0 0 24px #ffd166; }
+.hs-text {
+  position: absolute; left: 0; top: 56px; transform: translateX(-50%); white-space: nowrap; color: #ffe1e7;
+  font: 800 18px/1 var(--sans); text-shadow: 0 0 8px #ff4d6d, 0 2px 3px #000; animation: hsText 1.6s ease-out forwards;
+}
+@keyframes hsPop { 0% { transform: scale(.2); opacity: 0 } 25% { transform: scale(1.25); opacity: 1 } 45% { transform: scale(1) } 80% { opacity: 1 } 100% { transform: scale(1.1); opacity: 0 } }
+@keyframes hsRing { 0% { transform: scale(.3); opacity: 1 } 100% { transform: scale(1.6); opacity: 0 } }
+@keyframes hsText { 0% { transform: translate(-50%, 8px); opacity: 0 } 20% { transform: translate(-50%, 0); opacity: 1 } 80% { opacity: 1 } 100% { transform: translate(-50%, -10px); opacity: 0 } }
+@media (prefers-reduced-motion: reduce) { .minion.charged .face { animation: none; } }

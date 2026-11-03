@@ -53,6 +53,8 @@ pub struct MemberRow {
     pub nickname: Option<String>,
     pub in_room: bool,
     pub stacks: u32,
+    /// 被叠次数。
+    pub taken: u32,
     /// CBOR 编码的头像。
     pub avatar: Option<Vec<u8>>,
 }
@@ -162,6 +164,26 @@ pub fn set_members(
     Ok(())
 }
 
+/// 按重放结果写层数和被叠次数：先全部清零，再写有数的人。
+pub fn set_board(
+    conn: &Connection,
+    room: &RoomId,
+    board: &[(MemberId, u32, u32)],
+) -> AppResult<()> {
+    conn.execute(
+        "UPDATE members SET stacks = 0, taken = 0 WHERE room_id = ?1",
+        [room],
+    )?;
+    for (m, stacks, taken) in board {
+        conn.execute(
+            "INSERT INTO members (room_id, member_id, stacks, taken) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (room_id, member_id) DO UPDATE SET stacks = excluded.stacks, taken = excluded.taken",
+            params![room, m, stacks, taken],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn set_stacks(
     conn: &Connection,
     room: &RoomId,
@@ -179,7 +201,7 @@ pub fn set_stacks(
 /// 按层数降序。
 pub fn members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberRow>> {
     let mut stmt = conn.prepare(
-        "SELECT member_id, nickname, in_room, stacks, avatar FROM members WHERE room_id = ?1 ORDER BY stacks DESC, member_id",
+        "SELECT member_id, nickname, in_room, stacks, avatar, taken FROM members WHERE room_id = ?1 ORDER BY stacks DESC, member_id",
     )?;
     let rows = stmt.query_map([room], |r| {
         Ok(MemberRow {
@@ -188,6 +210,7 @@ pub fn members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberRow>> {
             in_room: r.get(2)?,
             stacks: r.get(3)?,
             avatar: r.get(4)?,
+            taken: r.get(5)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)

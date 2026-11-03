@@ -63,6 +63,33 @@ pub enum Msg {
     },
     /// 队友的名字，信号下面的标签用。
     Names(Vec<(MemberId, String)>),
+    /// 对线模式：对手的位置和状态、谁在对我充能（每 33 毫秒一次）。
+    Lane {
+        opponents: Vec<LaneOpponent>,
+        charging_me: Vec<String>,
+    },
+    /// 心之钢特效：第几号显示器、比例位置、文字。
+    LaneHit {
+        display: u8,
+        x: u16,
+        y: u16,
+        label: String,
+    },
+}
+
+/// 对线模式下画在屏幕上的一个对手。
+#[derive(Clone, Debug)]
+pub struct LaneOpponent {
+    pub member: MemberId,
+    pub name: String,
+    pub display: u8,
+    pub x: u16,
+    pub y: u16,
+    /// far、charging、charged、cooldown。
+    pub phase: &'static str,
+    /// 充能进度 0 到 1。
+    pub progress: f64,
+    pub cooldown_s: u64,
 }
 
 /// 透明窗口线程交出去的事，都在这个线程上调用，只能做不阻塞的事。
@@ -71,6 +98,10 @@ pub struct Hooks {
     pub on_toggled: Box<dyn Fn(bool) + Send>,
     /// 本人放了一个信号，交给队伍。
     pub on_ping: Box<dyn Fn(LiveBody) + Send>,
+    /// 对线模式的普攻（物理像素）。
+    pub on_attack: Box<dyn Fn(i32, i32) + Send>,
+    /// 按了对线模式快捷键。
+    pub on_laning: Box<dyn Fn() + Send>,
 }
 
 /// 透明窗口线程的把手，可以随便复制。
@@ -88,6 +119,7 @@ impl Overlays {
             settings,
             hooks,
             names: HashMap::new(),
+            lane_drawn: HashMap::new(),
             displays: Vec::new(),
             windows: HashMap::new(),
             next_id: 0,
@@ -133,6 +165,8 @@ struct Actor {
     settings: OverlaySettings,
     hooks: Hooks,
     names: HashMap<MemberId, String>,
+    /// 哪些窗口上一次画了对线的东西（空了要清一次）。
+    lane_drawn: HashMap<String, bool>,
     /// 按编号排好的显示器（第 0 个是 1 号，主显示器）。
     displays: Vec<Display>,
     windows: HashMap<String, Win>,
@@ -187,6 +221,16 @@ impl Actor {
                     y,
                     id,
                 } => self.remote_ping(from, display, x, y, id),
+                Msg::Lane {
+                    opponents,
+                    charging_me,
+                } => self.lane(&opponents, &charging_me),
+                Msg::LaneHit {
+                    display,
+                    x,
+                    y,
+                    label,
+                } => self.lane_hit(display, x, y, label),
             }
         }
     }
@@ -254,6 +298,8 @@ impl Actor {
                 self.share_ping(&d.key, (lx, ly), id);
             }
             Emit::Cancel => self.cancel_wheel(),
+            Emit::Attack { x, y } => (self.hooks.on_attack)(x, y),
+            Emit::LaningToggled => (self.hooks.on_laning)(),
             Emit::Toggled { enabled } => {
                 if !enabled {
                     self.cancel_wheel();
@@ -299,6 +345,58 @@ impl Actor {
             &d.key,
             "ping:spawn",
             json!({ "id": id, "x": from_ratio(x, w), "y": from_ratio(y, h), "tag": tag }),
+        );
+    }
+
+    /// 对线模式：每块屏幕画它上面的对手，主显示器另外画「谁在对我充能」。窗口从空变成有东西时才挪回、置顶，不是每一帧都弄。
+    fn lane(&mut self, opponents: &[LaneOpponent], charging_me: &[String]) {
+        for (i, d) in self.displays.clone().iter().enumerate() {
+            let number = u8::try_from(i + 1).unwrap_or(u8::MAX);
+            let (w, h) = css_size(d);
+            let short = w.min(h);
+            let list: Vec<serde_json::Value> = opponents
+                .iter()
+                .filter(|o| o.display == number)
+                .map(|o| {
+                    json!({
+                        "id": o.member[..6].iter().map(|b| format!("{b:02x}")).collect::<String>(), "name": o.name, "color": tag_color(&o.member), "x": from_ratio(o.x, w), "y": from_ratio(o.y, h),
+                        "phase": o.phase, "progress": o.progress, "cooldownS": o.cooldown_s,
+                    })
+                })
+                .collect();
+            let warn: &[String] = if i == 0 { charging_me } else { &[] };
+            let has = !list.is_empty() || !warn.is_empty();
+            let had = self.lane_drawn.get(&d.key).copied().unwrap_or(false);
+            if !has && !had {
+                continue;
+            }
+            self.lane_drawn.insert(d.key.clone(), has);
+            let payload = json!({
+                "opponents": list, "chargingMe": warn,
+                "rangePx": short * crate::laning::RANGE_RATIO,
+                "hitPx": (short * crate::laning::HIT_RATIO).max(crate::laning::HIT_MIN_PX / d.scale),
+            });
+            if has && !had {
+                self.show(&d.key, "lane:state", payload);
+            } else {
+                self.emit(&d.key, "lane:state", payload);
+            }
+        }
+    }
+
+    fn lane_hit(&mut self, display: u8, x: u16, y: u16, label: String) {
+        let target = usize::from(display)
+            .checked_sub(1)
+            .and_then(|i| self.displays.get(i))
+            .or(self.displays.first());
+        let Some(d) = target.cloned() else {
+            return;
+        };
+        let (w, h) = css_size(&d);
+        self.show(
+            &d.key,
+            "lane:hit",
+            json!({ "x": from_ratio(x, w), "y": from_ratio(y, h), "label": label }),
         );
     }
 
@@ -460,7 +558,7 @@ fn place(w: &mut Win, all: &[Display]) {
 }
 
 /// 系统现在的显示器，按编号排好。查不到时返回 None（保持原样）。
-fn current_displays(app: &AppHandle) -> Option<Vec<Display>> {
+pub fn current_displays(app: &AppHandle) -> Option<Vec<Display>> {
     let monitors = app.available_monitors().ok()?;
     let primary = app
         .primary_monitor()

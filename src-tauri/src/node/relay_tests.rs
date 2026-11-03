@@ -207,3 +207,47 @@ async fn turning_internet_off_drops_relay_only_members() {
         remove_db(d);
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cursor_frames_reach_the_relay_only_a_few_times_a_second() {
+    let relay = FakeRelay::start(Behavior::default()).await;
+    let addrs = free_ports(2);
+    let (da, db) = (temp_db(), temp_db());
+    let a = start_with(&da, 1, relay_config(addrs[0], None, &relay.url)).await;
+    let b = start_with(&db, 2, relay_config(addrs[1], None, &relay.url)).await;
+    let (room, code) = create(&a).await;
+    join(&b, &code).await;
+    assert!(eventually(&a, in_room(room, 2)).await);
+    let a_id = member_id(&a).await;
+    let b_id = member_id(&b).await;
+    assert!(path_becomes(&a, room, b_id, PathKind::Relay).await);
+
+    // 一秒发 30 帧，中继上只该有三四帧，最后一帧一定到
+    for i in 0..30u16 {
+        a.handle.send_live(LiveBody::Cursor {
+            display: 1,
+            x: i,
+            y: i,
+        });
+        tokio::time::sleep(Duration::from_millis(33)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let cursors: Vec<u16> = b
+        .lives_from(a_id)
+        .iter()
+        .filter_map(|(body, _)| match body {
+            LiveBody::Cursor { x, .. } => Some(*x),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        (2..=6).contains(&cursors.len()),
+        "经中继收到 {} 帧",
+        cursors.len()
+    );
+    assert_eq!(cursors.last(), Some(&29), "最新的一帧不丢");
+
+    drop((a, b));
+    remove_db(&da);
+    remove_db(&db);
+}

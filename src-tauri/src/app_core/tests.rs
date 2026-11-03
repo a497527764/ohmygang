@@ -356,3 +356,40 @@ fn everything_survives_reopen() {
         let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
 }
+
+#[test]
+fn hits_stack_on_both_sides_and_cooldown_applies() {
+    let (mut a, mut b, room) = pair();
+    let (a_id, b_id) = (a.identity().member_id, b.identity().member_id);
+    let (events, valid) = a.hit(&room, &b_id, 3200, 10_000).unwrap();
+    assert!(valid);
+    let notes = b.ingest_events(&room, &events).unwrap();
+    assert!(notes.contains(&CoreEvent::HitLanded {
+        room_id: room,
+        author: a_id,
+        target: b_id
+    }));
+    let board = |c: &Core| {
+        c.list_members(&room)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.member_id, m.stacks, m.taken))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(board(&a), board(&b), "两边层数一致");
+    assert!(board(&b).contains(&(a_id, 1, 0)) && board(&b).contains(&(b_id, 0, 1)));
+    // 冷却中：照样写事件，但不算
+    let (again, valid) = a.hit(&room, &b_id, 3200, 20_000).unwrap();
+    assert!(!valid);
+    assert!(
+        !b.ingest_events(&room, &again)
+            .unwrap()
+            .iter()
+            .any(|n| matches!(n, CoreEvent::HitLanded { .. }))
+    );
+    assert_eq!(a.my_last_hits(&room).unwrap(), vec![(b_id, 10_000)]);
+    // 充能不够
+    assert!(!b.hit(&room, &a_id, 100, 30_000).unwrap().1);
+    // 重复收到不再报
+    assert!(b.ingest_events(&room, &events).unwrap().is_empty());
+}

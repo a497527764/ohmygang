@@ -720,6 +720,44 @@ input::placeholder {
   font-size: 13px;
 }
 
+.chip.lane {
+  background: #fde8ec;
+  color: #b4233c;
+}
+.board {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 6px 0 12px;
+  font-size: 14px;
+}
+.board th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--line);
+}
+.board td {
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--line);
+}
+.board .num,
+.board th:not(:first-child) {
+  text-align: right;
+  font-family: var(--num);
+  font-variant-numeric: tabular-nums;
+}
+.board tr.me td {
+  font-weight: 700;
+}
+.board .rank {
+  display: inline-block;
+  width: 22px;
+  color: var(--muted);
+  font-family: var(--num);
+}
+
 /* ---------- 头像和资料 ---------- */
 .avatar {
   position: relative;

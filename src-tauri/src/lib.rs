@@ -3,9 +3,12 @@ pub mod app_core;
 pub mod base32;
 pub mod crypto;
 pub mod error;
+pub mod heartsteel;
 pub mod identity;
 pub mod input;
 pub mod keystore;
+pub mod lane;
+pub mod laning;
 pub mod node;
 pub mod overlay;
 pub mod protocol;
@@ -73,6 +76,7 @@ pub fn run() {
             team::team_dissolve,
             team::team_rename,
             team::profile_set,
+            team::laning_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -113,10 +117,14 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             });
         }
     });
+    let lane = lane::Lane::start(app.handle());
     let share = node.clone();
+    let (attack_to, laning_to) = (lane.clone(), lane.clone());
     let hooks = Hooks {
         on_toggled,
         on_ping: Box::new(move |ping| share.send_live(ping)),
+        on_attack: Box::new(move |x, y| attack_to.send(lane::LaneMsg::Attack { x, y })),
+        on_laning: Box::new(move || laning_to.send(lane::LaneMsg::Set(None))),
     };
     let overlays = Overlays::start(app.handle(), settings.overlay(), hooks);
     let sink_to = overlays.clone();
@@ -137,6 +145,7 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         overlays,
         node,
         team: Default::default(),
+        lane,
     });
     tray::setup(app, true)?;
     api::apply_window_theme(app.handle(), &theme);

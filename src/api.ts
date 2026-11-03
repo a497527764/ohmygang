@@ -20,6 +20,7 @@ export interface Settings {
   wheel: PingId[];
   wheelSizePx: number;
   toggleHotkey: Hotkey;
+  laningHotkey: Hotkey;
   pingSizePx: number;
   pingDurationS: number;
   volume: number;
@@ -36,6 +37,7 @@ export interface Status {
   enabled: boolean;
   /** 键鼠监听没起来的原因；正常时为 null。 */
   inputError: string | null;
+  laning: boolean;
 }
 
 export const readSettings = (): Promise<Settings> => invoke("settings_read");
@@ -78,6 +80,8 @@ export interface Member {
   isMe: boolean;
   avatar: AvatarData | null;
   stacks: number;
+  taken: number;
+  hp: number;
   /** 自己是 null。 */
   path: "lan" | "relay" | "offline" | null;
   status: "online" | "paused" | "away" | null;
@@ -109,3 +113,7 @@ export const onTeamChanged = (cb: () => void): Promise<UnlistenFn> => listen("te
 /** 队友用的是别的协议版本（多半是 1.x）。 */
 export const onProtocolMismatch = (cb: (remote: number) => void): Promise<UnlistenFn> =>
   listen<number>("team://mismatch", (e) => cb(e.payload));
+
+export const setLaning = (on: boolean): Promise<void> => invoke("laning_set", { on });
+export const onLaning = (cb: (on: boolean) => void): Promise<UnlistenFn> =>
+  listen<boolean>("laning://changed", (e) => cb(e.payload));

@@ -12,7 +12,7 @@ use crate::crypto::{EventId, Identity, MemberId, RoomId, RoomKey};
 use crate::error::AppResult;
 use crate::identity::{self, IdentityView};
 use crate::keystore::KeyStore;
-use crate::protocol::body::{self, Avatar, ProfileBody, RenameBody};
+use crate::protocol::body::{self, Avatar, HitBody, ProfileBody, RenameBody};
 use crate::protocol::event::{SignedEvent, kind, verify_stateless};
 use crate::protocol::frame::{HaveEntry, WantRange, short_id};
 use crate::protocol::live::{LiveBody, WireLive, sign_live};
@@ -35,6 +35,12 @@ pub enum CoreEvent {
     ForkDetected {
         room_id: RoomId,
         member_id: MemberId,
+    },
+    /// 这一批里有一条新的有效命中（放特效和音效）。
+    HitLanded {
+        room_id: RoomId,
+        author: MemberId,
+        target: MemberId,
     },
 }
 
@@ -227,9 +233,50 @@ impl Core {
         let tx = self.conn.transaction()?;
         require_active_owner(&tx, &self.view.member_id, room)?;
         let e = events::append_own(&tx, &self.me, room, kind::DISSOLVE, vec![], now_ms)?;
-        rooms::apply_state(&tx, room)?;
+        let st = rooms::apply_state(&tx, room)?;
+        rooms::apply_hits(&tx, room, st.dissolve_ts)?;
         tx.commit()?;
         Ok(vec![e])
+    }
+
+    /// 对线命中：写一条 Hit 事件，重放层数。返回事件和这次是否有效（无效的照样发出去，别人重放也会判无效）。
+    pub fn hit(
+        &mut self,
+        room: &RoomId,
+        target: &MemberId,
+        charged_ms: u32,
+        now_ms: u64,
+    ) -> AppResult<(Vec<SignedEvent>, bool)> {
+        let tx = self.conn.transaction()?;
+        let row = rooms::get(&tx, room)?;
+        if row.status != RoomStatus::Active {
+            return Err(AppError::RoomNotActive);
+        }
+        let b = body::encode(&HitBody {
+            target: *target,
+            charged_ms,
+        });
+        let e = events::append_own(&tx, &self.me, room, kind::HIT, b, now_ms)?;
+        let board = rooms::apply_hits(&tx, room, row.dissolve_ts)?;
+        tx.commit()?;
+        let valid = board.valid.iter().any(|h| h.event_id == e.event_id);
+        Ok((vec![e], valid))
+    }
+
+    /// 本人对每个人最后一次有效命中的时间（冷却用）。
+    pub fn my_last_hits(&self, room: &RoomId) -> AppResult<Vec<(MemberId, u64)>> {
+        let row = rooms::get(&self.conn, room)?;
+        let board =
+            crate::heartsteel::replay(&rooms::all_events(&self.conn, room)?, row.dissolve_ts);
+        let me = self.view.member_id;
+        let mut last: Vec<(MemberId, u64)> = Vec::new();
+        for h in board.valid.iter().filter(|h| h.author == me) {
+            match last.iter_mut().find(|(t, _)| *t == h.target) {
+                Some(entry) => entry.1 = entry.1.max(h.ts_ms),
+                None => last.push((h.target, h.ts_ms)),
+            }
+        }
+        Ok(last)
     }
 
     /// 队长最早的一条解散事件，用于告诉还不知道解散的同伴。
@@ -255,6 +302,7 @@ impl Core {
         rooms::get(&tx, room)?;
         let mut notes = Vec::new();
         let mut changed = false;
+        let mut new_hits = Vec::new();
         for e in incoming {
             if verify_stateless(e, room).is_err() {
                 continue;
@@ -267,10 +315,25 @@ impl Core {
                 }),
                 PutResult::Inserted(_) => {}
             }
+            if e.event.kind == kind::HIT {
+                new_hits.push(e.event_id);
+            }
             changed = true;
         }
         if changed {
-            rooms::apply_state(&tx, room)?;
+            let st = rooms::apply_state(&tx, room)?;
+            let board = rooms::apply_hits(&tx, room, st.dissolve_ts)?;
+            notes.extend(
+                board
+                    .valid
+                    .iter()
+                    .filter(|h| new_hits.contains(&h.event_id))
+                    .map(|h| CoreEvent::HitLanded {
+                        room_id: *room,
+                        author: h.author,
+                        target: h.target,
+                    }),
+            );
             notes.push(CoreEvent::RoomUpdated { room_id: *room });
         }
         tx.commit()?;

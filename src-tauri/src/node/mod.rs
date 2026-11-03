@@ -91,6 +91,8 @@ pub struct NodeConfig {
     /// 在线状态的周期：局域网、中继。
     pub presence_period: Duration,
     pub relay_presence_period: Duration,
+    /// 对线模式的鼠标帧经中继最多这么久发一次，只发最新的一帧。
+    pub relay_cursor_period: Duration,
     pub live_have_delay: (Duration, Duration),
     pub new_peer_have_delay: (Duration, Duration),
     pub want_timeout: Duration,
@@ -115,6 +117,7 @@ impl Default for NodeConfig {
             relay_have_period: path::RELAY_HAVE_PERIOD,
             presence_period: Duration::from_secs(2),
             relay_presence_period: Duration::from_secs(5),
+            relay_cursor_period: Duration::from_millis(333),
             live_have_delay: (Duration::from_secs(1), Duration::from_secs(5)),
             new_peer_have_delay: (Duration::ZERO, Duration::from_secs(2)),
             want_timeout: Duration::from_secs(5),
@@ -331,6 +334,8 @@ fn live_priority(body: &LiveBody) -> Priority {
     match body {
         LiveBody::Presence { .. } => Priority::Control,
         LiveBody::Ping { .. } | LiveBody::Bye => Priority::Live,
+        // 充能和在线状态一样；鼠标位置在中继上另有节流（见 send_live）
+        LiveBody::Charge { .. } | LiveBody::Cursor { .. } => Priority::Control,
     }
 }
 
@@ -385,6 +390,9 @@ pub struct Node {
     presence: Option<LiveBody>,
     next_presence: Instant,
     next_relay_presence: Instant,
+    /// 等着经中继发的最新一帧鼠标，和最早什么时候能发。
+    relay_cursor: Option<(RoomId, LiveBody)>,
+    next_relay_cursor: Instant,
 }
 
 /// 多久看一次网卡有没有变。
@@ -433,6 +441,8 @@ impl Node {
             presence: None,
             next_presence: now,
             next_relay_presence: now,
+            relay_cursor: None,
+            next_relay_cursor: now,
         };
         node.refresh_rooms();
         node.apply_relays();
@@ -668,7 +678,11 @@ impl Node {
             return;
         };
         let frame = Frame::Live(self.sign_live(&room, &body));
-        let relay = self.needs_relay(&room).then_some(live_priority(&body));
+        let mut relay = self.needs_relay(&room).then_some(live_priority(&body));
+        // 鼠标帧在局域网上每帧都发；中继每秒只能发几包，只留最新的一帧，按周期发（on_tick）
+        if matches!(body, LiveBody::Cursor { .. }) && relay.take().is_some() {
+            self.relay_cursor = Some((room, body.clone()));
+        }
         send_frame(
             &self.lan,
             self.relay.as_ref(),
@@ -1108,6 +1122,15 @@ impl Node {
             self.maybe_activate(room).await;
         }
         self.send_presence(now).await;
+        if now >= self.next_relay_cursor
+            && let Some((room, body)) = self.relay_cursor.take()
+            && let Some(key) = self.key_of(&room)
+        {
+            self.next_relay_cursor = now + self.cfg.relay_cursor_period;
+            let frame = Frame::Live(self.sign_live(&room, &body));
+            let route = Route::Relay(Priority::Backfill);
+            send_frame(&self.lan, self.relay.as_ref(), &key, &room, &frame, route).await;
+        }
         let per_tick =
             (u64::from(self.cfg.backfill_per_sec) * self.cfg.tick.as_millis() as u64 / 1000).max(1);
         for _ in 0..per_tick {

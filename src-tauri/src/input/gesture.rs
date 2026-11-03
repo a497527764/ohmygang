@@ -122,6 +122,9 @@ pub struct Config {
     /// 暂停快捷键：修饰键位（MOD_*）加一个虚拟键码。
     pub toggle_mods: u32,
     pub toggle_vk: u32,
+    /// 对线模式快捷键；vk 为 0 表示关（还没收到配置时什么都不拦）。
+    pub laning_mods: u32,
+    pub laning_vk: u32,
     pub enabled: bool,
 }
 
@@ -136,6 +139,8 @@ impl Default for Config {
             drag_threshold_px: 8,
             toggle_mods: MOD_CTRL | MOD_ALT,
             toggle_vk: 0x50, // P
+            laning_mods: MOD_CTRL | MOD_ALT,
+            laning_vk: 0,
             enabled: true,
         }
     }
@@ -173,6 +178,13 @@ pub enum Emit {
     Toggled {
         enabled: bool,
     },
+    /// 对线模式下有充能完成的对手时，信号触发键加单击是「普攻」，在按下的位置出手。
+    Attack {
+        x: i32,
+        y: i32,
+    },
+    /// 按了对线模式快捷键。
+    LaningToggled,
 }
 
 /// 要回放给系统的输入，平台层带上自己的标记发出去。
@@ -238,6 +250,8 @@ pub struct Gesture {
     enabled: bool,
     suspended: bool,
     probe: Option<FullscreenProbe>,
+    /// 对线模式里有充能完成的对手（由对线判定告诉这里）。
+    attack_ready: bool,
     state: State,
     key_down: [bool; 256],
     /// 按下被拦下的键：它们的抬起也要拦下（系统从没见过按下）。
@@ -271,6 +285,7 @@ impl Gesture {
             enabled: true,
             suspended: false,
             probe: None,
+            attack_ready: false,
             state: State::Idle,
             key_down: [false; 256],
             swallow_key_ups: [false; 256],
@@ -328,6 +343,11 @@ impl Gesture {
     }
 
     /// 设置页在录按键时挂起：键都交给控制面板，暂停快捷键也不响应。
+    /// 对线判定说现在有没有充能完成的对手。有的话信号触发键加单击是「普攻」，不放信号也不回放单击。
+    pub fn set_attack_ready(&mut self, on: bool) {
+        self.attack_ready = on;
+    }
+
     pub fn set_suspended(&mut self, on: bool) -> Outcome {
         let mut r = Outcome::default();
         if on {
@@ -415,6 +435,24 @@ impl Gesture {
 
     fn trigger(&self, k: WheelKind) -> Trigger {
         self.spec(k).0
+    }
+
+    /// 没拖动就松开时要交出去的事：普攻、单击信号，或者没有（回放单击）。
+    fn click_emit(&self) -> Option<Emit> {
+        if self.owner == WheelKind::Ping && self.attack_ready {
+            Some(Emit::Attack {
+                x: self.px,
+                y: self.py,
+            })
+        } else if self.click_on(self.owner) {
+            Some(Emit::Click {
+                x: self.px,
+                y: self.py,
+                wheel: self.owner,
+            })
+        } else {
+            None
+        }
     }
 
     fn click_on(&self, k: WheelKind) -> bool {
@@ -538,6 +576,19 @@ impl Gesture {
             }
             return;
         }
+        if self.active()
+            && self.cfg.laning_vk != 0
+            && vk == self.cfg.laning_vk
+            && self.mods() == self.cfg.laning_mods
+        {
+            r.swallow = true;
+            self.swallow_key_ups[i] = true;
+            self.mark_swallow();
+            if !repeat {
+                r.emits.push(Emit::LaningToggled);
+            }
+            return;
+        }
         if self.active() {
             if vk == VK_ESC && matches!(self.state, State::Pending | State::Wheel) {
                 r.swallow = true;
@@ -604,12 +655,8 @@ impl Gesture {
             r.injects.push(Inject::KeyUp(vk));
         }
         if trigger_released && self.state == State::Pending {
-            if self.click_on(self.owner) {
-                r.emits.push(Emit::Click {
-                    x: self.px,
-                    y: self.py,
-                    wheel: self.owner,
-                });
+            if let Some(emit) = self.click_emit() {
+                r.emits.push(emit);
                 self.state = State::SwallowUp;
             } else {
                 // 普通单击：现在补上按下，真正的抬起放行。
@@ -671,12 +718,8 @@ impl Gesture {
         }
         r.swallow = true;
         match self.state {
-            State::Pending if self.click_on(self.owner) => {
-                r.emits.push(Emit::Click {
-                    x: self.px,
-                    y: self.py,
-                    wheel: self.owner,
-                });
+            State::Pending if self.click_emit().is_some() => {
+                r.emits.extend(self.click_emit());
             }
             State::Pending => {
                 r.injects.push(Inject::ButtonDown(self.drag_btn));

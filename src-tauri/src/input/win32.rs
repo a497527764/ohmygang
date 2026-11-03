@@ -170,6 +170,10 @@ fn run(
                             Command::Config(cfg) => s.gesture.set_config(cfg),
                             Command::Enabled(on) => s.gesture.set_enabled(on),
                             Command::Suspended(on) => s.gesture.set_suspended(on),
+                            Command::AttackReady(on) => {
+                                s.gesture.set_attack_ready(on);
+                                Outcome::default()
+                            }
                         };
                         deliver(s, r);
                     });
@@ -250,6 +254,9 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         let injected = m.flags & LLMHF_INJECTED != 0 && m.dwExtraInfo == SELF_MARKER;
         if !injected {
             super::touch();
+            if wparam.0 as u32 == WM_MOUSEMOVE {
+                super::set_cursor(m.pt.x, m.pt.y);
+            }
         }
         let side = if (m.mouseData >> 16) as u16 == XBUTTON1 {
             Btn::X1

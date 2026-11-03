@@ -1,9 +1,12 @@
-// 透明窗口的页面：只画，不算规则。Rust 告诉它开轮盘、高亮哪格、关轮盘、在哪放什么信号、弹什么提示；
+// 透明窗口的页面：只画，不算规则。Rust 告诉它开轮盘、高亮哪格、关轮盘、在哪放什么信号、弹什么提示、对线的对手在哪；
 // 它在空闲时报告一声，让 Rust 把窗口挪开。
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FALLBACK_TEXTURE, TICK_SOUND, allSoundNames, pingById, soundUrl, textureUrl } from "../shared/pings";
+import heartsteelIcon from "../assets/heartsteel.png";
+import heartsteelSound from "../assets/heartsteel.mp3";
 import { IdleWatch } from "./idleWatch";
+import { LaneStage, spawnHeartsteel, type LaneState } from "./lane";
 import { spawnPing, type PingTag } from "./pingFx";
 import { SoundBank } from "./soundBank";
 import { Wheel } from "./wheel";
@@ -23,6 +26,8 @@ interface OverlaySettings {
 const pingLayer = document.getElementById("pings") as HTMLElement;
 const toastLayer = document.getElementById("toasts") as HTMLElement;
 const wheelSvg = document.getElementById("wheel") as unknown as SVGSVGElement;
+const laneLayer = document.getElementById("lane") as HTMLElement;
+const lane = new LaneStage(laneLayer);
 
 const sounds = new SoundBank();
 let settings: OverlaySettings | null = null;
@@ -70,10 +75,18 @@ void listen<{ id: string; x: number; y: number; tag?: PingTag }>("ping:spawn", (
   sounds.play(def.sound, settings.volume);
 });
 void listen<{ title: string; body: string }>("toast:show", (e) => showToast(e.payload.title, e.payload.body));
+void listen<LaneState>("lane:state", (e) => {
+  lane.render(e.payload);
+  idle.check();
+});
+void listen<{ x: number; y: number; label: string }>("lane:hit", ({ payload: p }) => {
+  spawnHeartsteel(pingLayer, heartsteelIcon, p.x, p.y, p.label);
+  if (settings) sounds.play("heartsteel", settings.volume);
+});
 
-// 信号、提示都在这两层里，轮盘开着时它的 class 有 open。
+// 信号、心之钢、提示在这两层里，对线的东西在 lane 层里，轮盘开着时它的 class 有 open。
 const idle = new IdleWatch(
-  () => !wheel.isOpen && pingLayer.childElementCount === 0 && toastLayer.childElementCount === 0,
+  () => !wheel.isOpen && pingLayer.childElementCount === 0 && toastLayer.childElementCount === 0 && lane.isEmpty,
   (v) => void invoke("overlay_idle", { idle: v }),
 );
 const changes = new MutationObserver(() => idle.check());
@@ -84,4 +97,7 @@ void invoke<OverlaySettings>("overlay_hello").then((s) => {
   apply(s);
   idle.check();
 });
-void sounds.load(allSoundNames().map((name) => ({ key: name, url: soundUrl(name) })));
+void sounds.load([
+  ...allSoundNames().map((name) => ({ key: name, url: soundUrl(name) })),
+  { key: "heartsteel", url: heartsteelSound },
+]);

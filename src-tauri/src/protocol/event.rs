@@ -23,6 +23,8 @@ pub mod kind {
     pub const PROFILE: u16 = 4;
     pub const RENAME: u16 = 5;
     pub const DISSOLVE: u16 = 7;
+    /// 对线模式的一次命中（2.0-M3）。
+    pub const HIT: u16 = 9;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

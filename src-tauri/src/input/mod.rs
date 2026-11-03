@@ -38,6 +38,26 @@ fn touch() {
     LAST_INPUT_MS.store(unix_ms(), Ordering::Relaxed);
 }
 
+/// 鼠标最后的位置（物理像素，x 在高 32 位、y 在低 32 位），对线模式要用。
+static CURSOR: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// 平台层收到真实的鼠标移动时调用。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn set_cursor(x: i32, y: i32) {
+    CURSOR.store(
+        (u64::from(x as u32) << 32) | u64::from(y as u32),
+        Ordering::Relaxed,
+    );
+}
+
+/// 鼠标现在的位置（物理像素）；平台层还没报告过时返回 None。
+pub fn cursor() -> Option<(i32, i32)> {
+    match CURSOR.load(Ordering::Relaxed) {
+        u64::MAX => None,
+        v => Some(((v >> 32) as u32 as i32, v as u32 as i32)),
+    }
+}
+
 /// 多久没碰键鼠了；平台层还没报告过输入时返回 None（比如 macOS、Linux 的监听还没做）。
 pub fn idle_ms() -> Option<u64> {
     match LAST_INPUT_MS.load(Ordering::Relaxed) {
@@ -54,6 +74,8 @@ pub enum Command {
     Enabled(bool),
     /// 设置页录按键时挂起，键都交给控制面板。
     Suspended(bool),
+    /// 对线模式里有没有充能完成的对手（有的话信号触发键加单击是普攻）。
+    AttackReady(bool),
 }
 
 /// 收要画的东西。在钩子回调里调用，所以只能做不阻塞的事（往通道里放）。
@@ -70,4 +92,17 @@ impl InputHandle {
 /// 启动监听线程。失败时返回给用户看的说明（装不上钩子、这个平台还没做好）。
 pub fn start(cfg: Config, sink: Sink) -> Result<InputHandle, String> {
     platform::start(cfg, sink).map(InputHandle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_packs_negative_coordinates() {
+        set_cursor(-1920, 1079);
+        assert_eq!(cursor(), Some((-1920, 1079)));
+        set_cursor(3840, -5);
+        assert_eq!(cursor(), Some((3840, -5)));
+    }
 }
