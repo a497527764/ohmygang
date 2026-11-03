@@ -3,7 +3,8 @@
 //! 实现流程：
 //! 1. 启动时（`lib.rs`）开 `gang2.db`、读设置，建 `AppState` 交给 Tauri 管理。
 //! 2. 改设置：整份设置过 `normalize` → 存库 → 交给输入线程（手势配置）和透明窗口线程（画画的设置）→ 主窗口换主题。
-//! 3. 信号开关（托盘、控制面板、暂停快捷键）统一走 `set_enabled`：告诉输入线程、勾上托盘、通知控制面板。
+//! 3. 信号开关（托盘、控制面板、暂停快捷键）统一走 `set_enabled`：告诉输入线程、勾上托盘、通知控制面板、更新在线状态。
+//!    改了「允许互联网」或中继列表时，让节点换中继。
 //! 4. 这些命令都很快（读写一行 SQLite、往通道里放消息），而且持锁时不等别的线程，所以放在主线程上执行没问题。
 
 use std::sync::Mutex;
@@ -15,8 +16,10 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 use crate::input::{Command, InputHandle};
+use crate::node::NodeHandle;
 use crate::overlay::{Msg, Overlays};
 use crate::settings2::{self, OverlaySettings, Settings};
+use crate::team::{self, TeamState};
 use crate::{storage, tray};
 
 pub struct AppState {
@@ -28,6 +31,9 @@ pub struct AppState {
     pub input: Option<InputHandle>,
     pub input_error: Option<String>,
     pub overlays: Overlays,
+    /// 队伍的网络（局域网 + 中继）。
+    pub node: NodeHandle,
+    pub team: TeamState,
 }
 
 impl AppState {
@@ -64,6 +70,7 @@ pub fn after_toggle(app: &AppHandle, on: bool) {
     }
     tray::set_checked(app, on);
     let _ = app.emit_to("main", "pings://enabled", on);
+    team::refresh_presence(app);
 }
 
 /// 主窗口标题栏跟着主题走（跟随系统时交给系统）。
@@ -91,6 +98,7 @@ pub fn settings_write(
     settings: Value,
 ) -> Result<Settings, String> {
     let s = settings2::normalize(&settings);
+    let old_relays = state.settings().active_relays();
     storage::settings::save(&state.db.lock().expect("数据库锁没有中毒"), &s)
         .map_err(|e| e.to_string())?;
     *state.settings.lock().expect("设置锁没有中毒") = s.clone();
@@ -101,6 +109,11 @@ pub fn settings_write(
     }
     state.overlays.send(Msg::Settings(s.overlay()));
     apply_window_theme(&app, &s.theme);
+    let relays = s.active_relays();
+    if relays != old_relays {
+        let node = state.node.clone();
+        tauri::async_runtime::spawn(async move { node.set_relays(relays).await });
+    }
     Ok(s)
 }
 

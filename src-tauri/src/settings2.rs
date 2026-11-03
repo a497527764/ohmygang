@@ -309,7 +309,16 @@ pub fn normalize(raw: &Value) -> Settings {
 }
 
 impl Settings {
-    /// 实际用的中继：自己填了就用自己的，否则用默认列表。
+    /// 节点实际要连的中继：关了「允许互联网」就一个都不连。
+    pub fn active_relays(&self) -> Vec<String> {
+        if self.allow_internet {
+            self.relay_list()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// 自己填了就用自己的，否则用默认列表。
     pub fn relay_list(&self) -> Vec<String> {
         if self.relays.is_empty() {
             DEFAULT_RELAYS.map(String::from).to_vec()

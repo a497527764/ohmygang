@@ -17,7 +17,34 @@ use stub as platform;
 #[cfg(windows)]
 use win32 as platform;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 pub use gesture::{Config, Emit, Trigger, WheelKind};
+
+/// 最后一次真实键鼠输入的时间（Unix 毫秒），0 表示还没见过。平台层在钩子回调里更新，用来判断离开电脑。
+static LAST_INPUT_MS: AtomicU64 = AtomicU64::new(0);
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 平台层收到一个真实（不是自己回放的）键鼠事件时调用。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn touch() {
+    LAST_INPUT_MS.store(unix_ms(), Ordering::Relaxed);
+}
+
+/// 多久没碰键鼠了；平台层还没报告过输入时返回 None（比如 macOS、Linux 的监听还没做）。
+pub fn idle_ms() -> Option<u64> {
+    match LAST_INPUT_MS.load(Ordering::Relaxed) {
+        0 => None,
+        t => Some(unix_ms().saturating_sub(t)),
+    }
+}
 
 /// 送进输入线程的命令。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

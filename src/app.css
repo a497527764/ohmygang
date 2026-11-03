@@ -22,6 +22,8 @@
   --warn: #c27403;
   --error-bg: #fde7ea;
   --error-ink: #a2203a;
+  --warn-bg: #fff3d6;
+  --danger: #ea0038;
   --num: "Bahnschrift", "Segoe UI Variable Text", "Segoe UI", -apple-system, sans-serif;
   /* 轮盘编辑器（英雄联盟的颜色，不跟主题变） */
   --lol-core-1: #2c5d60;
@@ -54,6 +56,8 @@
     --warn: #f0b048;
     --error-bg: #432028;
     --error-ink: #f6b3c0;
+    --warn-bg: #3a3016;
+    --danger: #f15c6d;
     color-scheme: dark;
   }
 }
@@ -78,6 +82,8 @@
   --warn: #f0b048;
   --error-bg: #432028;
   --error-ink: #f6b3c0;
+  --warn-bg: #3a3016;
+  --danger: #f15c6d;
   color-scheme: dark;
 }
 
@@ -535,6 +541,272 @@ kbd {
   color: var(--chip-on-text);
 }
 
+/* ---------- 按钮和输入框 ---------- */
+.primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 20px;
+  border-radius: 20px;
+  background: var(--accent);
+  color: var(--on-accent);
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.primary:not(:disabled):hover {
+  background: var(--accent-hover);
+}
+.primary:disabled,
+.soft:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.primary.danger {
+  background: var(--danger);
+  color: #fff;
+}
+.soft.danger {
+  color: var(--danger);
+}
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: var(--text-2);
+}
+.icon-button:hover {
+  background: var(--rail-active);
+}
+.icon-button.small {
+  width: 26px;
+  height: 26px;
+}
+input:not([type="checkbox"]):not([type="range"]):not([type="radio"]):not([type="file"]) {
+  font: inherit;
+  color: var(--text);
+  background: var(--input);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  height: 36px;
+  padding: 0 12px;
+  min-width: 0;
+  outline: none;
+}
+input:not([type="checkbox"]):not([type="range"]):not([type="radio"]):not([type="file"]):focus {
+  border-color: var(--accent);
+}
+input::placeholder {
+  color: var(--muted);
+}
+.banner.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.warn-text {
+  color: var(--warn);
+}
+
+/* ---------- 队伍 ---------- */
+.split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.split .card,
+.card.profile,
+.card.profile-edit {
+  padding-bottom: 16px;
+}
+.card .muted {
+  margin-bottom: 10px;
+}
+.inline-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.inline-form input {
+  flex: 1;
+}
+.team-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.team-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 0;
+}
+.code-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 6px;
+  flex-wrap: wrap;
+}
+.team-code {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bar);
+  font: 13px/1.4 Consolas, "Cascadia Mono", monospace;
+  letter-spacing: 0.3px;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+.members {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.member,
+.card.profile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.member {
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+.member-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.member-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.member-name .muted {
+  margin: 0;
+  font-weight: 400;
+}
+.chip {
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--chip-on-bg);
+  color: var(--chip-on-text);
+  font-size: 12px;
+  font-weight: 400;
+}
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 0 8px;
+}
+.actions.end {
+  justify-content: flex-end;
+  padding-bottom: 0;
+}
+.net-status {
+  padding: 4px 0 12px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* ---------- 头像和资料 ---------- */
+.avatar {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  border-radius: 50%;
+  background: var(--bar);
+}
+.avatar-img,
+.avatar-face {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  font-weight: 700;
+}
+.avatar-face.auto {
+  background: hsl(var(--h) 55% 86%);
+  color: hsl(var(--h) 40% 32%);
+}
+.avatar-face.preset {
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+  font-weight: 400;
+  line-height: 1;
+}
+.avatar .dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--panel);
+  background: var(--badge-quiet);
+}
+.avatar .dot.online {
+  background: var(--accent);
+}
+.avatar .dot.away {
+  background: #f0b048;
+}
+.profile-top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
+  gap: 6px;
+}
+.preset {
+  height: 38px;
+  border-radius: 50%;
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 20px;
+}
+.preset.current,
+.swatch.current {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.color-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+}
+
 /* ---------- 外观：单选胶囊 ---------- */
 .choices {
   display: flex;
@@ -590,6 +862,9 @@ kbd {
 }
 
 @media (max-width: 920px) {
+  .split {
+    grid-template-columns: 1fr;
+  }
   .wheel-editor {
     grid-template-columns: 1fr;
     justify-items: center;

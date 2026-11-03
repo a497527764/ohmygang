@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FALLBACK_TEXTURE, TICK_SOUND, allSoundNames, pingById, soundUrl, textureUrl } from "../shared/pings";
 import { IdleWatch } from "./idleWatch";
-import { spawnPing } from "./pingFx";
+import { spawnPing, type PingTag } from "./pingFx";
 import { SoundBank } from "./soundBank";
 import { Wheel } from "./wheel";
 
@@ -63,10 +63,10 @@ void listen<OverlaySettings>("overlay:settings", (e) => apply(e.payload));
 void listen<{ x: number; y: number }>("wheel:open", (e) => wheel.open(e.payload.x, e.payload.y));
 void listen<{ slot: number | null }>("wheel:hot", (e) => wheel.setHot(e.payload.slot ?? -1));
 void listen("wheel:close", () => wheel.close());
-void listen<{ id: string; x: number; y: number }>("ping:spawn", ({ payload: p }) => {
+void listen<{ id: string; x: number; y: number; tag?: PingTag }>("ping:spawn", ({ payload: p }) => {
   const def = pingById(p.id);
   if (!def || !settings) return;
-  spawnPing(pingLayer, def, p.x, p.y, { sizePx: settings.pingSizePx, durationS: settings.pingDurationS });
+  spawnPing(pingLayer, def, p.x, p.y, { sizePx: settings.pingSizePx, durationS: settings.pingDurationS, tag: p.tag });
   sounds.play(def.sound, settings.volume);
 });
 void listen<{ title: string; body: string }>("toast:show", (e) => showToast(e.payload.title, e.payload.body));

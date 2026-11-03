@@ -1,4 +1,4 @@
-// 控制面板（2.0）：左边是分页，右边是当前页。M1 有「信号」「外观」「关于」三页；队伍、表情、对线在后面的阶段加。
+// 控制面板（2.0）：左边是分页，右边是当前页：「队伍」「信号」「外观」「关于」。
 // 数据流：启动时读设置和状态 → 改设置时先更新界面，停手 300 毫秒后整份交给 Rust 存（Rust 修正后的值再回填）；
 // 信号开关在托盘或暂停快捷键那边变了，Rust 推送过来，这里跟着变。
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -7,11 +7,13 @@ import { AboutPage } from "./components/AboutPage";
 import { AppearancePage } from "./components/AppearancePage";
 import { Icon, type IconName } from "./components/Icon";
 import { PingsPage } from "./components/PingsPage";
+import { TeamPage } from "./components/TeamPage";
 import { textureUrl } from "./shared/pings";
 import "./app.css";
 
-type Page = "pings" | "appearance" | "about";
+type Page = "team" | "pings" | "appearance" | "about";
 const PAGES: { id: Page; label: string; icon: IconName }[] = [
+  { id: "team", label: "队伍", icon: "users" },
   { id: "pings", label: "信号", icon: "target" },
   { id: "appearance", label: "外观", icon: "sun" },
   { id: "about", label: "关于", icon: "info" },
@@ -22,7 +24,7 @@ const SAVE_DELAY_MS = 300;
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
-  const [page, setPage] = useState<Page>("pings");
+  const [page, setPage] = useState<Page>("team");
   const [error, setError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -92,6 +94,7 @@ export default function App() {
         {error && <p className="banner error">{error}</p>}
         {settings && status ? (
           <>
+            {page === "team" && <TeamPage settings={settings} onSettings={change} />}
             {page === "pings" && (
               <PingsPage settings={settings} status={status} onChange={change} onToggle={toggle} />
             )}

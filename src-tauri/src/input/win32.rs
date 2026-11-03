@@ -248,6 +248,9 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         // SAFETY: WH_MOUSE_LL 在 HC_ACTION 时，lParam 指向系统提供的 MSLLHOOKSTRUCT，回调期间有效、只读。
         let m = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
         let injected = m.flags & LLMHF_INJECTED != 0 && m.dwExtraInfo == SELF_MARKER;
+        if !injected {
+            super::touch();
+        }
         let side = if (m.mouseData >> 16) as u16 == XBUTTON1 {
             Btn::X1
         } else {
@@ -310,6 +313,9 @@ unsafe extern "system" fn key_proc(code: i32, wparam: WPARAM, lparam: LPARAM) ->
         );
         e.self_injected =
             k.flags & LLKHF_INJECTED != Default::default() && k.dwExtraInfo == SELF_MARKER;
+        if !e.self_injected {
+            super::touch();
+        }
         let replay = if down {
             Inject::KeyDown(k.vkCode)
         } else {

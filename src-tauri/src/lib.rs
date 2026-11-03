@@ -13,16 +13,18 @@ pub mod rooms;
 pub mod settings2;
 pub mod storage;
 pub mod sync;
+pub mod team;
 pub mod transport;
 pub mod tray;
 
-use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tauri::{Manager, WindowEvent};
 
 use api::AppState;
-use overlay::{Msg, Overlays};
+use overlay::{Hooks, Msg, Overlays};
 use settings2::Hotkey;
 
 /// 开发用的单机双开：环境变量 `LOLGANG_INSTANCE=2` 表示第二实例，数据目录换一套。
@@ -63,13 +65,25 @@ pub fn run() {
             api::ping_preview,
             api::overlay_hello,
             api::overlay_idle,
+            team::team_view,
+            team::team_create,
+            team::team_join,
+            team::team_cancel,
+            team::team_leave,
+            team::team_dissolve,
+            team::team_rename,
+            team::profile_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-/// 启动流程：在应用数据目录打开 `gang2.db`、读设置 → 启动透明窗口线程 → 启动键鼠监听（把手势事件交给透明窗口线程）
-/// → 交给 Tauri 管理 → 托盘 → 控制面板的主题。键鼠监听起不来时程序照常打开，控制面板显示原因。
+/// 启动流程：在应用数据目录打开 `gang2.db`、读设置 → 从凭据管理器取主密钥、读出身份，启动节点（局域网 + 中继）
+/// → 启动透明窗口线程 → 启动键鼠监听（把手势事件交给透明窗口线程）→ 交给 Tauri 管理 → 托盘 → 控制面板的主题
+/// → 在线状态每 5 秒看一次（离开电脑要靠时间判断）。键鼠监听起不来时程序照常打开，控制面板显示原因。
+///
+/// 单机双开（开发用）：环境变量 `LOLGANG_INSTANCE=2` 时，数据目录、凭据条目、UDP 端口都换一套；
+/// 开发版的广播同时发往两个端口，两个实例就能在一台电脑上互相发现。
 fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let mut dir = app.path().app_data_dir()?;
     if is_second_instance() {
@@ -78,6 +92,7 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&dir)?;
     let db = storage::open(&dir.join("gang2.db"))?;
     let settings = storage::settings::load(&db)?;
+    let node = start_node(app.handle(), &dir, &settings)?;
 
     let handle = app.handle().clone();
     let on_toggled = Box::new(move |on: bool| {
@@ -98,7 +113,12 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             });
         }
     });
-    let overlays = Overlays::start(app.handle(), settings.overlay(), on_toggled);
+    let share = node.clone();
+    let hooks = Hooks {
+        on_toggled,
+        on_ping: Box::new(move |ping| share.send_live(ping)),
+    };
+    let overlays = Overlays::start(app.handle(), settings.overlay(), hooks);
     let sink_to = overlays.clone();
     let (input, input_error) = match input::start(
         settings.gesture_config(true),
@@ -115,10 +135,53 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         input,
         input_error,
         overlays,
+        node,
+        team: Default::default(),
     });
     tray::setup(app, true)?;
     api::apply_window_theme(app.handle(), &theme);
+    team::refresh_names(app.handle());
+    let presence = app.handle().clone();
+    std::thread::Builder::new()
+        .name("presence".into())
+        .spawn(move || {
+            loop {
+                team::refresh_presence(&presence);
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        })?;
     Ok(())
+}
+
+fn start_node(
+    app: &tauri::AppHandle,
+    dir: &std::path::Path,
+    settings: &settings2::Settings,
+) -> Result<node::NodeHandle, Box<dyn std::error::Error>> {
+    let second = is_second_instance();
+    let keystore = if second {
+        keystore::SystemKeyStore {
+            service: "lolgang-2",
+        }
+    } else {
+        keystore::APP_KEYSTORE
+    };
+    let core = app_core::Core::open(storage::open(&dir.join("gang2.db"))?, &keystore)?;
+    let mut cfg = node::NodeConfig {
+        relay_urls: settings.active_relays(),
+        ..node::NodeConfig::default()
+    };
+    if second {
+        cfg.lan.bind.set_port(transport::lan::LAN_PORT + 1);
+    }
+    if cfg!(debug_assertions) {
+        cfg.lan.broadcast_ports = vec![transport::lan::LAN_PORT, transport::lan::LAN_PORT + 1];
+    }
+    let handle = app.clone();
+    let sink: node::Sink = Arc::new(move |e| team::on_node_event(&handle, e));
+    Ok(tauri::async_runtime::block_on(node::Node::spawn(
+        core, cfg, sink,
+    ))?)
 }
 
 /// 「Ctrl + Alt + P」这样的快捷键文字（提示里用）。

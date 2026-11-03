@@ -24,7 +24,9 @@ use tauri::{
     WebviewWindowBuilder,
 };
 
+use crate::crypto::MemberId;
 use crate::input::{Emit, WheelKind};
+use crate::protocol::live::{LiveBody, from_ratio, to_ratio};
 use crate::settings2::OverlaySettings;
 use displays::{Display, Rect};
 
@@ -51,6 +53,24 @@ pub enum Msg {
         body: String,
     },
     Poll,
+    /// 队友的信号：第几号显示器、0–65535 的比例位置。
+    RemotePing {
+        from: MemberId,
+        display: u8,
+        x: u16,
+        y: u16,
+        id: String,
+    },
+    /// 队友的名字，信号下面的标签用。
+    Names(Vec<(MemberId, String)>),
+}
+
+/// 透明窗口线程交出去的事，都在这个线程上调用，只能做不阻塞的事。
+pub struct Hooks {
+    /// 暂停快捷键切换了开关。
+    pub on_toggled: Box<dyn Fn(bool) + Send>,
+    /// 本人放了一个信号，交给队伍。
+    pub on_ping: Box<dyn Fn(LiveBody) + Send>,
 }
 
 /// 透明窗口线程的把手，可以随便复制。
@@ -60,17 +80,14 @@ pub struct Overlays {
 }
 
 impl Overlays {
-    /// 启动透明窗口线程。`on_toggled` 在暂停快捷键切换开关时调用（在这个线程上）。
-    pub fn start(
-        app: &AppHandle,
-        settings: OverlaySettings,
-        on_toggled: Box<dyn Fn(bool) + Send>,
-    ) -> Self {
+    /// 启动透明窗口线程。
+    pub fn start(app: &AppHandle, settings: OverlaySettings, hooks: Hooks) -> Self {
         let (tx, rx) = mpsc::channel();
         let actor = Actor {
             app: app.clone(),
             settings,
-            on_toggled,
+            hooks,
+            names: HashMap::new(),
             displays: Vec::new(),
             windows: HashMap::new(),
             next_id: 0,
@@ -114,7 +131,8 @@ struct OpenWheel {
 struct Actor {
     app: AppHandle,
     settings: OverlaySettings,
-    on_toggled: Box<dyn Fn(bool) + Send>,
+    hooks: Hooks,
+    names: HashMap<MemberId, String>,
     /// 按编号排好的显示器（第 0 个是 1 号，主显示器）。
     displays: Vec<Display>,
     windows: HashMap<String, Win>,
@@ -161,6 +179,14 @@ impl Actor {
                     }
                 }
                 Msg::Poll => self.refresh(),
+                Msg::Names(list) => self.names = list.into_iter().collect(),
+                Msg::RemotePing {
+                    from,
+                    display,
+                    x,
+                    y,
+                    id,
+                } => self.remote_ping(from, display, x, y, id),
             }
         }
     }
@@ -214,6 +240,7 @@ impl Actor {
                         "ping:spawn",
                         json!({ "id": id, "x": w.center.0, "y": w.center.1 }),
                     );
+                    self.share_ping(&w.key, w.center, id);
                 }
             }
             Emit::Click { x, y, .. } => {
@@ -224,15 +251,55 @@ impl Actor {
                 let (lx, ly) = displays::to_local(&d, x, y);
                 let id = self.settings.click_ping_id.clone();
                 self.show(&d.key, "ping:spawn", json!({ "id": id, "x": lx, "y": ly }));
+                self.share_ping(&d.key, (lx, ly), id);
             }
             Emit::Cancel => self.cancel_wheel(),
             Emit::Toggled { enabled } => {
                 if !enabled {
                     self.cancel_wheel();
                 }
-                (self.on_toggled)(enabled);
+                (self.hooks.on_toggled)(enabled);
             }
         }
+    }
+
+    /// 本人的信号交给队伍：位置换成「第几号显示器 + 比例」，落到队友同号显示器的同一比例处。
+    fn share_ping(&self, key: &str, (lx, ly): (f64, f64), id: String) {
+        let Some(i) = self.displays.iter().position(|d| d.key == key) else {
+            return;
+        };
+        let (w, h) = css_size(&self.displays[i]);
+        let display = u8::try_from(i + 1).unwrap_or(u8::MAX);
+        (self.hooks.on_ping)(LiveBody::Ping {
+            display,
+            x: to_ratio(lx, w),
+            y: to_ratio(ly, h),
+            id,
+        });
+    }
+
+    /// 队友的信号：落到本机同号显示器（没有这一号就落到 1 号）的同一比例处，下面带他的名字。
+    fn remote_ping(&mut self, from: MemberId, display: u8, x: u16, y: u16, id: String) {
+        self.refresh();
+        let target = usize::from(display)
+            .checked_sub(1)
+            .and_then(|i| self.displays.get(i))
+            .or(self.displays.first());
+        let Some(d) = target.cloned() else {
+            return;
+        };
+        let (w, h) = css_size(&d);
+        let name = self
+            .names
+            .get(&from)
+            .cloned()
+            .unwrap_or_else(|| "队友".into());
+        let tag = json!({ "name": name, "color": tag_color(&from) });
+        self.show(
+            &d.key,
+            "ping:spawn",
+            json!({ "id": id, "x": from_ratio(x, w), "y": from_ratio(y, h), "tag": tag }),
+        );
     }
 
     /// 开着的轮盘里，物理像素的点对应哪格。外层 None 表示没有开着的轮盘，内层 None 表示在中心的死区里。
@@ -326,6 +393,23 @@ impl Actor {
             }
         }
     }
+}
+
+/// 显示器在透明窗口里的大小（CSS 像素）。
+fn css_size(d: &Display) -> (f64, f64) {
+    (
+        f64::from(d.rect.width) / d.scale,
+        f64::from(d.rect.height) / d.scale,
+    )
+}
+
+/// 队友名字标签的颜色：按公钥固定挑一种，同一个人在所有人屏幕上颜色一样。
+fn tag_color(m: &MemberId) -> &'static str {
+    const PALETTE: [&str; 10] = [
+        "#4fc3f7", "#ffb74d", "#81c784", "#f06292", "#ba68c8", "#fff176", "#4db6ac", "#ff8a65",
+        "#9575cd", "#aed581",
+    ];
+    PALETTE[usize::from(m[0]) % PALETTE.len()]
 }
 
 fn create_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
