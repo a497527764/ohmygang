@@ -126,14 +126,18 @@ sig      = Ed25519(作者私钥, "hs/sig/v1" ‖ event_id)
 |--------|------|------|------|
 | state | `RoomCreate` | title, rule | 作者须匹配 `owner_tag` |
 | state | `Join` / `Leave` | 空 | 进出房间 |
-| state | `Profile` | nickname | 昵称，上限 32 字符 |
+| state | `Profile` | nickname, avatar? | 昵称上限 32 字符；头像（V1.1，可选）为内置图标下标 + 底色下标，或不超过 800 字节的 WebP/PNG/JPEG |
 | state | `Rename` | title | 仅房主，上限 64 字符 |
 | state | `ConfigNotice` | rule | 仅房主 |
 | state | `Dissolve` | 空 | 仅房主，不可撤销 |
 | state | `Heartsteel` | rule_epoch, triggers | 见第 5 节 |
-| chat | `Chat` | text | 上限 900 字节 |
+| chat | `Chat` | text, reply?, mentions? | 文字上限 900 字节；引用（V1.1）为原消息 ID + 60 字节摘要；@（V1.1）为 8 字节短 ID 列表，最多 20 个；整条 body 不超过 1024 字节 |
+| chat | `ImageChunk` | data | 图片的一片（V1.1），不超过 900 字节，不单独显示 |
+| chat | `Image` | chunks, size, sha256, width, height | 图片消息（V1.1），前面连续的 chunks 个聊天序号是它的各片，整图不超过 192KB |
 
-**kind 编号**：RoomCreate 1、Join 2、Leave 3、Profile 4、Rename 5、ConfigNotice 6、Dissolve 7、Heartsteel 8、Chat 100。body 用 CBOR 编码，事件 ID 等字节字段编成 CBOR 字节串。
+**kind 编号**：RoomCreate 1、Join 2、Leave 3、Profile 4、Rename 5、ConfigNotice 6、Dissolve 7、Heartsteel 8、Chat 100、ImageChunk 101、Image 102。body 用 CBOR 编码，事件 ID 等字节字段编成 CBOR 字节串。
+
+**向后兼容（V1.1）**：新字段都是可选的，旧版本解码时忽略不认识的字段（照样看到昵称和文字），所以协议版本号不变。图片消息不参与叠层判定：层数由每个人各自重放，改变计数规则会和旧版本算出不同的层数。
 
 **未知 kind**：签名有效就入库并可转发给别人，但不显示、不参与计算。否则旧版本客户端会把它一直当作缺失反复拉取。
 
@@ -490,10 +494,10 @@ Joining ──同步完成──▶ Active ──leave──▶ Left ──重�
 
 | 表 | 内容 |
 |----|------|
-| `identity` | member_id、昵称、私钥密文 |
-| `rooms` | room_id、房间码密文、owner_tag、房主、群名缓存、状态、上次活跃、免打扰、置顶 |
+| `identity` | member_id、昵称、私钥密文、头像 |
+| `rooms` | room_id、房间码密文、owner_tag、房主、群名缓存、状态、上次活跃、免打扰、置顶、清空聊天记录的分界 |
 | `room_rules` | room_id + rule_epoch、window_ms、threshold、cooldown_ms |
-| `members` | room_id + member_id、昵称缓存、是否在房、层数缓存 |
+| `members` | room_id + member_id、昵称缓存、头像缓存、是否在房、层数缓存 |
 | `events` | event_id、room_id、author_id、stream、seq、ts_ms、kind、body、sig、local_seq、display_ts、delivery、is_fork |
 | `sync_state` | room_id + author_id、chat_floor |
 | `read_state` | room_id、已读 local_seq |
@@ -502,6 +506,8 @@ Joining ──同步完成──▶ Active ──leave──▶ Left ──重�
 `events` 需要索引：`(room_id, author_id, stream, seq)`、`(room_id, display_ts, event_id)`、`(room_id, local_seq)`。
 
 实现状态（M1-2）：已建 `identity`、`rooms`（另含 `dissolve_ts` 缓存列）、`room_rules`、`members`、`events`（另含 `format` 列，还原事件验签要用）、`read_state`；`sync_state` 在 M2 以第 3 版加入（作者用短 ID 记）。表结构版本记在 `PRAGMA user_version`。M1-4 升到第 2 版，加入 `settings`（键值，值为 JSON 文本；没存过的项用默认值，所以中继列表只在用户改过后才落盘）。
+
+V1.1 升到第 5 版：第 4 版给 `identity`、`members` 加头像列（CBOR 编码的头像），第 5 版给 `rooms` 加 `cleared_seq`、`cleared_ts`。清空聊天记录只隐藏本机显示：入库序号不大于 `cleared_seq`、或显示时间早于「`cleared_ts` − 2 分钟」的条目不出现在聊天窗口、未读、预览和搜索里；不删数据，否则本人以后的序号会重复（分叉），别人的会被同步补回来。
 
 路径和在线状态只放内存，不落盘。
 
@@ -577,7 +583,8 @@ Joining ──同步完成──▶ Active ──leave──▶ Left ──重�
 - **打洞直连**：lolPing 没有这部分，属于全新工作量。优先评估 iroh（支持打洞和中继回退），但其文档说明公共中继只适合开发测试，生产要付费或自建，与「不自建」有冲突，届时需要决策。引入时再决定 UDP 还是 QUIC，并增加 `Direct` 路径。
 - **好友系统**：好友码放完整公钥（只有指纹无法加密）；每个身份由公钥派生一个中继主题作为汇合点；增加 X25519 密钥协商；离线请求需要收件箱，否则对方不在线时会丢失。
 - **私聊房**：房间密钥由双方公钥协商得出，不需要先发邀请，对方离线也能建。
-- **自定义头像**：限制大小后分片传输，或走 Have 风格的按需拉取。
+- **自定义头像**：V1.1 已做，没分片：图片压到 800 字节以内随 Profile 同步（见 4.2）。
+- **图片消息**：V1.1 已做，切片走聊天流，补齐沿用 Have/Want（见 4.2）。
 - **其他**：摸鱼看板；macOS/Linux；房主转让；成员能力令牌（非共享房间码）以支持真踢人；换码时迁移历史和层数；长消息分片。
 
 ---
@@ -603,6 +610,10 @@ Joining ──同步完成──▶ Active ──leave──▶ Left ──重�
 | 默认中继只认国内直连 | 多数群友不开代理；开代理才能连的中继（如 damus、nos.lol）在国内直连被封，放进默认列表会让不开代理的人连不上 |
 | 第一版不用 QUIC | 没有打洞时，小包 UDP 加对等补齐已经够用 |
 | 第一版头像自动生成 | 1200 字节的包放不下图片，分片传输不是玩法核心 |
+| V1.1 头像压到 800 字节、随 Profile 同步 | 所有者要自定义头像；不分片最简单，代价是放大看略糊 |
+| V1.1 图片按片走聊天流 | 不新增流和帧，补齐、确认、备份全部沿用；各片不进重发计划，免得占满中继预算 |
+| V1.1 清空聊天记录只隐藏本机显示 | 真删会让本人序号重复、别人的被补回来，层数也要靠这些事件重放 |
+| V1.1 产品名改为「钢一下」 | 所有者 2026-11-03 决定；应用标识不变，本机数据不受影响 |
 | 中继默认补 500 条，局域网 5000 条 | 中继 5000 条约需 7 分钟，还会占满公共设施的额度 |
 
 ---
