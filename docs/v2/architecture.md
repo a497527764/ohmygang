@@ -1,7 +1,8 @@
 # 钢一下 2.0 — 架构
 
-> 状态：草案（2026-11-03 第二版），等所有者审阅。需求见 [requirements.md](requirements.md)。1.x 的架构见 [../architecture.md](../architecture.md)，其中网络、加密、事件签名和状态同步在 2.0 继续使用。
+> 状态：草案（2026-11-03 第三版），等所有者审阅。需求见 [requirements.md](requirements.md)。1.x 的架构见 [../architecture.md](../architecture.md)，其中网络、加密、事件签名和状态同步在 2.0 继续使用。
 > 第二版改动：加入 macOS、Linux 和自动更新（第 2、3、9、10、11 节）。
+> 第三版改动：只有 Windows 正式支持和真机验收；macOS、Linux 照 lolPing 的做法实现，出「实验版，未测试」的安装包（第 10、12、13 节）。
 
 ## 1. 总体
 
@@ -181,7 +182,7 @@ Windows 和 macOS 的系统接口必须用 `unsafe`。只放在这几个文件�
 - GitHub Actions：
   - `ci.yml`：每次推送在 Windows、macOS（Apple 芯片）、Ubuntu 上跑 `cargo test`、clippy、前端构建；Ubuntu 上另用 Xvfb 跑 X11 输入的集成测试（同 lolPing 的 `linux_x11_test`，不碰真实桌面）。
   - `release.yml`：推送 `v*` 标签时先建草稿 Release，三个平台各自打包、签名、上传，最后生成 `latest.json` 并发布。
-- 开发机只有 Windows：macOS 和 Linux 的包只在 GitHub Actions 上打；本机能做的是 Windows 的打包和全部纯逻辑测试。
+- 开发机只有 Windows，所有者也没有 Mac 和 Linux 设备：macOS 和 Linux 的包只在 GitHub Actions 上打，标「实验版，未测试」；本机能做的是 Windows 的打包和全部纯逻辑测试。
 - 推送代码和打标签发版都由所有者做。
 
 ## 11. 素材和许可
@@ -195,7 +196,7 @@ Windows 和 macOS 的系统接口必须用 `unsafe`。只放在这几个文件�
 - 纯函数单元测试（三个平台都在 CI 上跑）：手势状态机（移植 lolPing `helper_tests.cpp` 的用例）、macOS 和 Linux 的键码换算、轮盘选格、显示器编号和坐标换算、对线判定、叠层重放和生命值公式、帧的编解码和校验、投票计票、文字清洗、表情导入检查、更新清单解析。
 - 节点集成测试：两个节点经局域网和假中继交换在线状态、信号、鼠标帧、Hit 事件，双方层数一致。
 - Linux 输入集成测试：在 Xvfb 里起一个接收窗口，用 XTest 发输入，验证点击放行、短按回放、两个轮盘、取消、暂停（不碰真实桌面）。
-- 必须在真机上手动验：键鼠拦截和放行、透明窗口、多显示器和不同缩放、声音、截图工具、全屏游戏、更新。Windows 由开发者在本机验；macOS 和 Linux 由所有者在测试设备上按验收清单验，没验过的写明「未在 xx 上验证」。
+- 必须在真机上手动验：键鼠拦截和放行、透明窗口、多显示器和不同缩放、声音、截图工具、全屏游戏、更新。只在 Windows 上验。macOS 和 Linux 不做真机测试，文档、关于页和 README 写明「未在 macOS、Linux 上验证」。
 
 ## 13. 风险
 
@@ -204,7 +205,7 @@ Windows 和 macOS 的系统接口必须用 `unsafe`。只放在这几个文件�
 | 全局键盘钩子可能被杀毒软件当成键盘记录器 | 和 lolPing 一样无法完全避免；只看按键码、不记录、不外发，在 README 说明 |
 | 钩子或事件监听因超时被系统移除 | 回调只做纯计算；看门狗检测失效后重装或重新启用，并在托盘提示 |
 | macOS 没有开发者签名：首次打开要手动放行，每次更新要重新授权辅助功能 | 控制面板一步步引导；所有者可以决定买苹果开发者账号 |
-| 开发机没有 Mac 和 Linux，问题发现得晚 | 第一阶段就把三平台的 CI 建起来；macOS、Linux 的系统接口按 lolPing 已验证的做法写 |
+| macOS、Linux 没有真机测试，可能装上就有问题 | 第一阶段就把三平台的 CI 建起来；系统接口按 lolPing 已验证的做法写；安装包标实验版，用户遇到问题再修 |
 | Linux 桌面差异大（Wayland、窗口管理器占键、托盘） | 只支持 X11，启动时检测并说明；冲突时提示换键 |
 | WebKitGTK、WKWebView 和 WebView2 的表现差异（透明、自动播放声音） | 每个平台第一次跑通时专门验证透明窗口和声音 |
 | 安装包变大（素材约 60MB） | 只打包清单里用到的文件 |
