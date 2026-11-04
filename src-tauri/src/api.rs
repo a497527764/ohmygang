@@ -98,6 +98,23 @@ fn set_autostart(app: &AppHandle, on: bool) -> Result<(), String> {
     done.map_err(|e| format!("开机启动没设置上：{e}"))
 }
 
+/// 设置里开着开机启动、系统里却没登记时补上（2.0.1 改了产品名，系统里登记的名字跟着变）。只在正式版里做：
+/// 开发版登记的是调试用的程序。
+pub fn ensure_autostart(app: &AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    if cfg!(debug_assertions) || crate::is_second_instance() || !state.settings().launch_at_startup
+    {
+        return;
+    }
+    let launcher = app.autolaunch();
+    if !launcher.is_enabled().unwrap_or(true) {
+        let _ = launcher.enable();
+    }
+}
+
 /// 进出队伍后重新给手势配置（文字快捷键和面板键只在队伍里拦）。
 pub fn push_gesture_config(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {

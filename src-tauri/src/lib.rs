@@ -212,6 +212,7 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     api::apply_window_theme(app.handle(), &theme);
     team::refresh_names(app.handle());
     update::start_schedule(app.handle());
+    api::ensure_autostart(app.handle());
     if std::env::args().any(|a| a == AUTOSTART_ARG)
         && let Some(w) = app.get_webview_window("main")
     {

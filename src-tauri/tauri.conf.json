@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "钢一下",
+  "productName": "lolGang",
   "mainBinaryName": "lolgang",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "identifier": "com.lijia.lolgang",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -54,9 +54,10 @@
     "macOS": {
       "signingIdentity": "-"
     },
-    "shortDescription": "钢一下：不用服务器的开黑群聊，连发叠心之钢",
+    "shortDescription": "lolGang（钢一下）：桌面上的英雄联盟信号、表情、组队和对线小玩具",
     "windows": {
       "nsis": {
+        "installerHooks": "./windows/hooks.nsh",
         "installMode": "currentUser",
         "languages": [
           "SimpChinese"
