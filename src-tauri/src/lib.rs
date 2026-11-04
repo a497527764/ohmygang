@@ -97,6 +97,9 @@ pub fn run() {
             {
                 let _ = window.hide();
                 api.prevent_close();
+                // macOS：控制面板关了，程序坞里不显示图标（需求 4.8）
+                #[cfg(target_os = "macos")]
+                let _ = window.app_handle().set_dock_visibility(false);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -111,6 +114,8 @@ pub fn run() {
             api::emote_import,
             api::emote_remove,
             api::emote_preview,
+            api::open_accessibility_settings,
+            api::app_relaunch,
             panel::vote_view,
             panel::vote_start,
             panel::vote_answer,
@@ -217,6 +222,8 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         && let Some(w) = app.get_webview_window("main")
     {
         w.hide()?;
+        #[cfg(target_os = "macos")]
+        app.handle().set_dock_visibility(false)?;
     }
     let presence = app.handle().clone();
     std::thread::Builder::new()

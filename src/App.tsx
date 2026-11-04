@@ -9,6 +9,7 @@ import { AppearancePage } from "./components/AppearancePage";
 import { EmotesPage } from "./components/EmotesPage";
 import { FeaturesPage } from "./components/FeaturesPage";
 import { Icon, type IconName } from "./components/Icon";
+import { PermissionCard } from "./components/PermissionCard";
 import { PingsPage } from "./components/PingsPage";
 import { TeamPage } from "./components/TeamPage";
 import { textureUrl } from "./shared/pings";
@@ -46,6 +47,10 @@ export default function App() {
     getStatus().then(setStatus, (e) => setError(String(e)));
     const off = onEnabled((on) => setStatus((s) => (s ? { ...s, enabled: on } : s)));
     const offLaning = onLaning((on) => setStatus((s) => (s ? { ...s, laning: on } : s)));
+    // 状态里的提示（比如 Linux 上有键被占着）会在启动后才出现：每 5 秒取一次
+    const statusTimer = setInterval(() => {
+      getStatus().then(setStatus, () => undefined);
+    }, 5000);
     const offNav = onNavigate((p) => {
       if (PAGES.some((x) => x.id === p)) setPage(p as Page);
     });
@@ -53,6 +58,7 @@ export default function App() {
       void off.then((f) => f());
       void offLaning.then((f) => f());
       void offNav.then((f) => f());
+      clearInterval(statusTimer);
     };
   }, []);
 
@@ -101,7 +107,7 @@ export default function App() {
       <nav className="side">
         <div className="brand">
           <img src={textureUrl("generic_ping")} alt="" width={28} height={28} />
-          <span>钢一下</span>
+          <span>lolGang</span>
         </div>
         {PAGES.map((p) => (
           <button
@@ -123,6 +129,7 @@ export default function App() {
       </nav>
       <main className="content">
         {error && <p className="banner error">{error}</p>}
+        {status?.needsPermission && status.inputError && <PermissionCard reason={status.inputError} />}
         {settings && status ? (
           <>
             {page === "team" && (

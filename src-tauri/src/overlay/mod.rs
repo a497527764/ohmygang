@@ -668,7 +668,7 @@ fn tag_color(m: &MemberId) -> &'static str {
 
 fn create_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
     let w = WebviewWindowBuilder::new(app, label, WebviewUrl::App("overlay.html".into()))
-        .title("钢一下 overlay")
+        .title("lolGang overlay")
         .transparent(true)
         .decorations(false)
         .shadow(false)

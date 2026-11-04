@@ -1,5 +1,5 @@
 # 每次推送和拉取请求：在 Windows、macOS（Apple 芯片）、Ubuntu 上构建前端、检查 Rust 格式和 clippy、跑全部 Rust 测试。
-# macOS 和 Linux 的键鼠监听是实验版（2.0-M6），CI 只能保证它们能编译、纯逻辑测试能过，真机上要人测（架构第 10 节）。
+# macOS 和 Linux 的键鼠监听是实验版（2.0-M6）：CI 保证它们能编译、纯逻辑测试能过，Linux 另在 Xvfb 里跑输入集成测试；真机上要人测（架构第 10 节）。
 name: CI
 
 on:
@@ -59,3 +59,10 @@ jobs:
       - name: 测试
         working-directory: src-tauri
         run: cargo test
+      # 在虚拟 X11 显示里用 XTest 造键鼠事件，测 Linux 的监听（不碰真实桌面，同 lolPing 的 linux_x11_test）
+      - name: X11 输入集成测试（Xvfb）
+        if: runner.os == 'Linux'
+        working-directory: src-tauri
+        run: |
+          sudo apt-get install -y xvfb
+          xvfb-run -a -s "-screen 0 1280x1024x24" cargo test --lib input::linux -- --ignored

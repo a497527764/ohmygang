@@ -13,19 +13,21 @@
 //! 6. 收事件的线程和处理的线程分开：一个线程等 X 事件，和命令一起送进同一个通道；处理线程每 25 毫秒至少醒一次，
 //!    每秒让状态机检查看门狗。鼠标没被抓时拿不到位置，原始移动事件来了就问一次服务器（最多每 16 毫秒一次）。
 //! 7. 没有全屏检查（Windows 才有），`game_check` 在这里不起作用；面板键的连发看门狗也关掉。
+//! 8. 窗口管理器已经占着某个组合（常见的是按住 Alt 拖动窗口）时，抓取会报 Access 错误：
+//!    记下提示，控制面板的「信号」页显示，让用户换键；改了设置就清掉，新的抓取再出错再记。
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
-use x11rb::protocol::Event;
 use x11rb::protocol::xinput::{self, ConnectionExt as _};
 use x11rb::protocol::xkb::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
     self, Allow, ButtonIndex, ConnectionExt as _, EventMask, GrabMode, ModMask, Window,
 };
 use x11rb::protocol::xtest::ConnectionExt as _;
+use x11rb::protocol::{ErrorKind, Event};
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -41,6 +43,7 @@ const TICK: Duration = Duration::from_secs(1);
 const CURSOR_EVERY: Duration = Duration::from_millis(16);
 /// 自己发的原始事件几毫秒内就回来；记数最多保留这么久。
 const SELF_RAW_MS: u64 = 500;
+const GRAB_CONFLICT: &str = "有触发键或快捷键被窗口管理器或别的程序占着（比如按住 Alt 拖动窗口），这些组合用不了。换一个触发键或快捷键试试";
 
 enum Msg {
     X(Event),
@@ -337,6 +340,15 @@ impl Hooks {
                 self.mouse(EvKind::MouseUp, b.detail, b.root_x, b.root_y, b.time)
             }
             Event::MotionNotify(m) => self.mouse(EvKind::MouseMove, 0, m.root_x, m.root_y, m.time),
+            Event::Error(e)
+                if e.error_kind == ErrorKind::Access
+                    && matches!(
+                        e.major_opcode,
+                        xproto::GRAB_KEY_REQUEST | xproto::GRAB_BUTTON_REQUEST
+                    ) =>
+            {
+                super::set_warning(Some(GRAB_CONFLICT.to_string()));
+            }
             Event::MappingNotify(_) => {
                 let _ = self.refresh_keys();
                 let _ = self.configure_grabs();
@@ -453,7 +465,10 @@ impl Hooks {
 
     fn command(&mut self, c: Command) {
         let r = match c {
-            Command::Config(cfg) => self.gesture.set_config(cfg),
+            Command::Config(cfg) => {
+                super::set_warning(None);
+                self.gesture.set_config(cfg)
+            }
             Command::Enabled(on) => self.gesture.set_enabled(on),
             Command::Suspended(on) => {
                 self.suspended = on;
@@ -662,5 +677,113 @@ impl Hooks {
         conn.ungrab_server()?;
         conn.flush()?;
         Ok(())
+    }
+}
+
+/// 在 Xvfb 里跑的集成测试：用 XTest 造真的 X11 键鼠事件，看监听交出来的手势对不对。
+/// 要有 X11 显示，平时跳过；CI 的 Ubuntu 上用 `xvfb-run cargo test --lib input::linux -- --ignored` 跑。
+#[cfg(test)]
+mod xvfb_tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::input::gesture::{Config, Emit, WheelKind};
+
+    const ALT_L: u32 = 0xFFE9;
+    const CONTROL_L: u32 = 0xFFE3;
+    const KEY_P: u32 = 0x70;
+
+    fn keycode(conn: &RustConnection, keysym: u32) -> u8 {
+        let setup = conn.setup();
+        let (min, max) = (setup.min_keycode, setup.max_keycode);
+        let map = conn
+            .get_keyboard_mapping(min, max - min + 1)
+            .unwrap()
+            .reply()
+            .unwrap();
+        let per = usize::from(map.keysyms_per_keycode);
+        (min..=max)
+            .find(|c| map.keysyms[usize::from(c - min) * per] == keysym)
+            .expect("键盘映射里有这个键")
+    }
+
+    /// 造一个事件，等它走完。
+    fn fake(conn: &RustConnection, root: Window, kind: u8, detail: u8, x: i16, y: i16) {
+        conn.xtest_fake_input(kind, detail, 0, root, x, y, 0)
+            .unwrap();
+        conn.sync().unwrap();
+        std::thread::sleep(Duration::from_millis(40));
+    }
+
+    fn key(conn: &RustConnection, root: Window, code: u8, down: bool) {
+        let kind = if down {
+            xproto::KEY_PRESS_EVENT
+        } else {
+            xproto::KEY_RELEASE_EVENT
+        };
+        fake(conn, root, kind, code, 0, 0);
+    }
+
+    #[test]
+    #[ignore = "要 X11 显示：CI 里用 xvfb-run 跑"]
+    fn x11_alt_drag_opens_the_wheel_and_pause_hotkey_toggles() {
+        let emits = Arc::new(Mutex::new(Vec::<Emit>::new()));
+        let sink_to = emits.clone();
+        // 默认配置：Alt 加左键拖动开信号轮盘，Ctrl+Alt+P 暂停
+        let _handle = start(
+            Config::default(),
+            Box::new(move |e| sink_to.lock().unwrap().push(e)),
+        )
+        .expect("Xvfb 里监听起得来");
+        let (conn, screen) = x11rb::connect(None).unwrap();
+        let root = conn.setup().roots[screen].root;
+        std::thread::sleep(Duration::from_millis(300));
+
+        let alt = keycode(&conn, ALT_L);
+        fake(&conn, root, xproto::MOTION_NOTIFY_EVENT, 0, 200, 200);
+        key(&conn, root, alt, true);
+        fake(&conn, root, xproto::BUTTON_PRESS_EVENT, 1, 0, 0);
+        for x in [210, 230, 260] {
+            fake(&conn, root, xproto::MOTION_NOTIFY_EVENT, 0, x, 200);
+        }
+        fake(&conn, root, xproto::BUTTON_RELEASE_EVENT, 1, 0, 0);
+        key(&conn, root, alt, false);
+        std::thread::sleep(Duration::from_millis(300));
+        let got = emits.lock().unwrap().clone();
+        assert!(
+            got.iter().any(|e| matches!(
+                e,
+                Emit::WheelOpen {
+                    wheel: WheelKind::Ping,
+                    ..
+                }
+            )),
+            "Alt 加拖动要开信号轮盘：{got:?}"
+        );
+        assert!(
+            got.iter().any(|e| matches!(
+                e,
+                Emit::WheelRelease {
+                    wheel: WheelKind::Ping,
+                    ..
+                }
+            )),
+            "松开要放信号：{got:?}"
+        );
+
+        emits.lock().unwrap().clear();
+        let (ctrl, p) = (keycode(&conn, CONTROL_L), keycode(&conn, KEY_P));
+        key(&conn, root, ctrl, true);
+        key(&conn, root, alt, true);
+        key(&conn, root, p, true);
+        key(&conn, root, p, false);
+        key(&conn, root, alt, false);
+        key(&conn, root, ctrl, false);
+        std::thread::sleep(Duration::from_millis(300));
+        let got = emits.lock().unwrap().clone();
+        assert!(
+            got.contains(&Emit::Toggled { enabled: false }),
+            "Ctrl+Alt+P 要暂停：{got:?}"
+        );
     }
 }

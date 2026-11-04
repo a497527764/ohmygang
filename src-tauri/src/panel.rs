@@ -501,7 +501,7 @@ impl Runner {
             Which::Text => ("text", "text.html"),
         };
         let built = WebviewWindowBuilder::new(&self.app, label, WebviewUrl::App(page.into()))
-            .title("钢一下")
+            .title("lolGang")
             .transparent(true)
             .decorations(false)
             .shadow(false)

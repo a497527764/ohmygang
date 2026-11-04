@@ -59,6 +59,10 @@ pub struct Status {
     /// 输入监听没起来的原因；正常时为 null。
     pub input_error: Option<String>,
     pub laning: bool,
+    /// macOS 上监听没起来：多半是缺「辅助功能」权限，控制面板顶部显示授权卡片。
+    pub needs_permission: bool,
+    /// 监听起来了但有键被占着（Linux 窗口管理器）。
+    pub input_warning: Option<String>,
 }
 
 /// 开关信号，并让托盘、控制面板跟上。
@@ -189,7 +193,28 @@ pub fn status_get(state: State<'_, AppState>) -> Status {
         enabled: state.enabled.load(Ordering::Relaxed),
         input_error: state.input_error.clone(),
         laning: state.lane.is_on(),
+        needs_permission: cfg!(target_os = "macos") && state.input_error.is_some(),
+        input_warning: crate::input::warning(),
     }
+}
+
+/// macOS：打开「系统设置 → 隐私与安全性 → 辅助功能」。
+#[tauri::command]
+pub fn open_accessibility_settings() -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("只有 macOS 要授权".into());
+    }
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("打不开系统设置：{e}"))
+}
+
+/// 授权后重开程序：键鼠监听只在启动时建。
+#[tauri::command]
+pub fn app_relaunch(app: AppHandle) {
+    app.restart();
 }
 
 #[tauri::command]

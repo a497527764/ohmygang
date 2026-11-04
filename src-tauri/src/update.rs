@@ -138,7 +138,7 @@ pub async fn check(app: &AppHandle, quiet: bool) -> UpdateView {
             crate::tray::set_update_label(app, Some(&version));
             if first_time && let Some(state) = app.try_state::<AppState>() {
                 state.overlays.send(Msg::Toast {
-                    title: format!("钢一下有新版本 {version}"),
+                    title: format!("lolGang 有新版本 {version}"),
                     body: "在控制面板的「关于」里更新".into(),
                 });
             }
@@ -250,5 +250,133 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
             });
             Err(message)
         }
+    }
+}
+
+/// 验收第 10 条后半：签名不对的更新包不装。用的是真的更新插件和我们发版用的 `plugins.updater` 设置
+/// （包括 requireSignedVersion），只把公钥换成测试用的临时密钥、允许本机的 http 地址；
+/// 一个本机 HTTP 服务给 latest.json 和更新包。先确认签名对的能下载（证明这套测试是通的），再看三种不对的都被拒绝。
+#[cfg(test)]
+mod signature_tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    use base64::Engine;
+    use minisign::KeyPair;
+    use serde_json::{Value, json};
+    use tauri_plugin_updater::UpdaterExt;
+
+    const PACKAGE: &[u8] = b"lolgang update package for the test";
+    const TAMPERED: &[u8] = b"lolgang update package for the tesT";
+    const TARGET: &str = "test-target";
+
+    fn b64(s: &str) -> String {
+        base64::engine::general_purpose::STANDARD.encode(s)
+    }
+
+    /// Tauri 的签名格式：minisign 签名文件的文本再 base64；可信注释里记版本。
+    fn sign(keys: &KeyPair, data: &[u8], version: &str) -> String {
+        let trusted = format!("timestamp:1\tfile:pkg\tversion:{version}");
+        let sig = minisign::sign(
+            Some(&keys.pk),
+            &keys.sk,
+            data,
+            Some(&trusted),
+            Some("signature from tauri secret key"),
+        )
+        .unwrap();
+        b64(&sig.into_string())
+    }
+
+    /// 本机 HTTP 服务：/latest.json 给清单（版本 `announced`、签名 `signature`），其他路径给 `package`。返回清单地址。
+    fn serve(announced: &str, signature: String, package: &'static [u8]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let manifest = json!({
+            "version": announced,
+            "notes": "测试",
+            "pub_date": "2026-11-04T00:00:00Z",
+            "platforms": { TARGET: { "url": format!("{base}/pkg"), "signature": signature } }
+        })
+        .to_string();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let body: Vec<u8> = if buf[..n].starts_with(b"GET /latest.json") {
+                    manifest.clone().into_bytes()
+                } else {
+                    package.to_vec()
+                };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        format!("{base}/latest.json")
+    }
+
+    /// 装着更新插件、用发版设置的模拟程序（版本 0.1.0，公钥换成 `trusted`）查一次、下载一次。
+    fn download(
+        trusted: &KeyPair,
+        announced: &str,
+        signature: String,
+        package: &'static [u8],
+    ) -> Result<Vec<u8>, String> {
+        let shipped: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let mut updater = shipped["plugins"]["updater"].clone();
+        assert_eq!(
+            updater["requireSignedVersion"],
+            json!(true),
+            "发版设置要求签名里带版本"
+        );
+        updater["pubkey"] = json!(b64(&trusted.pk.to_box().unwrap().into_string()));
+        updater["dangerousInsecureTransportProtocol"] = json!(true);
+        let mut ctx = tauri::test::mock_context(tauri::test::noop_assets());
+        ctx.config_mut().plugins.0.insert("updater".into(), updater);
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .build(ctx)
+            .unwrap();
+        let url = serve(announced, signature, package);
+        tauri::async_runtime::block_on(async move {
+            let update = app
+                .updater_builder()
+                .target(TARGET)
+                .no_proxy()
+                .endpoints(vec![url.parse().unwrap()])
+                .map_err(|e| e.to_string())?
+                .build()
+                .map_err(|e| e.to_string())?
+                .check()
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or("没查到新版本")?;
+            update
+                .download(|_, _| {}, || {})
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    #[test]
+    fn only_correctly_signed_updates_are_accepted() {
+        let ours = KeyPair::generate_unencrypted_keypair().unwrap();
+        let theirs = KeyPair::generate_unencrypted_keypair().unwrap();
+
+        let good = download(&ours, "9.9.9", sign(&ours, PACKAGE, "9.9.9"), PACKAGE);
+        assert_eq!(good.as_deref(), Ok(PACKAGE), "签名对的要能下载：{good:?}");
+
+        let tampered = download(&ours, "9.9.9", sign(&ours, PACKAGE, "9.9.9"), TAMPERED);
+        assert!(tampered.is_err(), "包被改过：要拒绝");
+
+        let old = download(&ours, "9.9.9", sign(&ours, PACKAGE, "2.0.0"), PACKAGE);
+        assert!(old.is_err(), "拿旧版本的真包冒充新版本：要拒绝");
+
+        let stranger = download(&ours, "9.9.9", sign(&theirs, PACKAGE, "9.9.9"), PACKAGE);
+        assert!(stranger.is_err(), "别人的私钥签的：要拒绝");
     }
 }

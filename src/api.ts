@@ -63,6 +63,10 @@ export interface Status {
   /** 键鼠监听没起来的原因；正常时为 null。 */
   inputError: string | null;
   laning: boolean;
+  /** macOS 上监听没起来，顶部显示授权卡片。 */
+  needsPermission: boolean;
+  /** 监听起来了，但有键被别的程序占着（Linux 窗口管理器），提示换键；没有时为 null。 */
+  inputWarning: string | null;
 }
 
 export const readSettings = (): Promise<Settings> => invoke("settings_read");
@@ -73,6 +77,10 @@ export const setEnabled = (on: boolean): Promise<void> => invoke("pings_set_enab
 /** 录按键期间挂起拦截，键都交给控制面板。 */
 export const suspendInput = (on: boolean): Promise<void> => invoke("input_suspend", { on });
 export const previewPing = (id: PingId): Promise<void> => invoke("ping_preview", { id });
+/** macOS：打开「隐私与安全性 → 辅助功能」。 */
+export const openAccessibilitySettings = (): Promise<void> => invoke("open_accessibility_settings");
+/** 重开程序（授权后监听才建得起来）。 */
+export const relaunchApp = (): Promise<void> => invoke("app_relaunch");
 export const previewEmote = (emote: string): Promise<void> => invoke("emote_preview", { emote });
 /** 导入表情：文件都是 base64，返回存好后的设置。 */
 export const importEmote = (args: { still: string; anim: string | null; sound: string | null; name: string; fx: number }): Promise<Settings> =>

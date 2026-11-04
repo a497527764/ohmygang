@@ -989,6 +989,20 @@ input::placeholder {
   font: 12px/1.5 Consolas, "Cascadia Mono", monospace;
 }
 
+/* ---------- macOS 授权卡片 ---------- */
+.card.permission {
+  border-color: var(--warn);
+  background: var(--warn-bg);
+}
+.card.permission p {
+  margin: 0 0 8px;
+}
+/* 卡片放在每一页的上面：和页面内容同宽对齐 */
+.content > .card.permission {
+  max-width: 716px;
+  margin: 24px auto -8px;
+}
+
 /* ---------- 关于页的更新 ---------- */
 .update-progress {
   width: 100%;

@@ -27,6 +27,7 @@ use stub as platform;
 #[cfg(windows)]
 use win32 as platform;
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -72,6 +73,19 @@ pub fn cursor() -> Option<(i32, i32)> {
         u64::MAX => None,
         v => Some(((v >> 32) as u32 as i32, v as u32 as i32)),
     }
+}
+
+/// 监听起来了但有问题时给用户看的提示（Linux：有组合键被窗口管理器占着，抓不到）。
+static WARNING: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn set_warning(w: Option<String>) {
+    *WARNING.lock().expect("提示锁没有中毒") = w;
+}
+
+/// 现在的提示；没有问题时是 None。
+pub fn warning() -> Option<String> {
+    WARNING.lock().expect("提示锁没有中毒").clone()
 }
 
 /// 多久没碰键鼠了；平台层还没报告过输入时返回 None。

@@ -1,6 +1,6 @@
 [package]
 name = "lolgang"
-version = "2.0.1"
+version = "2.0.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2024"
@@ -55,3 +55,7 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsA
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = { version = "0.13", features = ["xinput", "xtest", "xkb"] }
+
+[dev-dependencies]
+minisign = "0.10.0"
+tauri = { version = "2", features = ["test"] }

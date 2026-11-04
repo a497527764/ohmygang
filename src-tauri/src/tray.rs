@@ -9,7 +9,7 @@ use tauri::{AppHandle, Manager, Wry};
 use crate::api;
 
 const TRAY_ID: &str = "main";
-const TOOLTIP: &str = "钢一下";
+const TOOLTIP: &str = "lolGang";
 
 /// 「信号开启」这一项，开关变了要跟着勾上或取消。
 struct PingsItem(CheckMenuItem<Wry>);
@@ -20,6 +20,9 @@ struct UpdateItem(MenuItem<Wry>);
 
 /// 把控制面板调到前面（托盘、再次打开程序都用它）。
 pub fn show_main(app: &AppHandle) {
+    // macOS：控制面板开着时程序坞里才有图标（关掉时藏起来，见 lib.rs）
+    #[cfg(target_os = "macos")]
+    let _ = app.set_dock_visibility(true);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
         let _ = w.show();

@@ -74,6 +74,7 @@ export function PingsPage({ settings: s, status, onChange, onToggle }: Props) {
     <div className="page">
       <h1>信号</h1>
 
+      {status.inputWarning && <p className="banner warn">{status.inputWarning}</p>}
       {status.inputError ? (
         <p className="banner error">键鼠监听没有启动：{status.inputError}。轮盘暂时用不了。</p>
       ) : (

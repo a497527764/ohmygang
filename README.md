@@ -1,4 +1,4 @@
-# 钢一下
+# lolGang（钢一下）
 
 常驻桌面的英雄联盟小玩具：按住 Alt 拖动，在屏幕任何地方发英雄联盟的信号；按住 Ctrl 拖动放表情。和朋友组队后，你发的信号、表情、文字会出现在队友屏幕上同样的位置。开了「对线模式」，队友的鼠标会变成你屏幕上的小英雄，贴近他、充能、出手，就能叠一层心之钢。
 
@@ -9,7 +9,7 @@
 | 系统 | 状态 |
 |---|---|
 | Windows 10、11 | 正式支持 |
-| macOS 13 以上（Apple 芯片） | 实验版，没在真机上测试过。要在「系统设置 → 隐私与安全性 → 辅助功能」里允许钢一下 |
+| macOS 13 以上（Apple 芯片） | 实验版，没在真机上测试过。要在「系统设置 → 隐私与安全性 → 辅助功能」里允许 lolGang |
 | Linux（X11 桌面） | 实验版，没在真机上测试过。要有窗口合成器才能透明；Wayland 会话拿不到全局键鼠，不支持 |
 
 ## 怎么用
@@ -87,4 +87,4 @@ $env:LOLGANG_INSTANCE = '2'; & '.\src-tauri\target\debug\lolgang.exe'
 
 信号轮盘、信号动画、表情、队伍面板、投票、键鼠手势判定，以及 macOS、Linux 的键鼠监听，移植自 [lolPing](https://github.com/darrenprx/lolPing)（作者 Danrui Meng，MIT 许可），移植来的文件开头注明了来源。
 
-图标、音效、表情来自英雄联盟，版权归 Riot Games 所有，不在 MIT 许可范围内。钢一下不代表 Riot Games，也没有得到 Riot Games 的认可。
+图标、音效、表情来自英雄联盟，版权归 Riot Games 所有，不在 MIT 许可范围内。lolGang 不代表 Riot Games，也没有得到 Riot Games 的认可。
