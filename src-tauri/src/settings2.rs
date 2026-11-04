@@ -175,6 +175,8 @@ pub struct Settings {
     pub panel_key: u32,
     /// 开机时自动启动（只在改动时去改系统设置）。
     pub launch_at_startup: bool,
+    /// 启动后和每 6 小时查一次新版本（只提示，不自己装）。
+    pub auto_update_check: bool,
 }
 
 impl Default for Settings {
@@ -218,6 +220,7 @@ impl Default for Settings {
             team_panel: true,
             panel_key: PANEL_KEYS[0],
             launch_at_startup: false,
+            auto_update_check: true,
         }
     }
 }
@@ -493,6 +496,7 @@ pub fn normalize(raw: &Value) -> Settings {
         team_panel: bool_or(get("teamPanel"), d.team_panel),
         panel_key: panel_key(get("panelKey"), &taken),
         launch_at_startup: bool_or(get("launchAtStartup"), d.launch_at_startup),
+        auto_update_check: bool_or(get("autoUpdateCheck"), d.auto_update_check),
     }
 }
 

@@ -3,7 +3,7 @@
 // 导入、删除表情由 Rust 直接存，返回的设置换上（还有没存的改动时只换表情那几项，改动随后一起存）；
 // 信号开关在托盘或暂停快捷键那边变了，Rust 推送过来，这里跟着变。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getStatus, onEnabled, onLaning, readSettings, setEnabled, setLaning, writeSettings, type Settings, type Status } from "./api";
+import { getStatus, onEnabled, onLaning, onNavigate, readSettings, setEnabled, setLaning, writeSettings, type Settings, type Status } from "./api";
 import { AboutPage } from "./components/AboutPage";
 import { AppearancePage } from "./components/AppearancePage";
 import { EmotesPage } from "./components/EmotesPage";
@@ -46,9 +46,13 @@ export default function App() {
     getStatus().then(setStatus, (e) => setError(String(e)));
     const off = onEnabled((on) => setStatus((s) => (s ? { ...s, enabled: on } : s)));
     const offLaning = onLaning((on) => setStatus((s) => (s ? { ...s, laning: on } : s)));
+    const offNav = onNavigate((p) => {
+      if (PAGES.some((x) => x.id === p)) setPage(p as Page);
+    });
     return () => {
       void off.then((f) => f());
       void offLaning.then((f) => f());
+      void offNav.then((f) => f());
     };
   }, []);
 
@@ -138,7 +142,7 @@ export default function App() {
             {page === "emotes" && <EmotesPage settings={settings} onChange={change} onSaved={saved} />}
             {page === "features" && <FeaturesPage settings={settings} onChange={change} />}
             {page === "appearance" && <AppearancePage settings={settings} onChange={change} />}
-            {page === "about" && <AboutPage />}
+            {page === "about" && <AboutPage settings={settings} onChange={change} />}
           </>
         ) : (
           !error && <p className="loading">正在读取设置…</p>

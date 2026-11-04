@@ -22,6 +22,7 @@ pub mod team;
 pub mod team_text;
 pub mod transport;
 pub mod tray;
+pub mod update;
 pub mod votes;
 
 use std::sync::atomic::AtomicBool;
@@ -54,6 +55,8 @@ pub fn run() {
     }
     builder
         // 开机启动（Windows 注册表 Run、macOS 登录项、Linux 自启动目录）；只在 Rust 侧用，不给前端权限。
+        // 自动更新：只在 Rust 侧用（update.rs），不给前端权限；公钥和地址在 tauri.conf.json 的 plugins.updater。
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![AUTOSTART_ARG]),
@@ -113,6 +116,9 @@ pub fn run() {
             panel::vote_answer,
             panel::text_send,
             panel::text_cancel,
+            update::update_view,
+            update::update_check,
+            update::update_install,
             team::team_view,
             team::team_create,
             team::team_join,
@@ -200,10 +206,12 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         emotes: emote_store,
         emote_net,
         panel,
+        updates: Default::default(),
     });
     tray::setup(app, true)?;
     api::apply_window_theme(app.handle(), &theme);
     team::refresh_names(app.handle());
+    update::start_schedule(app.handle());
     if std::env::args().any(|a| a == AUTOSTART_ARG)
         && let Some(w) = app.get_webview_window("main")
     {

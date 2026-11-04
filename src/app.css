@@ -899,6 +899,26 @@ input::placeholder {
   font: 12px/1.5 Consolas, "Cascadia Mono", monospace;
 }
 
+/* ---------- 关于页的更新 ---------- */
+.update-progress {
+  width: 100%;
+  height: 6px;
+  margin: 4px 0 10px;
+  accent-color: var(--accent);
+}
+.update-notes {
+  max-height: 200px;
+  overflow: auto;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bar);
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 /* ---------- 表情页 ---------- */
 /* 表情图是方的彩图：画成圆的，不染金色 */
 .wheel-editor.emote .mini-slot img,

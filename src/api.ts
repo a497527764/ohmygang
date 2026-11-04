@@ -54,6 +54,8 @@ export interface Settings {
   /** 面板键的虚拟键码。 */
   panelKey: number;
   launchAtStartup: boolean;
+  /** 启动后和每 6 小时查一次新版本。 */
+  autoUpdateCheck: boolean;
 }
 
 export interface Status {
@@ -143,5 +145,30 @@ export const onProtocolMismatch = (cb: (remote: number) => void): Promise<Unlist
   listen<number>("team://mismatch", (e) => cb(e.payload));
 
 export const setLaning = (on: boolean): Promise<void> => invoke("laning_set", { on });
+
+// ---- 自动更新（和 Rust 的 update.rs 对应） ----
+
+export interface UpdateView {
+  current: string;
+  phase: "idle" | "checking" | "upToDate" | "available" | "downloading" | "installing" | "failed";
+  version: string | null;
+  notes: string | null;
+  /** 下载进度 0 到 1；不知道总大小时是 null。 */
+  progress: number | null;
+  error: string | null;
+  /** Linux 的 deb 不能自动更新，只能去发版页下载。 */
+  canInstall: boolean;
+  releasesUrl: string;
+}
+
+export const updateView = (): Promise<UpdateView> => invoke("update_view");
+export const updateCheck = (): Promise<UpdateView> => invoke("update_check");
+/** 下载、校验、安装，成功后程序会重启。 */
+export const updateInstall = (): Promise<void> => invoke("update_install");
+export const onUpdate = (cb: (v: UpdateView) => void): Promise<UnlistenFn> =>
+  listen<UpdateView>("update://changed", (e) => cb(e.payload));
+/** 托盘要求打开某一页（比如「检查更新」打开「关于」）。 */
+export const onNavigate = (cb: (page: string) => void): Promise<UnlistenFn> =>
+  listen<string>("nav://page", (e) => cb(e.payload));
 export const onLaning = (cb: (on: boolean) => void): Promise<UnlistenFn> =>
   listen<boolean>("laning://changed", (e) => cb(e.payload));

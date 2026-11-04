@@ -1,9 +1,82 @@
-// 「关于」页：版本、lolPing 致谢和许可、Riot 素材声明（需求 4.7）。
+// 「关于」页：版本和更新、lolPing 致谢和许可、Riot 素材声明（需求 4.7、4.9）。
+// 更新的状态在 Rust 的 update.rs：打开时取一次，之后跟着 "update://changed" 变。
 import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useState } from "react";
 import notices from "../../THIRD_PARTY_NOTICES.md?raw";
+import { onUpdate, updateCheck, updateInstall, updateView, type Settings, type UpdateView } from "../api";
+import { Row, Switch } from "./PingsPage";
 
-export function AboutPage() {
+interface Props {
+  settings: Settings;
+  onChange: (patch: Partial<Settings>) => void;
+}
+
+/** 状态那一行字。 */
+function phaseLine(u: UpdateView): string {
+  switch (u.phase) {
+    case "checking":
+      return "正在检查…";
+    case "upToDate":
+      return "已经是最新版本";
+    case "available":
+      return `有新版本 ${u.version}`;
+    case "downloading":
+      return u.progress === null ? "正在下载…" : `正在下载 ${Math.round(u.progress * 100)}%`;
+    case "installing":
+      return "正在安装，装好后自动重启…";
+    case "failed":
+      return u.error ?? "出错了";
+    default:
+      return "";
+  }
+}
+
+function UpdateCard({ settings, onChange }: Props) {
+  const [u, setU] = useState<UpdateView | null>(null);
+  useEffect(() => {
+    void updateView().then(setU);
+    const off = onUpdate(setU);
+    return () => void off.then((f) => f());
+  }, []);
+  if (!u) return null;
+  const busy = u.phase === "checking" || u.phase === "downloading" || u.phase === "installing";
+  return (
+    <section className="card">
+      <h2>更新</h2>
+      <div className="row">
+        <div className="row-text">
+          <span>当前版本 {u.current}</span>
+          <small className={`hint${u.phase === "failed" ? " warn" : ""}`}>{phaseLine(u) || "点右边检查有没有新版本"}</small>
+        </div>
+        <div className="row-control">
+          {u.phase === "available" && u.canInstall ? (
+            <button className="primary" disabled={busy} onClick={() => void updateInstall().catch(() => undefined)}>
+              更新并重启
+            </button>
+          ) : (
+            <button className="soft" disabled={busy} onClick={() => void updateCheck()}>
+              检查更新
+            </button>
+          )}
+        </div>
+      </div>
+      {u.phase === "downloading" && (
+        <progress className="update-progress" value={u.progress ?? undefined} max={1} aria-label="下载进度" />
+      )}
+      {u.version && u.notes && (u.phase === "available" || u.phase === "downloading") && (
+        <pre className="update-notes">{u.notes}</pre>
+      )}
+      {u.phase === "available" && !u.canInstall && (
+        <p className="muted">用 deb 装的版本不能自动更新，请到发版页下载新的安装包：{u.releasesUrl}</p>
+      )}
+      <Row label="自动检查更新" hint="启动后和每 6 小时查一次，查到只提示，你点了才下载安装">
+        <Switch label="自动检查更新" checked={settings.autoUpdateCheck} onChange={(autoUpdateCheck) => onChange({ autoUpdateCheck })} />
+      </Row>
+    </section>
+  );
+}
+
+export function AboutPage({ settings, onChange }: Props) {
   const [version, setVersion] = useState("");
   useEffect(() => {
     getVersion().then(setVersion, () => setVersion(""));
@@ -12,6 +85,7 @@ export function AboutPage() {
   return (
     <div className="page">
       <h1>关于</h1>
+      <UpdateCard settings={settings} onChange={onChange} />
       <section className="card prose">
         <h2>钢一下 {version}</h2>
         <p>和开黑的朋友在桌面上互发英雄联盟信号和表情、说话、投票，开着对线模式还能叠心之钢。免费，不需要服务器。</p>

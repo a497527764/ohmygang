@@ -41,6 +41,8 @@ pub struct AppState {
     pub emote_net: crate::emotes::net::EmoteNet,
     /// 队伍面板、投票、文字。
     pub panel: crate::panel::Panel,
+    /// 自动更新的状态。
+    pub updates: crate::update::Updates,
 }
 
 impl AppState {

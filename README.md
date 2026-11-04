@@ -55,7 +55,23 @@ cd src-tauri && cargo test --lib
 pnpm release
 ```
 
-`pnpm release` 先运行 `pnpm tauri build` 生成 Windows 的 NSIS 安装包，再把它改名为 `lolgang_<版本>_x64-setup.exe`（在 `src-tauri/target/release/bundle/nsis/`）。macOS 和 Linux 的安装包用 GitHub Actions 的「打包」工作流手动打。版本号在 `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 三处，发版时一起改。
+`pnpm release` 先运行 `pnpm tauri build` 生成 Windows 的 NSIS 安装包（本机打的包没有更新签名，只用来自己试），再把它改名为 `lolgang_<版本>_x64-setup.exe`（在 `src-tauri/target/release/bundle/nsis/`）。macOS 和 Linux 的安装包用 GitHub Actions 的「打包」工作流手动打；正式发版见下面。
+
+### 发版和自动更新
+
+已安装的程序启动 30 秒后、之后每 6 小时查一次 `https://github.com/lijianqiao/lolGang/releases/latest/download/latest.json`，查到新版本只提示，用户在「关于」页点「更新并重启」才下载。更新包用 Tauri 的更新签名校验，签名不对就不装。
+
+第一次准备（只做一次）：
+
+1. 在自己电脑上生成更新签名密钥，按提示设一个密码：`pnpm tauri signer generate -w "$HOME/.tauri/lolgang.key"`。会得到私钥 `lolgang.key` 和公钥 `lolgang.key.pub`。私钥和密码只放在你自己电脑和 GitHub Secrets 里，不进代码库、不发给任何人；丢了以后，已安装的程序就再也收不到更新。
+2. 把 `lolgang.key.pub` 的内容填进 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`（公钥可以公开）。没填时发版工作流会直接失败。
+3. GitHub 仓库 → Settings → Secrets and variables → Actions，新建两个 Secret：`TAURI_SIGNING_PRIVATE_KEY`（私钥文件的全部内容）和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（第 1 步设的密码）。
+
+每次发版：
+
+1. 改版本号：`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json` 三处一致，提交并推送。
+2. 打带说明的标签并推送：`git tag -a v2.0.0 -m "这一版改了什么"`，`git push origin v2.0.0`。
+3. 「发版」工作流在三个平台打包、签名，全部成功后建 Release，上传安装包和 `latest.json`。标签的说明就是更新说明。
 
 ### 单机双开（开发用）
 

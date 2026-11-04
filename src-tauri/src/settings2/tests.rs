@@ -96,6 +96,7 @@ fn a_saved_file_reads_back_the_same() {
         team_panel: false,
         panel_key: 0xC0,
         launch_at_startup: true,
+        auto_update_check: false,
     };
     assert_eq!(normalize(&serde_json::to_value(&s).unwrap()), s);
 }
@@ -380,6 +381,7 @@ fn team_keys_reach_the_gesture_only_inside_a_team() {
     );
     assert_eq!(d.panel_key, 0x09);
     assert!(d.team_text && d.team_votes && d.team_panel && !d.launch_at_startup);
+    assert!(d.auto_update_check, "默认自动检查更新");
     let out = d.gesture_config(true, false);
     assert_eq!(
         (out.text_vk, out.panel_vk),
