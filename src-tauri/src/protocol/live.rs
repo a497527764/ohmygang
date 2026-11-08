@@ -1,4 +1,4 @@
-//! 实时帧（2.0 架构第 5 节）：在线状态、信号、表情和导入表情的传输、对线的鼠标和充能、文字、投票。
+//! 实时帧（2.0 架构第 5 节）：在线状态、信号、表情和导入表情的传输、文字、投票。
 //! 不入库、不补齐，丢了就丢了。做法参考 lolPing 设计文档 12 节（MIT，© 2026 Danrui Meng）。
 //!
 //! 实现流程：
@@ -9,6 +9,8 @@
 //!    每个发送者记住最近 64 个序号，见过的不要、比这些都旧的不要。同一帧从局域网和中继各来一份时，第二份就被挡掉。
 //! 3. 发送方的 seq 用「微秒时间戳，且比上一个大」：重启后也比以前的大，不用存。
 //! 4. 位置用「显示器号 + 0–65535 的比例」，落到收的人同号显示器的同一比例处（2.0 架构 3.1）。
+//! 5. 和 2.0 互通（3.0 去掉了对线模式，协议版本不变）：2.0 的鼠标帧（C）、充能帧（K）在这里是不认识的帧，丢掉；
+//!    在线状态里 2.0 必须有的「对线」一项照发，总是 false。
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -52,7 +54,7 @@ pub enum LiveBody {
     Presence {
         #[serde(rename = "s")]
         status: Status,
-        /// 开着对线模式。
+        /// 2.0 的「开着对线模式」。3.0 没有对线，总是 false；2.0 解码在线状态时要有这一项，所以留着。
         #[serde(rename = "l")]
         laning: bool,
         #[serde(rename = "v")]
@@ -114,24 +116,6 @@ pub enum LiveBody {
         n: u8,
         #[serde(rename = "b", with = "serde_bytes")]
         bytes: Vec<u8>,
-    },
-    /// 对线模式下本人鼠标的位置：第几号显示器、0–65535 的比例。只在开着对线模式、鼠标动了时发。
-    #[serde(rename = "C")]
-    Cursor {
-        #[serde(rename = "d")]
-        display: u8,
-        #[serde(rename = "x")]
-        x: u16,
-        #[serde(rename = "y")]
-        y: u16,
-    },
-    /// 对某人开始充能（on = true）或充能中断（false）。目标会看到提示。
-    #[serde(rename = "K")]
-    Charge {
-        #[serde(rename = "t", with = "serde_bytes")]
-        target: MemberId,
-        #[serde(rename = "o")]
-        on: bool,
     },
     /// 一句话（Alt+T）：第几号显示器、比例位置、最多 120 个字。
     #[serde(rename = "T")]
@@ -306,7 +290,7 @@ mod tests {
         );
         let presence = LiveBody::Presence {
             status: Status::Away,
-            laning: true,
+            laning: false,
             version: "2.0.0".into(),
             platform: "win".into(),
             emotes: vec![9; 32],
@@ -446,13 +430,75 @@ mod tests {
         assert!(wire_len(&want) <= MAX_FRAME_LEN);
         let presence = LiveBody::Presence {
             status: Status::Online,
-            laning: true,
+            laning: false,
             version: "20.10.100-beta.1".into(),
             platform: "linux".into(),
             emotes: vec![0xff; 16 * crate::emotes::ANNOUNCED_MAX],
             off: 0xff,
         };
         assert!(wire_len(&presence) <= MAX_FRAME_LEN);
+    }
+
+    /// 2.0 的对线帧（C、K）验签后当作不认识的帧丢掉；3.0 的在线状态仍带「对线」一项，2.0 解得开。
+    #[test]
+    fn laning_frames_from_2_0_are_dropped_and_presence_stays_readable() {
+        #[derive(Serialize)]
+        enum Old {
+            #[serde(rename = "C")]
+            Cursor {
+                #[serde(rename = "d")]
+                display: u8,
+                #[serde(rename = "x")]
+                x: u16,
+                #[serde(rename = "y")]
+                y: u16,
+            },
+            #[serde(rename = "K")]
+            Charge {
+                #[serde(rename = "t", with = "serde_bytes")]
+                target: MemberId,
+                #[serde(rename = "o")]
+                on: bool,
+            },
+        }
+        let me = me();
+        let from = me.member_id();
+        let old = [
+            Old::Cursor {
+                display: 1,
+                x: 2,
+                y: 3,
+            },
+            Old::Charge {
+                target: [5; 32],
+                on: true,
+            },
+        ];
+        for (seq, frame) in (1..).zip(old) {
+            let b = body::encode(&frame);
+            let sig = me.sign_event_id(&digest(&ROOM, &from, seq, NOW, &b));
+            assert_eq!(open_live(&WireLive(from, seq, NOW, b, sig), &ROOM), None);
+        }
+
+        // 2.0 的在线状态：「对线」那一项没有默认值，缺了整帧解不开
+        #[derive(Deserialize)]
+        enum OldPresence {
+            #[serde(rename = "P")]
+            Presence {
+                #[serde(rename = "l")]
+                laning: bool,
+            },
+        }
+        let mine = LiveBody::Presence {
+            status: Status::Online,
+            laning: false,
+            version: "3.0.0".into(),
+            platform: "win".into(),
+            emotes: Vec::new(),
+            off: 0,
+        };
+        let OldPresence::Presence { laning } = body::decode(&body::encode(&mine)).unwrap();
+        assert!(!laning);
     }
 
     #[test]

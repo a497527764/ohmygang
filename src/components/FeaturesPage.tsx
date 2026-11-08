@@ -24,7 +24,7 @@ export function FeaturesPage({ settings: s, onChange }: Props) {
 
       <section className="card">
         <h2>队伍面板</h2>
-        <Row label="按住显示队伍面板" hint={`在队伍里按住 ${vkLabel(s.panelKey)} 看队员、在线情况、心之钢层数，也能发起投票。全屏游戏里照常交给游戏`}>
+        <Row label="按住显示队伍面板" hint={`在队伍里按住 ${vkLabel(s.panelKey)} 看队员、在线情况，也能发起投票。全屏游戏里照常交给游戏`}>
           <Switch label="队伍面板" checked={s.teamPanel} onChange={(teamPanel) => onChange({ teamPanel })} />
         </Row>
         {s.teamPanel && (

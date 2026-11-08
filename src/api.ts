@@ -21,7 +21,6 @@ export interface Settings {
   wheel: PingId[];
   wheelSizePx: number;
   toggleHotkey: Hotkey;
-  laningHotkey: Hotkey;
   pingSizePx: number;
   pingDurationS: number;
   volume: number;
@@ -62,7 +61,6 @@ export interface Status {
   enabled: boolean;
   /** 键鼠监听没起来的原因；正常时为 null。 */
   inputError: string | null;
-  laning: boolean;
   /** macOS 上监听没起来，顶部显示授权卡片。 */
   needsPermission: boolean;
   /** 监听起来了，但有键被别的程序占着（Linux 窗口管理器），提示换键；没有时为 null。 */
@@ -117,13 +115,9 @@ export interface Member {
   isOwner: boolean;
   isMe: boolean;
   avatar: AvatarData | null;
-  stacks: number;
-  taken: number;
-  hp: number;
   /** 自己是 null。 */
   path: "lan" | "relay" | "offline" | null;
   status: "online" | "paused" | "away" | null;
-  laning: boolean;
   platform: string | null;
 }
 
@@ -152,8 +146,6 @@ export const onTeamChanged = (cb: () => void): Promise<UnlistenFn> => listen("te
 export const onProtocolMismatch = (cb: (remote: number) => void): Promise<UnlistenFn> =>
   listen<number>("team://mismatch", (e) => cb(e.payload));
 
-export const setLaning = (on: boolean): Promise<void> => invoke("laning_set", { on });
-
 // ---- 自动更新（和 Rust 的 update.rs 对应） ----
 
 export interface UpdateView {
@@ -178,5 +170,3 @@ export const onUpdate = (cb: (v: UpdateView) => void): Promise<UnlistenFn> =>
 /** 托盘要求打开某一页（比如「检查更新」打开「关于」）。 */
 export const onNavigate = (cb: (page: string) => void): Promise<UnlistenFn> =>
   listen<string>("nav://page", (e) => cb(e.payload));
-export const onLaning = (cb: (on: boolean) => void): Promise<UnlistenFn> =>
-  listen<boolean>("laning://changed", (e) => cb(e.payload));

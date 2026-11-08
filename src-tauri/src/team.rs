@@ -20,17 +20,16 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::api::AppState;
-use crate::app_core::{AppError, Core, CoreEvent, MemberView, RoomStatus, RoomSummary};
+use crate::app_core::{AppError, Core, MemberView, RoomStatus, RoomSummary};
 use crate::crypto::{MemberId, RoomId};
 use crate::emotes::{self, net::NetMsg};
 use crate::identity::IdentityView;
-use crate::lane::LaneMsg;
 use crate::node::{NodeEvent, Outbox, now_ms};
 use crate::overlay::Msg;
 use crate::panel::PanelMsg;
 use crate::protocol::body::{Avatar, image_mime};
 use crate::protocol::live::{LiveBody, OFF_VOTES, Status};
-use crate::sync::path::{PathKind, Via};
+use crate::sync::path::PathKind;
 use crate::transport::relay::RelayState;
 use crate::votes::VoteKind;
 
@@ -42,7 +41,6 @@ const PRESENCE_STALE: Duration = Duration::from_secs(15);
 /// 队友最近一次的在线状态。
 struct Seen {
     status: Status,
-    laning: bool,
     platform: String,
     /// 关掉了的功能（`OFF_TEXT`、`OFF_VOTES`）。
     off: u8,
@@ -155,15 +153,10 @@ pub struct MemberDto {
     pub is_owner: bool,
     pub is_me: bool,
     pub avatar: Option<AvatarDto>,
-    pub stacks: u32,
-    /// 被叠次数和生命值（心之钢公式，heartsteel.rs）。
-    pub taken: u32,
-    pub hp: u32,
     /// lan、relay、offline；自己是 null。
     pub path: Option<&'static str>,
     /// online、paused、away；没收到在线状态时是 null。
     pub status: Option<&'static str>,
-    pub laning: bool,
     pub platform: Option<String>,
 }
 
@@ -253,16 +246,12 @@ pub async fn view(app: &AppHandle) -> Result<TeamView, String> {
                 is_owner: m.is_owner,
                 is_me,
                 avatar: avatar_dto(&m.avatar),
-                stacks: m.stacks,
-                taken: m.taken,
-                hp: crate::heartsteel::hp_after(m.stacks),
                 path: (!is_me).then_some(match path {
                     Some(PathKind::Lan) => "lan",
                     Some(PathKind::Relay) => "relay",
                     _ => "offline",
                 }),
                 status: seen.map(|s| status_name(s.status)),
-                laning: seen.is_some_and(|s| s.laning),
                 platform: seen.map(|s| s.platform.clone()),
             }
         })
@@ -404,20 +393,6 @@ pub async fn profile_set(
     .await
 }
 
-/// 对线模式开关变了：托盘勾选、在线状态、通知控制面板。
-pub fn after_laning(app: &AppHandle, on: bool) {
-    crate::tray::set_laning_checked(app, on);
-    refresh_presence(app);
-    let _ = app.emit_to("main", "laning://changed", on);
-}
-
-#[tauri::command]
-pub fn laning_set(app: AppHandle, on: bool) {
-    if let Some(state) = app.try_state::<AppState>() {
-        state.lane.send(LaneMsg::Set(Some(on)));
-    }
-}
-
 /// 本人的在线状态，变了才交给节点。
 pub fn refresh_presence(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
@@ -436,7 +411,7 @@ pub fn refresh_presence(app: &AppHandle) {
     };
     let body = LiveBody::Presence {
         status,
-        laning: state.lane.is_on(),
+        laning: false,
         version: app.package_info().version.to_string(),
         platform: platform_name().into(),
         emotes: emotes::join_announced(&announced),
@@ -492,7 +467,6 @@ pub fn refresh_names(app: &AppHandle) {
             )
             .await;
         if let Some(Ok((active, names))) = names {
-            state.lane.send(LaneMsg::Names(names.clone()));
             state.panel.send(PanelMsg::Names(names.clone()));
             state.overlays.send(Msg::Names(names));
             if state.team.active.swap(active, Ordering::Relaxed) != active {
@@ -510,9 +484,7 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
         return;
     };
     match e {
-        NodeEvent::Live {
-            from, body, via, ..
-        } => match body {
+        NodeEvent::Live { from, body, .. } => match body {
             LiveBody::Ping { display, x, y, id } => state.overlays.send(Msg::RemotePing {
                 from,
                 display,
@@ -584,7 +556,6 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
             }),
             LiveBody::Presence {
                 status,
-                laning,
                 platform,
                 emotes: announced,
                 off,
@@ -595,23 +566,19 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                     hashes: emotes::split_announced(&announced),
                 });
                 let mut presence = state.team.presence.lock().expect("在线状态锁没有中毒");
-                let changed = presence.get(&from).is_none_or(|s| {
-                    s.status != status || s.laning != laning || s.at.elapsed() > PRESENCE_STALE
-                });
+                let changed = presence
+                    .get(&from)
+                    .is_none_or(|s| s.status != status || s.at.elapsed() > PRESENCE_STALE);
                 presence.insert(
                     from,
                     Seen {
                         status,
-                        laning,
                         platform,
                         off,
                         at: Instant::now(),
                     },
                 );
                 drop(presence);
-                if !laning {
-                    state.lane.send(LaneMsg::Gone(from));
-                }
                 // 只在状态变了时刷新控制面板，免得每 2 秒刷一次
                 if changed {
                     let _ = app.emit_to("main", "team://changed", ());
@@ -624,28 +591,13 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                     .lock()
                     .expect("在线状态锁没有中毒")
                     .remove(&from);
-                state.lane.send(LaneMsg::Gone(from));
                 state.emote_net.send(NetMsg::Gone(from));
                 state.panel.send(PanelMsg::Gone(from));
                 let _ = app.emit_to("main", "team://changed", ());
             }
-            LiveBody::Cursor { display, x, y } => state.lane.send(LaneMsg::Cursor {
-                from,
-                display,
-                x,
-                y,
-                via_relay: via == Via::Relay,
-            }),
-            LiveBody::Charge { target, on } => {
-                state.lane.send(LaneMsg::Charge { from, target, on })
-            }
         },
         NodeEvent::ProtocolMismatch { remote_proto, .. } => {
             let _ = app.emit_to("main", "team://mismatch", remote_proto);
-        }
-        NodeEvent::Core(CoreEvent::HitLanded { author, target, .. }) => {
-            state.lane.send(LaneMsg::Hit { author, target });
-            refresh_names(app);
         }
         NodeEvent::Core(_) | NodeEvent::RoomStatusChanged { .. } => refresh_names(app),
         NodeEvent::Delivered { .. } => {}

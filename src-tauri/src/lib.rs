@@ -4,12 +4,9 @@ pub mod base32;
 pub mod crypto;
 pub mod emotes;
 pub mod error;
-pub mod heartsteel;
 pub mod identity;
 pub mod input;
 pub mod keystore;
-pub mod lane;
-pub mod laning;
 pub mod node;
 pub mod overlay;
 pub mod panel;
@@ -132,7 +129,6 @@ pub fn run() {
             team::team_dissolve,
             team::team_rename,
             team::profile_set,
-            team::laning_set,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -173,16 +169,12 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             });
         }
     });
-    let lane = lane::Lane::start(app.handle());
     let panel = panel::Panel::start(app.handle());
     let share = node.clone();
-    let (attack_to, laning_to) = (lane.clone(), lane.clone());
     let (text_to, panel_to) = (panel.clone(), panel.clone());
     let hooks = Hooks {
         on_toggled,
         on_live: Box::new(move |body| share.send_live(body)),
-        on_attack: Box::new(move |x, y| attack_to.send(lane::LaneMsg::Attack { x, y })),
-        on_laning: Box::new(move || laning_to.send(lane::LaneMsg::Set(None))),
         on_text: Box::new(move || text_to.send(panel::PanelMsg::TextRequested)),
         on_panel: Box::new(move |show| panel_to.send(panel::PanelMsg::Show(show))),
     };
@@ -207,7 +199,6 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         overlays,
         node,
         team: Default::default(),
-        lane,
         emotes: emote_store,
         emote_net,
         panel,

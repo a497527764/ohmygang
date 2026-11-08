@@ -34,8 +34,6 @@ pub struct AppState {
     /// 队伍的网络（局域网 + 中继）。
     pub node: NodeHandle,
     pub team: TeamState,
-    /// 对线模式。
-    pub lane: crate::lane::Lane,
     /// 导入的表情和收到的队友表情。
     pub emotes: std::sync::Arc<crate::emotes::store::Store>,
     pub emote_net: crate::emotes::net::EmoteNet,
@@ -58,7 +56,6 @@ pub struct Status {
     pub enabled: bool,
     /// 输入监听没起来的原因；正常时为 null。
     pub input_error: Option<String>,
-    pub laning: bool,
     /// macOS 上监听没起来：多半是缺「辅助功能」权限，控制面板顶部显示授权卡片。
     pub needs_permission: bool,
     /// 监听起来了但有键被占着（Linux 窗口管理器）。
@@ -192,7 +189,6 @@ pub fn status_get(state: State<'_, AppState>) -> Status {
     Status {
         enabled: state.enabled.load(Ordering::Relaxed),
         input_error: state.input_error.clone(),
-        laning: state.lane.is_on(),
         needs_permission: cfg!(target_os = "macos") && state.input_error.is_some(),
         input_warning: crate::input::warning(),
     }

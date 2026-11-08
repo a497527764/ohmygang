@@ -1,4 +1,4 @@
-// 「队伍」页：我的资料、建队或进队、队伍码、队员和他们的状态、对线模式和排行榜、退出和解散、网络。
+// 「队伍」页：我的资料、建队或进队、队伍码、队员和他们的状态、退出和解散、网络。
 // 数据流：打开时取一次整份 TeamView；Rust 推 "team://changed" 时重取；另外每 3 秒重取一次，
 // 因为队友走局域网还是中继、掉没掉线，不会每次都推送。所有改动都返回新的 TeamView，直接换上。
 import { useCallback, useEffect, useState } from "react";
@@ -16,10 +16,8 @@ import {
   type Settings,
   type TeamView,
 } from "../api";
-import { hotkeyParts } from "../shared/keys";
 import { Avatar } from "./Avatar";
 import { Icon } from "./Icon";
-import { KeyCapture } from "./KeyCapture";
 import { ProfileCard } from "./ProfileCard";
 
 const REFRESH_MS = 3000;
@@ -45,11 +43,9 @@ function dotOf(m: Member): "online" | "away" | "paused" | "offline" {
 interface Props {
   settings: Settings;
   onSettings: (patch: Partial<Settings>) => void;
-  laning: boolean;
-  onLaning: (on: boolean) => void;
 }
 
-export function TeamPage({ settings, onSettings, laning, onLaning }: Props) {
+export function TeamPage({ settings, onSettings }: Props) {
   const [view, setView] = useState<TeamView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -104,10 +100,7 @@ export function TeamPage({ settings, onSettings, laning, onLaning }: Props) {
           </div>
         </section>
       )}
-      {view.team?.status === "active" && <ActiveTeam view={view} busy={busy} run={run} laning={laning} />}
-      {view.team?.status === "active" && (
-        <LaningCard view={view} laning={laning} onLaning={onLaning} settings={settings} onSettings={onSettings} />
-      )}
+      {view.team?.status === "active" && <ActiveTeam view={view} busy={busy} run={run} />}
 
       <section className="card">
         <h2>网络</h2>
@@ -178,7 +171,7 @@ function NoTeam({ busy, onCreate, onJoin }: { busy: boolean; onCreate: (t: strin
   );
 }
 
-function ActiveTeam({ view, busy, run, laning }: { view: TeamView; busy: boolean; run: (p: Promise<TeamView>) => void; laning: boolean }) {
+function ActiveTeam({ view, busy, run }: { view: TeamView; busy: boolean; run: (p: Promise<TeamView>) => void }) {
   const team = view.team!;
   const [copied, setCopied] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -239,7 +232,6 @@ function ActiveTeam({ view, busy, run, laning }: { view: TeamView; busy: boolean
                 {m.nickname || m.fingerprint}
                 {m.isMe && <span className="muted">（我）</span>}
                 {m.isOwner && <span className="chip">队长</span>}
-                {(m.isMe ? laning : m.laning) && <span className="chip lane">对线中</span>}
               </span>
               <small className="hint">{memberLine(m)}</small>
             </div>
@@ -277,65 +269,6 @@ function ActiveTeam({ view, busy, run, laning }: { view: TeamView; busy: boolean
           </>
         )}
       </div>
-    </section>
-  );
-}
-
-function LaningCard(props: {
-  view: TeamView;
-  laning: boolean;
-  onLaning: (on: boolean) => void;
-  settings: Settings;
-  onSettings: (patch: Partial<Settings>) => void;
-}) {
-  const { view, laning, onLaning, settings, onSettings } = props;
-  const board = [...view.members].sort((a, b) => b.stacks - a.stacks || a.taken - b.taken);
-  return (
-    <section className="card">
-      <h2>对线模式</h2>
-      <div className="row">
-        <div className="row-text">
-          <span>{laning ? "对线中" : "没开"}</span>
-          <small className="hint">
-            开着的人在别人屏幕上是一个跟着鼠标走的小英雄。贴近对手 3 秒充能，再按住信号触发键单击他，就叠一层心之钢；同一个人 30 秒内只能叠一次。
-          </small>
-        </div>
-        <div className="row-control">
-          <input type="checkbox" role="switch" aria-label="对线模式" checked={laning} onChange={(e) => onLaning(e.target.checked)} />
-        </div>
-      </div>
-      <div className="row">
-        <div className="row-text">
-          <span>快捷键</span>
-          <small className="hint">按一下开、再按一下关（现在是 {hotkeyParts(settings.laningHotkey).join(" + ")}）</small>
-        </div>
-        <div className="row-control">
-          <KeyCapture kind="hotkey" value={settings.laningHotkey} onPick={(laningHotkey) => onSettings({ laningHotkey })} />
-        </div>
-      </div>
-      <table className="board">
-        <thead>
-          <tr>
-            <th>排行</th>
-            <th>层数</th>
-            <th>生命值</th>
-            <th>被叠</th>
-          </tr>
-        </thead>
-        <tbody>
-          {board.map((m, i) => (
-            <tr key={m.memberId} className={m.isMe ? "me" : undefined}>
-              <td>
-                <span className="rank">{i + 1}</span>
-                {m.nickname || m.fingerprint}
-              </td>
-              <td className="num">{m.stacks}</td>
-              <td className="num">{m.hp}</td>
-              <td className="num">{m.taken}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </section>
   );
 }

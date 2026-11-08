@@ -49,10 +49,6 @@ fn a_saved_file_reads_back_the_same() {
             mods: MOD_ALT,
             vk: 0x4F,
         },
-        laning_hotkey: Hotkey {
-            mods: MOD_CTRL,
-            vk: 0x4B,
-        },
         ping_size_px: 90,
         ping_duration_s: 2.5,
         volume: 30,
@@ -282,22 +278,6 @@ fn relays_keep_valid_unique_wss_addresses() {
 }
 
 #[test]
-fn laning_hotkey_defaults_to_ctrl_alt_l_and_reaches_the_gesture() {
-    let d = Settings::default();
-    assert_eq!(
-        d.laning_hotkey,
-        Hotkey {
-            mods: MOD_CTRL | MOD_ALT,
-            vk: 0x4C
-        }
-    );
-    let c = d.gesture_config(true, false);
-    assert_eq!((c.laning_mods, c.laning_vk), (MOD_CTRL | MOD_ALT, 0x4C));
-    let bad = normalize(&json!({ "laningHotkey": { "mods": 4, "vk": 0x4C } }));
-    assert_eq!(bad.laning_hotkey, d.laning_hotkey, "只有 Shift 不行");
-}
-
-#[test]
 fn emote_key_is_off_or_a_trigger_that_clashes_with_nothing() {
     let d = Settings::default();
     assert_eq!(d.emote_trigger, Some(TriggerKey::Named(NamedTrigger::Ctrl)));
@@ -326,13 +306,9 @@ fn emote_key_is_off_or_a_trigger_that_clashes_with_nothing() {
     );
     // 和信号触发键一样：关掉
     assert_eq!(normalize(&json!({ "trigger": "ctrl" })).emote_trigger, None);
-    // 自定义键撞上暂停、对线快捷键的键：关掉
+    // 自定义键撞上暂停快捷键的键：关掉
     assert_eq!(
         normalize(&json!({ "emoteTrigger": { "vk": 0x50 } })).emote_trigger,
-        None
-    );
-    assert_eq!(
-        normalize(&json!({ "emoteTrigger": { "vk": 0x4C } })).emote_trigger,
         None
     );
     assert_eq!(

@@ -1,14 +1,11 @@
-// 透明窗口的页面：只画，不算规则。Rust 告诉它开哪个轮盘、高亮哪格、关轮盘、在哪放什么信号或表情、弹什么提示、
-// 对线的对手在哪；它在空闲时报告一声，让 Rust 把窗口挪开。
+// 透明窗口的页面：只画，不算规则。Rust 告诉它开哪个轮盘、高亮哪格、关轮盘、在哪放什么信号或表情、弹什么提示；
+// 它在空闲时报告一声，让 Rust 把窗口挪开。
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FALLBACK_TEXTURE, TICK_SOUND, allSoundNames, pingById, soundUrl, textureUrl } from "../shared/pings";
 import { bundledSoundUrl, customHash, customUrl, emoteIcon, isBundled, type CustomEmote } from "../shared/emotes";
-import heartsteelIcon from "../assets/heartsteel.png";
-import heartsteelSound from "../assets/heartsteel.mp3";
 import { EmoteStage, type EmoteArt } from "./emoteStage";
 import { IdleWatch } from "./idleWatch";
-import { LaneStage, spawnHeartsteel, type LaneState } from "./lane";
 import { spawnPing, type PingTag } from "./pingFx";
 import { TextStage, type TextSpawn } from "./textFx";
 import { SoundBank } from "./soundBank";
@@ -51,8 +48,6 @@ const textLayer = document.getElementById("texts") as HTMLElement;
 const toastLayer = document.getElementById("toasts") as HTMLElement;
 const wheelSvg = document.getElementById("wheel") as unknown as SVGSVGElement;
 const emoteSvg = document.getElementById("emoteWheel") as unknown as SVGSVGElement;
-const laneLayer = document.getElementById("lane") as HTMLElement;
-const lane = new LaneStage(laneLayer);
 const stage = new EmoteStage(emoteLayer);
 const texts = new TextStage(textLayer);
 
@@ -140,16 +135,8 @@ void listen<EmoteSpawn>("emote:spawn", ({ payload: p }) => {
 });
 void listen<TextSpawn>("text:spawn", (e) => texts.spawn(e.payload));
 void listen<{ title: string; body: string }>("toast:show", (e) => showToast(e.payload.title, e.payload.body));
-void listen<LaneState>("lane:state", (e) => {
-  lane.render(e.payload);
-  idle.check();
-});
-void listen<{ x: number; y: number; label: string }>("lane:hit", ({ payload: p }) => {
-  spawnHeartsteel(pingLayer, heartsteelIcon, p.x, p.y, p.label);
-  if (settings) sounds.play("heartsteel", settings.volume);
-});
 
-// 信号、表情、文字、心之钢、提示在各自的层里，对线的东西在 lane 层里，轮盘开着时它的 class 有 open。
+// 信号、表情、文字、提示在各自的层里，轮盘开着时它的 class 有 open。
 const idle = new IdleWatch(
   () =>
     !pingWheel.isOpen &&
@@ -157,8 +144,7 @@ const idle = new IdleWatch(
     pingLayer.childElementCount === 0 &&
     stage.isEmpty &&
     texts.isEmpty &&
-    toastLayer.childElementCount === 0 &&
-    lane.isEmpty,
+    toastLayer.childElementCount === 0,
   (v) => void invoke("overlay_idle", { idle: v }),
 );
 const changes = new MutationObserver(() => idle.check());
@@ -169,7 +155,4 @@ void invoke<OverlaySettings>("overlay_hello").then((s) => {
   apply(s);
   idle.check();
 });
-void sounds.load([
-  ...allSoundNames().map((name) => ({ key: name, url: soundUrl(name) })),
-  { key: "heartsteel", url: heartsteelSound },
-]);
+void sounds.load(allSoundNames().map((name) => ({ key: name, url: soundUrl(name) })));

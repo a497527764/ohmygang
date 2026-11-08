@@ -88,7 +88,7 @@ export function AboutPage({ settings, onChange }: Props) {
       <UpdateCard settings={settings} onChange={onChange} />
       <section className="card prose">
         <h2>lolGang {version}</h2>
-        <p>和开黑的朋友在桌面上互发英雄联盟信号和表情、说话、投票，开着对线模式还能叠心之钢。免费，不需要服务器。</p>
+        <p>和开黑的朋友在桌面上互发英雄联盟信号和表情、说话、投票。免费，不需要服务器。</p>
         <p className="muted">
           正式支持 Windows。macOS 和 Linux 是实验版，没有在真机上验证过：macOS 要在「系统设置 → 隐私与安全性 → 辅助功能」里允许 lolGang；
           Linux 只支持 X11 桌面。

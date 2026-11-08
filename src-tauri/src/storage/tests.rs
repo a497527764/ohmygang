@@ -134,12 +134,11 @@ fn rooms_and_members() {
         &[(id, vec![1u8, 2, 3])].into_iter().collect(),
     )
     .unwrap();
-    rooms::set_stacks(&c, &ROOM, &id, 3).unwrap();
     let ms = rooms::members(&c, &ROOM).unwrap();
     assert_eq!(ms.len(), 1);
     assert_eq!(
-        (ms[0].in_room, ms[0].stacks, ms[0].nickname.as_deref()),
-        (true, 3, Some("我"))
+        (ms[0].in_room, ms[0].nickname.as_deref()),
+        (true, Some("我"))
     );
     assert_eq!(ms[0].avatar, Some(vec![1, 2, 3]));
     // 新的 Profile 没带头像：头像清空
@@ -152,7 +151,7 @@ fn rooms_and_members() {
     )
     .unwrap();
     assert_eq!(rooms::members(&c, &ROOM).unwrap()[0].avatar, None);
-    // 退出后不在队，层数保留
+    // 退出后不在队，人还在列表里
     rooms::set_members(
         &c,
         &ROOM,
@@ -162,7 +161,10 @@ fn rooms_and_members() {
     )
     .unwrap();
     let ms = rooms::members(&c, &ROOM).unwrap();
-    assert_eq!((ms[0].in_room, ms[0].stacks), (false, 3));
+    assert_eq!(
+        (ms[0].in_room, ms[0].nickname.as_deref()),
+        (false, Some("我"))
+    );
 
     events::put_event(&c, &ev(&me(), 1, 1000, b"a"), None).unwrap();
     rooms::delete_room(&c, &ROOM).unwrap();

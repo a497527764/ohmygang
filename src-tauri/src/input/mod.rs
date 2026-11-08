@@ -52,7 +52,7 @@ fn touch() {
     LAST_INPUT_MS.store(unix_ms(), Ordering::Relaxed);
 }
 
-/// 鼠标最后的位置（物理像素，x 在高 32 位、y 在低 32 位），对线模式要用。
+/// 鼠标最后的位置（物理像素，x 在高 32 位、y 在低 32 位），文字框和队伍面板放在鼠标所在的屏幕要用。
 static CURSOR: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// 平台层收到真实的鼠标移动时调用。
@@ -104,8 +104,6 @@ pub enum Command {
     Enabled(bool),
     /// 设置页录按键时挂起，键都交给控制面板。
     Suspended(bool),
-    /// 对线模式里有没有充能完成的对手（有的话信号触发键加单击是普攻）。
-    AttackReady(bool),
 }
 
 /// 收要画的东西。在钩子回调里调用，所以只能做不阻塞的事（往通道里放）。

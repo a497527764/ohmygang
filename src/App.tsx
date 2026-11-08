@@ -3,7 +3,7 @@
 // 导入、删除表情由 Rust 直接存，返回的设置换上（还有没存的改动时只换表情那几项，改动随后一起存）；
 // 信号开关在托盘或暂停快捷键那边变了，Rust 推送过来，这里跟着变。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getStatus, onEnabled, onLaning, onNavigate, readSettings, setEnabled, setLaning, writeSettings, type Settings, type Status } from "./api";
+import { getStatus, onEnabled, onNavigate, readSettings, setEnabled, writeSettings, type Settings, type Status } from "./api";
 import { AboutPage } from "./components/AboutPage";
 import { AppearancePage } from "./components/AppearancePage";
 import { EmotesPage } from "./components/EmotesPage";
@@ -12,7 +12,7 @@ import { Icon, type IconName } from "./components/Icon";
 import { PermissionCard } from "./components/PermissionCard";
 import { PingsPage } from "./components/PingsPage";
 import { TeamPage } from "./components/TeamPage";
-import { textureUrl } from "./shared/pings";
+import logo from "./assets/logo.svg";
 import "./app.css";
 
 type Page = "team" | "pings" | "emotes" | "features" | "appearance" | "about";
@@ -46,7 +46,6 @@ export default function App() {
     );
     getStatus().then(setStatus, (e) => setError(String(e)));
     const off = onEnabled((on) => setStatus((s) => (s ? { ...s, enabled: on } : s)));
-    const offLaning = onLaning((on) => setStatus((s) => (s ? { ...s, laning: on } : s)));
     // 状态里的提示（比如 Linux 上有键被占着）会在启动后才出现：每 5 秒取一次
     const statusTimer = setInterval(() => {
       getStatus().then(setStatus, () => undefined);
@@ -56,7 +55,6 @@ export default function App() {
     });
     return () => {
       void off.then((f) => f());
-      void offLaning.then((f) => f());
       void offNav.then((f) => f());
       clearInterval(statusTimer);
     };
@@ -106,7 +104,7 @@ export default function App() {
     <div className="shell">
       <nav className="side">
         <div className="brand">
-          <img src={textureUrl("generic_ping")} alt="" width={28} height={28} />
+          <img src={logo} alt="" width={28} height={28} />
           <span>lolGang</span>
         </div>
         {PAGES.map((p) => (
@@ -132,17 +130,7 @@ export default function App() {
         {status?.needsPermission && status.inputError && <PermissionCard reason={status.inputError} />}
         {settings && status ? (
           <>
-            {page === "team" && (
-              <TeamPage
-                settings={settings}
-                onSettings={change}
-                laning={status.laning}
-                onLaning={(on) => {
-                  setStatus((s) => (s ? { ...s, laning: on } : s));
-                  void setLaning(on);
-                }}
-              />
-            )}
+            {page === "team" && <TeamPage settings={settings} onSettings={change} />}
             {page === "pings" && (
               <PingsPage settings={settings} status={status} onChange={change} onToggle={toggle} />
             )}

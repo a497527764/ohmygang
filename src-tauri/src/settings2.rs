@@ -1,5 +1,5 @@
 //! 2.0 的设置（架构第 8 节）：信号轮盘、表情、队伍文字、面板键、功能开关来自 lolPing 设计文档 8.1 节和
-//! `src/shared/settings.ts`、`features.ts`（MIT，© 2026 Danrui Meng），加上 1.x 的主题、队伍的网络、对线快捷键、开机启动。
+//! `src/shared/settings.ts`、`features.ts`（MIT，© 2026 Danrui Meng），加上 1.x 的主题、队伍的网络、开机启动。
 //!
 //! 实现流程：
 //! 1. 存的是一份 JSON（`store` 负责读写）。读出来先过 `normalize`：缺的字段补默认，类型不对或不合法的换默认，
@@ -7,7 +7,7 @@
 //! 2. 控制面板改设置时把整份设置交回来，同样过一遍 `normalize` 再存，存下的永远合法。
 //! 3. `gesture_config` 把设置换成手势状态机的配置；`overlay` 换成透明窗口画画要用的那部分。
 //!    文字快捷键和面板键只在队伍里、对应功能开着时交给手势，别的时候 Alt+T、Tab 照常给别的程序。
-//! 4. 键不能两用：表情触发键撞了就关掉；文字快捷键撞上暂停、对线快捷键就换一个备用的；
+//! 4. 键不能两用：表情触发键撞了就关掉；文字快捷键撞上暂停快捷键就换一个备用的；
 //!    面板键撞上任何一个键就换成备用列表里第一个没被占的（Tab、`、F2、F3、F4）。
 
 use serde::{Deserialize, Serialize};
@@ -136,8 +136,6 @@ pub struct Settings {
     pub wheel: Vec<String>,
     pub wheel_size_px: u32,
     pub toggle_hotkey: Hotkey,
-    /// 开关对线模式。
-    pub laning_hotkey: Hotkey,
     pub ping_size_px: u32,
     pub ping_duration_s: f64,
     pub volume: u32,
@@ -148,7 +146,7 @@ pub struct Settings {
     pub allow_internet: bool,
     /// 自己填的中继；空表示用默认列表（以后默认列表更新了，没改过的人自动用上新的）。
     pub relays: Vec<String>,
-    /// 按住它拖动开表情轮盘；None（存成 "off"）表示不用表情。不会和信号触发键、暂停和对线快捷键的键相同。
+    /// 按住它拖动开表情轮盘；None（存成 "off"）表示不用表情。不会和信号触发键、暂停快捷键的键相同。
     #[serde(with = "emote_key")]
     pub emote_trigger: Option<TriggerKey>,
     /// 表情触发键加单击放 `click_emote`。
@@ -192,10 +190,6 @@ impl Default for Settings {
             toggle_hotkey: Hotkey {
                 mods: MOD_CTRL | MOD_ALT,
                 vk: 0x50,
-            },
-            laning_hotkey: Hotkey {
-                mods: MOD_CTRL | MOD_ALT,
-                vk: 0x4C, // L
             },
             ping_size_px: 110,
             ping_duration_s: 3.2,
@@ -329,11 +323,7 @@ fn trigger_or(raw: Option<&Value>, default: TriggerKey) -> TriggerKey {
 
 /// 表情触发键：`"off"` 是关，其余按触发键的规矩（不合法的换成 Ctrl）。和信号触发键相同、
 /// 或者是自定义键、Caps Lock 而键码撞上快捷键的键时关掉：同一个键不能两用。
-fn emote_trigger(
-    raw: Option<&Value>,
-    ping: TriggerKey,
-    hotkeys: [Hotkey; 2],
-) -> Option<TriggerKey> {
+fn emote_trigger(raw: Option<&Value>, ping: TriggerKey, hotkeys: &[Hotkey]) -> Option<TriggerKey> {
     if raw.and_then(Value::as_str) == Some("off") {
         return None;
     }
@@ -342,8 +332,8 @@ fn emote_trigger(
     (!clash).then_some(t)
 }
 
-/// 文字快捷键：撞上暂停或对线快捷键时换成候选里第一个不撞的。
-fn text_hotkey(raw: Option<&Value>, taken: [Hotkey; 2]) -> Hotkey {
+/// 文字快捷键：撞上暂停快捷键时换成候选里第一个不撞的。
+fn text_hotkey(raw: Option<&Value>, taken: &[Hotkey]) -> Hotkey {
     let want = hotkey(raw, TEXT_HOTKEYS[0]);
     if !taken.contains(&want) {
         return want;
@@ -446,14 +436,13 @@ pub fn normalize(raw: &Value) -> Settings {
     let get = |k: &str| raw.get(k);
     let trigger = trigger(get("trigger"));
     let toggle_hotkey = hotkey(get("toggleHotkey"), d.toggle_hotkey);
-    let laning_hotkey = hotkey(get("laningHotkey"), d.laning_hotkey);
     let custom = emotes::normalize_custom(get("customEmotes"));
-    let emote_trigger = emote_trigger(get("emoteTrigger"), trigger, [toggle_hotkey, laning_hotkey]);
-    let text_hotkey = text_hotkey(get("textHotkey"), [toggle_hotkey, laning_hotkey]);
+    let emote_trigger = emote_trigger(get("emoteTrigger"), trigger, &[toggle_hotkey]);
+    let text_hotkey = text_hotkey(get("textHotkey"), &[toggle_hotkey]);
     let taken: Vec<u32> = [trigger_vk(trigger), emote_trigger.and_then(trigger_vk)]
         .into_iter()
         .flatten()
-        .chain([toggle_hotkey.vk, laning_hotkey.vk, text_hotkey.vk])
+        .chain([toggle_hotkey.vk, text_hotkey.vk])
         .collect();
     Settings {
         trigger,
@@ -468,7 +457,6 @@ pub fn normalize(raw: &Value) -> Settings {
         wheel: wheel(get("wheel")),
         wheel_size_px: num(get("wheelSizePx"), &WHEEL_SIZE, f64::from(d.wheel_size_px)) as u32,
         toggle_hotkey,
-        laning_hotkey,
         ping_size_px: num(get("pingSizePx"), &PING_SIZE, f64::from(d.ping_size_px)) as u32,
         ping_duration_s: num(get("pingDurationS"), &DURATION, d.ping_duration_s),
         volume: num(get("volume"), &VOLUME, f64::from(d.volume)) as u32,
@@ -533,8 +521,6 @@ impl Settings {
             drag_threshold_px: self.drag_threshold_px as i32,
             toggle_mods: self.toggle_hotkey.mods,
             toggle_vk: self.toggle_hotkey.vk,
-            laning_mods: self.laning_hotkey.mods,
-            laning_vk: self.laning_hotkey.vk,
             text_mods: self.text_hotkey.mods,
             text_vk: if in_team && self.team_text {
                 self.text_hotkey.vk

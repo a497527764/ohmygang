@@ -2,12 +2,12 @@
 //!
 //! 实现流程：
 //! 1. 作者组装 `UnsignedEvent`：队伍、作者公钥、作者内连续的 seq、严格递增的 ts_ms、kind 和已编码好的 body 字节。
-//!    2.0 只有状态事件（建队、进队、退出、资料、改名、解散、命中），1.x 的聊天流去掉了，所以没有 stream 字段。
+//!    只有状态事件（建队、进队、退出、资料、改名、解散），1.x 的聊天流去掉了，所以没有 stream 字段。
 //! 2. event_id = SHA-256("gang/event/v2" ‖ 各字段定长大端拼接 ‖ body 长度（4 字节）‖ body)。
 //!    ID 由内容决定，同一个 ID 不可能对应两份内容；body 按原始字节参与哈希，收端不重新编码。
 //! 3. sig = Ed25519(作者私钥, "hs/sig/v1" ‖ event_id)。memberId 就是公钥，验签不需要查表。
 //! 4. 收端只做无状态校验：格式版本、body 大小、ID 与内容相符、签名、队伍、序号上限。
-//!    事件是否「有效」（比如命中是否成立）放到重放时算，入库与否不取决于到达顺序。
+//!    事件是否「有效」放到重放时算，入库与否不取决于到达顺序。
 
 use crate::crypto::{self, EventId, Identity, MemberId, RoomId};
 
@@ -15,7 +15,8 @@ pub const FORMAT_V2: u8 = 2;
 pub const MAX_BODY_LEN: usize = 1024;
 pub const MAX_SEQ: u64 = 100_000;
 
-/// 事件类型编号。未知编号的事件照常入库，但不参与计算。1.x 用过的 6（改规则）、8（聊天叠层）、100–102（聊天、图片）不再使用。
+/// 事件类型编号。未知编号的事件照常入库，但不参与计算。1.x 用过的 6（改规则）、8（聊天叠层）、100–102（聊天、图片），
+/// 2.0 用过的 9（对线命中）不再使用：2.0 的队友发来的命中照样入库、补给别人，只是不算了。
 pub mod kind {
     pub const ROOM_CREATE: u16 = 1;
     pub const JOIN: u16 = 2;
@@ -23,8 +24,6 @@ pub mod kind {
     pub const PROFILE: u16 = 4;
     pub const RENAME: u16 = 5;
     pub const DISSOLVE: u16 = 7;
-    /// 对线模式的一次命中（2.0-M3）。
-    pub const HIT: u16 = 9;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

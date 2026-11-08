@@ -1,5 +1,5 @@
 // 队伍面板：按住面板键（默认 Tab）时在屏幕中间显示，像英雄联盟的 Tab 记分板。上面是投降和准备确认，
-// 中间是队员（头像、名字、怎么连着、对线、心之钢层数），队友那一行可以发起踢人；开着的投票也画在这里。
+// 中间是队员（头像、名字、怎么连着），队友那一行可以发起踢人；开着的投票也画在这里。
 // 能点、不拿焦点。每次显示时取一次队伍信息；做法参考 lolPing src/renderer/panel/roster.ts（MIT，© 2026 Danrui Meng）。
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -56,10 +56,7 @@ function memberRow(m: Member): HTMLElement {
   const row = el("div", `member${m.isMe ? " me" : ""}${off ? " off" : ""}`);
   const who = el("div", "who");
   who.append(el("span", "name", m.nickname || m.fingerprint), el("span", "path", line(m)));
-  const stats = el("div", "stats");
-  if (m.laning) stats.append(el("span", "chip", "对线中"));
-  stats.append(el("span", "stacks", `${m.stacks} 层`));
-  row.append(portrait(m), who, stats);
+  row.append(portrait(m), who);
   if (!m.isMe) {
     const kick = el("button", "kick", "✕");
     kick.title = `投票踢出 ${m.nickname || m.fingerprint}`;

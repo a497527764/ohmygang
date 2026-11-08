@@ -150,19 +150,6 @@ button:focus-visible {
   color: var(--muted);
   font-size: 12px;
 }
-.stats {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.stats .chip {
-  padding: 0 6px;
-  border-radius: 3px;
-  background: rgba(31, 169, 224, 0.18);
-  color: var(--cyan);
-}
 .kick {
   flex: none;
   width: 24px;

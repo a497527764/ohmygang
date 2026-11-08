@@ -6,7 +6,7 @@
 //! 3. 新字段只能是可选的、追加在末尾：旧版本解码时忽略不认识的字段，新版本解码旧事件时缺的字段取默认值。
 //! 4. 头像（`Avatar`）放在 Profile 里随昵称一起同步，不分片：内置头像只是两个小数字；
 //!    上传的图片由界面压到 800 字节以内，只认 WebP、PNG、JPEG 的文件头。
-//! 5. 2.0 去掉了 1.x 的聊天、图片、改规则和聊天叠层的内容，加了对线命中（Hit）。
+//! 5. 2.0 去掉了 1.x 的聊天、图片、改规则和聊天叠层的内容；2.0 加的对线命中（Hit）3.0 又去掉了。
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -21,14 +21,6 @@ pub const AVATAR_PRESET_COLORS: u8 = 12;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomCreateBody {
     pub title: String,
-}
-
-/// 对线命中：打中了谁（完整公钥）、这次充能用了多久。有效与否由所有人重放时按同一套规则判断（heartsteel.rs）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HitBody {
-    #[serde(with = "serde_bytes")]
-    pub target: crate::crypto::MemberId,
-    pub charged_ms: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

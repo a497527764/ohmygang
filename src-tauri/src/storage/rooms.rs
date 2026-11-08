@@ -2,7 +2,8 @@
 //!
 //! 实现流程：
 //! 1. rooms 一行一个队伍：队伍码密文、owner_tag、状态，以及从状态事件推导出的缓存（队名、队长、解散时间）。
-//! 2. members 保存队伍里出现过的每个人：是否在队、昵称、头像、层数缓存。退出的人 in_room = 0，层数保留。
+//! 2. members 保存队伍里出现过的每个人：是否在队、昵称、头像。退出的人 in_room = 0。
+//!    2.0 的心之钢层数（stacks、taken 两列）3.0 不再读写，列留着，不改旧库。
 //! 3. 缓存都能从 events 重建，权威始终是重放结果。
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -52,9 +53,6 @@ pub struct MemberRow {
     pub member_id: MemberId,
     pub nickname: Option<String>,
     pub in_room: bool,
-    pub stacks: u32,
-    /// 被叠次数。
-    pub taken: u32,
     /// CBOR 编码的头像。
     pub avatar: Option<Vec<u8>>,
 }
@@ -138,7 +136,7 @@ pub fn delete_room(conn: &Connection, room: &RoomId) -> AppResult<()> {
 }
 
 /// 按推导结果刷新成员：先全部标为不在队，再把当前成员标回在队；昵称和头像按推导结果覆盖
-/// （有 Profile 的人头像以 `avatars` 为准，不在里面的清空）。层数不动。
+/// （有 Profile 的人头像以 `avatars` 为准，不在里面的清空）。
 pub fn set_members(
     conn: &Connection,
     room: &RoomId,
@@ -164,53 +162,16 @@ pub fn set_members(
     Ok(())
 }
 
-/// 按重放结果写层数和被叠次数：先全部清零，再写有数的人。
-pub fn set_board(
-    conn: &Connection,
-    room: &RoomId,
-    board: &[(MemberId, u32, u32)],
-) -> AppResult<()> {
-    conn.execute(
-        "UPDATE members SET stacks = 0, taken = 0 WHERE room_id = ?1",
-        [room],
-    )?;
-    for (m, stacks, taken) in board {
-        conn.execute(
-            "INSERT INTO members (room_id, member_id, stacks, taken) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (room_id, member_id) DO UPDATE SET stacks = excluded.stacks, taken = excluded.taken",
-            params![room, m, stacks, taken],
-        )?;
-    }
-    Ok(())
-}
-
-pub fn set_stacks(
-    conn: &Connection,
-    room: &RoomId,
-    member: &MemberId,
-    stacks: u32,
-) -> AppResult<()> {
-    conn.execute(
-        "INSERT INTO members (room_id, member_id, stacks) VALUES (?1, ?2, ?3)
-         ON CONFLICT (room_id, member_id) DO UPDATE SET stacks = excluded.stacks",
-        params![room, member, stacks],
-    )?;
-    Ok(())
-}
-
-/// 按层数降序。
 pub fn members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberRow>> {
     let mut stmt = conn.prepare(
-        "SELECT member_id, nickname, in_room, stacks, avatar, taken FROM members WHERE room_id = ?1 ORDER BY stacks DESC, member_id",
+        "SELECT member_id, nickname, in_room, avatar FROM members WHERE room_id = ?1 ORDER BY member_id",
     )?;
     let rows = stmt.query_map([room], |r| {
         Ok(MemberRow {
             member_id: r.get(0)?,
             nickname: r.get(1)?,
             in_room: r.get(2)?,
-            stacks: r.get(3)?,
-            avatar: r.get(4)?,
-            taken: r.get(5)?,
+            avatar: r.get(3)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)

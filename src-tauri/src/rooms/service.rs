@@ -32,9 +32,6 @@ pub struct MemberView {
     pub member_id: MemberId,
     pub fingerprint: String,
     pub nickname: Option<String>,
-    pub stacks: u32,
-    /// 被叠次数。
-    pub taken: u32,
     pub is_owner: bool,
     pub in_room: bool,
     pub avatar: Option<Avatar>,
@@ -147,29 +144,6 @@ pub fn all_events(conn: &Connection, room: &RoomId) -> AppResult<Vec<SignedEvent
         .collect())
 }
 
-/// 重放命中，把层数和被叠次数写回成员表，返回重放结果。
-pub fn apply_hits(
-    conn: &Connection,
-    room: &RoomId,
-    dissolve_ts: Option<u64>,
-) -> AppResult<crate::heartsteel::Board> {
-    let board = crate::heartsteel::replay(&all_events(conn, room)?, dissolve_ts);
-    let mut ids: Vec<MemberId> = board
-        .stacks
-        .keys()
-        .chain(board.taken.keys())
-        .copied()
-        .collect();
-    ids.sort();
-    ids.dedup();
-    let rows: Vec<(MemberId, u32, u32)> = ids
-        .iter()
-        .map(|m| (*m, board.stacks_of(m), board.taken_of(m)))
-        .collect();
-    room_store::set_board(conn, room, &rows)?;
-    Ok(board)
-}
-
 /// 从全部事件重新推导队伍状态，并写回缓存表。
 pub fn apply_state(conn: &Connection, room: &RoomId) -> AppResult<RoomState> {
     let row = get(conn, room)?;
@@ -202,7 +176,7 @@ pub fn summary(me: &MemberId, row: &RoomRow) -> RoomSummary {
     }
 }
 
-/// 队伍里出现过的所有人（含已退出的），按层数降序。
+/// 队伍里出现过的所有人（含已退出的）。
 pub fn list_members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberView>> {
     let row = get(conn, room)?;
     Ok(room_store::members(conn, room)?
@@ -212,8 +186,6 @@ pub fn list_members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberVie
             is_owner: owner_tag_of(&m.member_id) == row.owner_tag,
             member_id: m.member_id,
             nickname: m.nickname,
-            stacks: m.stacks,
-            taken: m.taken,
             in_room: m.in_room,
             avatar: m.avatar.and_then(|b| body::decode::<Avatar>(&b).ok()),
         })

@@ -170,10 +170,6 @@ fn run(
                             Command::Config(cfg) => s.gesture.set_config(cfg),
                             Command::Enabled(on) => s.gesture.set_enabled(on),
                             Command::Suspended(on) => s.gesture.set_suspended(on),
-                            Command::AttackReady(on) => {
-                                s.gesture.set_attack_ready(on);
-                                Outcome::default()
-                            }
                         };
                         deliver(s, r);
                     });

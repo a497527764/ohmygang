@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- lolGang 图标（原创）：金色菱形外框、深蓝底、海克斯蓝的信号波纹和发光的中心。
+       改了这张图后重新生成程序图标：pnpm tauri icon src/assets/logo.svg -o <临时目录>，
+       再把 src-tauri/icons 里已有的那些文件换掉（不要安卓、iOS 的）。 -->
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f0e6d2" />
+      <stop offset="0.45" stop-color="#c8aa6e" />
+      <stop offset="1" stop-color="#785a28" />
+    </linearGradient>
+    <linearGradient id="navy" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0f2a44" />
+      <stop offset="1" stop-color="#010a13" />
+    </linearGradient>
+    <radialGradient id="core" cx="0.5" cy="0.42" r="0.6">
+      <stop offset="0" stop-color="#e6fffd" />
+      <stop offset="0.45" stop-color="#0ac8b9" />
+      <stop offset="1" stop-color="#005a82" />
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="22" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  <!-- 金色外框 -->
+  <polygon points="512,62 962,512 512,962 62,512" fill="url(#gold)" stroke="url(#gold)" stroke-width="56" stroke-linejoin="round" />
+  <!-- 深蓝底 -->
+  <polygon points="512,152 872,512 512,872 152,512" fill="url(#navy)" stroke="#010a13" stroke-width="20" stroke-linejoin="round" />
+  <!-- 信号波纹：外淡内亮 -->
+  <polygon points="512,262 762,512 512,762 262,512" fill="none" stroke="#0ac8b9" stroke-opacity="0.45" stroke-width="30" stroke-linejoin="round" />
+  <polygon points="512,342 682,512 512,682 342,512" fill="none" stroke="#0ac8b9" stroke-opacity="0.8" stroke-width="30" stroke-linejoin="round" />
+  <!-- 发光的中心 -->
+  <polygon points="512,414 610,512 512,610 414,512" fill="url(#core)" stroke="#cdfafa" stroke-width="12" stroke-linejoin="round" filter="url(#glow)" />
+</svg>

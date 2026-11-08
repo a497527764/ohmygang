@@ -939,65 +939,6 @@ fn releasing_emote_trigger_mid_wheel_keeps_wheel() {
     assert_eq!(g.state(), State::Idle);
 }
 
-#[test]
-fn charged_opponent_turns_trigger_click_into_an_attack() {
-    let mut g = Gesture::new();
-    g.set_attack_ready(true);
-    g.on_event(&kd(ALT));
-    assert!(g.on_event(&md(Btn::Left, 50, 60)).swallow);
-    let r = g.on_event(&mu(Btn::Left, 51, 60));
-    assert!(r.swallow && r.injects.is_empty());
-    assert_eq!(r.emits, vec![Emit::Attack { x: 50, y: 60 }]);
-    // 先松开触发键也一样
-    g.on_event(&md(Btn::Left, 70, 80));
-    let up = g.on_event(&ku(ALT));
-    assert!(up.emits.contains(&Emit::Attack { x: 70, y: 80 }));
-    assert!(g.on_event(&mu(Btn::Left, 70, 80)).swallow);
-    // 拖动照样开轮盘
-    g.on_event(&kd(ALT));
-    g.on_event(&md(Btn::Left, 100, 100));
-    assert!(wheel_open(&g.on_event(&mv(130, 100))).is_some());
-    // 没有充能完成的对手：回到原来的单击
-    g.on_event(&mu(Btn::Left, 130, 100));
-    g.set_attack_ready(false);
-    g.on_event(&md(Btn::Left, 5, 5));
-    assert_eq!(g.on_event(&mu(Btn::Left, 5, 5)).injects.len(), 2);
-}
-
-#[test]
-fn emote_clicks_are_never_attacks() {
-    let mut g = with_emote(Trigger::Ctrl, true);
-    g.set_attack_ready(true);
-    g.on_event(&kd(CTRL));
-    g.on_event(&md(Btn::Left, 50, 60));
-    assert_eq!(
-        click(&g.on_event(&mu(Btn::Left, 50, 60))),
-        Some((50, 60, WheelKind::Emote))
-    );
-}
-
-#[test]
-fn laning_hotkey_toggles_once_and_only_when_set() {
-    let key_l = 0x4C;
-    let mut g = Gesture::new();
-    g.on_event(&kd(CTRL));
-    g.on_event(&kd(ALT));
-    assert!(!g.on_event(&kd(key_l)).swallow, "还没配置快捷键：照常放行");
-    g.on_event(&ku(key_l));
-    let mut g = with_config(Config {
-        laning_vk: key_l,
-        ..Config::default()
-    });
-    g.on_event(&kd(CTRL));
-    g.on_event(&kd(ALT));
-    let r = g.on_event(&kd(key_l));
-    assert!(r.swallow && r.emits == vec![Emit::LaningToggled]);
-    assert!(g.on_event(&kd(key_l)).emits.is_empty(), "连发不再切换");
-    assert!(g.on_event(&ku(key_l)).swallow);
-    g.set_enabled(false);
-    assert!(!g.on_event(&kd(key_l)).swallow, "信号暂停时不拦");
-}
-
 fn kd_at(vk: u32, t: u64) -> InputEvent {
     InputEvent::key(EvKind::KeyDown, vk, t)
 }

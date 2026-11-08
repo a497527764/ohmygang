@@ -6,7 +6,7 @@
 //! 2. 鼠标：在根窗口上对左键和两个侧键做被动抓取（同步模式），按下时交给手势状态机：
 //!    要拦就 AsyncPointer（之后的移动和抬起都到我们这里），不拦就 ReplayPointer（原样交给下面的程序）。
 //! 3. 键盘：用 XInput2 的原始按键事件看所有按键（不抢焦点）；只对要拦的键做被动抓取：自定义触发键、
-//!    暂停、对线、文字快捷键、面板键，以及轮盘开着时的 Esc。抓到的按键 ReplayKeyboard 放行或 AsyncKeyboard 拦下。
+//!    暂停、文字快捷键、面板键，以及轮盘开着时的 Esc。抓到的按键 ReplayKeyboard 放行或 AsyncKeyboard 拦下。
 //! 4. 回放用 XTest：先在服务器抓取下拿掉自己的被动抓取，发完再装回来，所以回放不会又被自己抓到。
 //!    XTest 发的按键也会产生原始事件，按键码记个数，回来时认出是自己的。
 //! 5. 键码 → Windows 键码：先按 XKB 的物理键名（和键盘布局无关），认不出再按 keysym（`keymap`）。
@@ -474,15 +474,9 @@ impl Hooks {
                 self.suspended = on;
                 self.gesture.set_suspended(on)
             }
-            Command::AttackReady(on) => {
-                self.gesture.set_attack_ready(on);
-                Outcome::default()
-            }
         };
         self.apply(r);
-        if !matches!(c, Command::AttackReady(_)) {
-            let _ = self.configure_grabs();
-        }
+        let _ = self.configure_grabs();
     }
 
     fn configure_grabs(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -532,7 +526,6 @@ impl Hooks {
                     || own(vk, c.trigger)
                     || own(vk, c.emote_trigger)
                     || (live && chord(vk, mods, c.text_vk, c.text_mods))
-                    || (live && chord(vk, mods, c.laning_vk, c.laning_mods))
                     // 面板键只在不按修饰键时抓：Ctrl+Tab、Alt+Tab 照常归别的程序
                     || (live && c.panel_vk != 0 && vk == c.panel_vk && without_locks(mods) == 0)
                     || (!self.suspended && chord(vk, mods, c.toggle_vk, c.toggle_mods));
