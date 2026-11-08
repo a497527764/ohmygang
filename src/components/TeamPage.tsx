@@ -17,6 +17,7 @@ import {
   type TeamView,
 } from "../api";
 import { Avatar } from "./Avatar";
+import { Row, Switch, Tip } from "./controls";
 import { Icon } from "./Icon";
 import { ProfileCard } from "./ProfileCard";
 
@@ -84,15 +85,17 @@ export function TeamPage({ settings, onSettings }: Props) {
     <div className="page">
       <h1>队伍</h1>
       {error && <p className="banner error">{error}</p>}
-      {mismatch && <p className="banner warn">有队友用的是别的版本（多半是 1.x），互相收不到。请大家都更新到同一个版本。</p>}
+      {mismatch && <p className="banner warn">有队友的版本对不上（多半是 1.x），互相收不到，请都更新到最新版</p>}
 
       <ProfileCard me={view.me} onSaved={setView} />
 
       {!view.team && <NoTeam busy={busy} onCreate={(t) => run(teamCreate(t))} onJoin={(c) => run(teamJoin(c))} />}
       {view.team?.status === "joining" && (
         <section className="card">
-          <h2>正在加入队伍</h2>
-          <p className="muted">要等至少一位队友在线，同步完队伍信息才算进队。队友在同一个局域网里，或者大家都开着「允许互联网」就行。</p>
+          <h2>
+            正在加入队伍…
+            <Tip text="要等至少一位队友在线，同步完队伍信息才算进队。队友在同一个局域网里，或者大家都开着「允许互联网」就行" />
+          </h2>
           <div className="actions">
             <button className="soft" disabled={busy} onClick={() => run(teamCancel())}>
               取消加入
@@ -104,21 +107,9 @@ export function TeamPage({ settings, onSettings }: Props) {
 
       <section className="card">
         <h2>网络</h2>
-        <div className="row">
-          <div className="row-text">
-            <span>允许互联网</span>
-            <small className="hint">不在同一个局域网时经公共中继转发，内容加密，中继看不到</small>
-          </div>
-          <div className="row-control">
-            <input
-              type="checkbox"
-              role="switch"
-              aria-label="允许互联网"
-              checked={settings.allowInternet}
-              onChange={(e) => onSettings({ allowInternet: e.target.checked })}
-            />
-          </div>
-        </div>
+        <Row label="允许互联网" tip="不在同一个局域网时经公共中继转发，内容加密，中继看不到">
+          <Switch label="允许互联网" checked={settings.allowInternet} onChange={(allowInternet) => onSettings({ allowInternet })} />
+        </Row>
         <p className="net-status">
           {settings.allowInternet
             ? `中继：${view.relaysOk} / ${view.relaysTotal} 个已连接`
@@ -136,8 +127,10 @@ function NoTeam({ busy, onCreate, onJoin }: { busy: boolean; onCreate: (t: strin
   return (
     <div className="split">
       <section className="card">
-        <h2>建一个队伍</h2>
-        <p className="muted">建好后把队伍码发给朋友，最多 16 人。</p>
+        <h2>
+          建队
+          <Tip text="建好后把队伍码发给朋友，最多 16 人" />
+        </h2>
         <form
           className="inline-form"
           onSubmit={(e) => {
@@ -152,8 +145,10 @@ function NoTeam({ busy, onCreate, onJoin }: { busy: boolean; onCreate: (t: strin
         </form>
       </section>
       <section className="card">
-        <h2>用队伍码进队</h2>
-        <p className="muted">队伍码以 GT2 开头，向队长要。</p>
+        <h2>
+          进队
+          <Tip text="队伍码以 GT2 开头，向队长要" />
+        </h2>
         <form
           className="inline-form"
           onSubmit={(e) => {
@@ -252,7 +247,7 @@ function ActiveTeam({ view, busy, run }: { view: TeamView; busy: boolean; run: (
           </>
         ) : (
           <>
-            <span>{confirm === "leave" ? "退出后可以用队伍码再进来。确定退出？" : "解散后所有人都不能再用这个队伍，不能撤销。确定解散？"}</span>
+            <span>{confirm === "leave" ? "确定退出？" : "解散后不能撤销，确定？"}</span>
             <button
               className="primary danger"
               disabled={busy}

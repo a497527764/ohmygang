@@ -4,7 +4,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useState } from "react";
 import notices from "../../THIRD_PARTY_NOTICES.md?raw";
 import { onUpdate, updateCheck, updateInstall, updateView, type Settings, type UpdateView } from "../api";
-import { Row, Switch } from "./PingsPage";
+import { Row, Switch, Tip } from "./controls";
 
 interface Props {
   settings: Settings;
@@ -46,7 +46,7 @@ function UpdateCard({ settings, onChange }: Props) {
       <div className="row">
         <div className="row-text">
           <span>当前版本 {u.current}</span>
-          <small className={`hint${u.phase === "failed" ? " warn" : ""}`}>{phaseLine(u) || "点右边检查有没有新版本"}</small>
+          {phaseLine(u) && <small className={`hint${u.phase === "failed" ? " warn" : ""}`}>{phaseLine(u)}</small>}
         </div>
         <div className="row-control">
           {u.phase === "available" && u.canInstall ? (
@@ -69,7 +69,7 @@ function UpdateCard({ settings, onChange }: Props) {
       {u.phase === "available" && !u.canInstall && (
         <p className="muted">用 deb 装的版本不能自动更新，请到发版页下载新的安装包：{u.releasesUrl}</p>
       )}
-      <Row label="自动检查更新" hint="启动后和每 6 小时查一次，查到只提示，你点了才下载安装">
+      <Row label="自动检查更新" tip="启动后和每 6 小时查一次，查到只提示，你点了才下载安装">
         <Switch label="自动检查更新" checked={settings.autoUpdateCheck} onChange={(autoUpdateCheck) => onChange({ autoUpdateCheck })} />
       </Row>
     </section>
@@ -90,8 +90,8 @@ export function AboutPage({ settings, onChange }: Props) {
         <h2>lolGang {version}</h2>
         <p>和开黑的朋友在桌面上互发英雄联盟信号和表情、说话、投票。免费，不需要服务器。</p>
         <p className="muted">
-          正式支持 Windows。macOS 和 Linux 是实验版，没有在真机上验证过：macOS 要在「系统设置 → 隐私与安全性 → 辅助功能」里允许 lolGang；
-          Linux 只支持 X11 桌面。
+          Windows 正式支持；macOS、Linux 是实验版
+          <Tip text="macOS、Linux 没有在真机上验证过。macOS 要在「系统设置 → 隐私与安全性 → 辅助功能」里允许 lolGang；Linux 只支持 X11 桌面" />
         </p>
       </section>
       <section className="card prose">

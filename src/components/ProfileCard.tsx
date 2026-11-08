@@ -5,6 +5,7 @@ import { profileSet, type AvatarData, type AvatarInput, type Me, type TeamView }
 import { PRESET_COLORS, PRESET_ICONS } from "../avatars";
 import { compressForAvatar } from "../image";
 import { Avatar } from "./Avatar";
+import { Tip } from "./controls";
 
 const NICKNAME_MAX = 32;
 
@@ -72,7 +73,9 @@ export function ProfileCard({ me, onSaved }: { me: Me; onSaved: (v: TeamView) =>
         <Avatar fingerprint={me.fingerprint} name={me.nickname} avatar={me.avatar} size={48} />
         <div className="member-text">
           <span className="member-name">{me.nickname || "还没起名字"}</span>
-          <small className="hint">指纹 {me.fingerprint}，队友用它认出你</small>
+          <small className="hint">
+            指纹 {me.fingerprint} <Tip text="队友用指纹认出你；昵称和头像会出现在你的信号下面" />
+          </small>
         </div>
         <button className="soft small" onClick={open}>
           修改
@@ -91,7 +94,6 @@ export function ProfileCard({ me, onSaved }: { me: Me; onSaved: (v: TeamView) =>
           <input value={name} maxLength={NICKNAME_MAX} onChange={(e) => setName(e.target.value)} placeholder="队友看到的名字" />
         </label>
       </div>
-      <p className="muted">选一个内置头像：</p>
       <div className="preset-grid">
         {PRESET_ICONS.map((icon, i) => (
           <button

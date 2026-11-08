@@ -1,27 +1,27 @@
-// 控制面板（2.0）：左边是分页，右边是当前页：「队伍」「信号」「表情」「功能」「外观」「关于」。
+// 控制面板（3.0）：左边是分页，右边是当前页：「队伍」「信号」「表情」「快捷键」「功能」「关于」。
 // 数据流：启动时读设置和状态 → 改设置时先更新界面，停手 300 毫秒后把最新的整份设置交给 Rust 存（Rust 修正后的值再回填）；
 // 导入、删除表情由 Rust 直接存，返回的设置换上（还有没存的改动时只换表情那几项，改动随后一起存）；
 // 信号开关在托盘或暂停快捷键那边变了，Rust 推送过来，这里跟着变。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getStatus, onEnabled, onNavigate, readSettings, setEnabled, writeSettings, type Settings, type Status } from "./api";
 import { AboutPage } from "./components/AboutPage";
-import { AppearancePage } from "./components/AppearancePage";
 import { EmotesPage } from "./components/EmotesPage";
 import { FeaturesPage } from "./components/FeaturesPage";
 import { Icon, type IconName } from "./components/Icon";
 import { PermissionCard } from "./components/PermissionCard";
 import { PingsPage } from "./components/PingsPage";
+import { ShortcutsPage } from "./components/ShortcutsPage";
 import { TeamPage } from "./components/TeamPage";
 import logo from "./assets/logo.svg";
 import "./app.css";
 
-type Page = "team" | "pings" | "emotes" | "features" | "appearance" | "about";
+type Page = "team" | "pings" | "emotes" | "shortcuts" | "features" | "about";
 const PAGES: { id: Page; label: string; icon: IconName }[] = [
   { id: "team", label: "队伍", icon: "users" },
   { id: "pings", label: "信号", icon: "target" },
   { id: "emotes", label: "表情", icon: "smile" },
+  { id: "shortcuts", label: "快捷键", icon: "keyboard" },
   { id: "features", label: "功能", icon: "toggle" },
-  { id: "appearance", label: "外观", icon: "sun" },
   { id: "about", label: "关于", icon: "info" },
 ];
 
@@ -134,9 +134,11 @@ export default function App() {
             {page === "pings" && (
               <PingsPage settings={settings} status={status} onChange={change} onToggle={toggle} />
             )}
-            {page === "emotes" && <EmotesPage settings={settings} onChange={change} onSaved={saved} />}
+            {page === "emotes" && (
+              <EmotesPage settings={settings} onChange={change} onSaved={saved} onShortcuts={() => setPage("shortcuts")} />
+            )}
+            {page === "shortcuts" && <ShortcutsPage settings={settings} onChange={change} />}
             {page === "features" && <FeaturesPage settings={settings} onChange={change} />}
-            {page === "appearance" && <AppearancePage settings={settings} onChange={change} />}
             {page === "about" && <AboutPage settings={settings} onChange={change} />}
           </>
         ) : (

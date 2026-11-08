@@ -1,17 +1,13 @@
-// 「表情」页：表情触发键、表情轮盘、导入自己的图、大小和声音、显示队友的表情。改动交给 App 统一保存；
-// 导入和删除直接调 Rust（要写文件），返回的新设置交回 App。合法性（撞键、轮盘、导入列表）由 Rust 把关。
+// 「表情」页：表情轮盘、导入自己的图、单击放表情、大小和声音、显示队友的表情。表情轮盘的键在「快捷键」页。
+// 改动交给 App 统一保存；导入和删除直接调 Rust（要写文件），返回的新设置交回 App。合法性（撞键、轮盘、导入列表）由 Rust 把关。
 import { useEffect, useMemo, useState } from "react";
-import { importEmote, previewEmote, removeEmote, type NamedTrigger, type Settings } from "../api";
+import { importEmote, previewEmote, removeEmote, type Settings } from "../api";
 import { prepareEmote, prepareSound, toBase64, type PreparedEmote } from "../emoteImport";
 import { EMOTE_CATALOG } from "../shared/emoteCatalog";
 import { FX_NAMES, MAX_CUSTOM_EMOTES, emoteIcon, emoteName, type CustomEmote } from "../shared/emotes";
+import { Row, Slider, Switch, Tip } from "./controls";
 import { Icon } from "./Icon";
-import { KeyCapture } from "./KeyCapture";
-import { Row, Slider, Switch, TRIGGERS, howTo } from "./PingsPage";
 import { DIRECTIONS, placeOnSlot, slotPos } from "./WheelEditor";
-
-const OFF = "off";
-const CUSTOM = "custom";
 
 interface Props {
   settings: Settings;
@@ -20,48 +16,19 @@ interface Props {
   onSaved: (s: Settings) => void;
 }
 
-export function EmotesPage({ settings: s, onChange, onSaved }: Props) {
-  const t = s.emoteTrigger;
-  const off = t === OFF;
+export function EmotesPage({ settings: s, onChange, onSaved, onShortcuts }: Props & { onShortcuts: () => void }) {
   return (
     <div className="page">
       <h1>表情</h1>
 
-      <section className="card">
-        <h2>触发</h2>
-        <Row label="表情触发键" hint={off ? "表情关着" : `${howTo(t)}，打开表情轮盘。不能和信号触发键相同`}>
-          <select
-            value={off ? OFF : typeof t === "object" ? CUSTOM : t}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === CUSTOM) onChange({ emoteTrigger: { vk: 0x54 } }); // 先给个 T，用户再录
-              else onChange({ emoteTrigger: v as NamedTrigger | "off" });
-            }}
-          >
-            <option value={OFF}>不用表情</option>
-            {TRIGGERS.map((x) => (
-              <option key={x.value} value={x.value} disabled={x.value === s.trigger}>
-                {x.label}
-                {x.value === s.trigger ? "（信号在用）" : ""}
-              </option>
-            ))}
-            <option value={CUSTOM}>自定义按键…</option>
-          </select>
-          {typeof t === "object" && <KeyCapture kind="key" value={t.vk} onPick={(vk) => onChange({ emoteTrigger: { vk } })} />}
-        </Row>
-        <Row label="单击也放表情" hint="关着时，表情触发键加单击照常交给下面的程序">
-          <Switch label="单击也放表情" checked={s.emoteClick} onChange={(emoteClick) => onChange({ emoteClick })} />
-          {s.emoteClick && (
-            <select value={s.clickEmote} onChange={(e) => onChange({ clickEmote: e.target.value })}>
-              {allRefs(s.customEmotes).map((ref) => (
-                <option key={ref} value={ref}>
-                  {emoteName(ref, s.customEmotes)}
-                </option>
-              ))}
-            </select>
-          )}
-        </Row>
-      </section>
+      {s.emoteTrigger === "off" && (
+        <p className="banner warn">
+          表情轮盘关着
+          <button className="soft small" onClick={onShortcuts}>
+            去快捷键页打开
+          </button>
+        </p>
+      )}
 
       <section className="card">
         <h2>表情轮盘</h2>
@@ -71,12 +38,24 @@ export function EmotesPage({ settings: s, onChange, onSaved }: Props) {
       <CustomEmotes settings={s} onChange={onChange} onSaved={onSaved} />
 
       <section className="card">
-        <h2>大小和声音</h2>
+        <h2>设置</h2>
+        <Row label="单击也放表情" tip="关着时，表情轮盘的键加单击照常交给下面的程序">
+          <Switch label="单击也放表情" checked={s.emoteClick} onChange={(emoteClick) => onChange({ emoteClick })} />
+          {s.emoteClick && (
+            <select aria-label="单击放的表情" value={s.clickEmote} onChange={(e) => onChange({ clickEmote: e.target.value })}>
+              {allRefs(s.customEmotes).map((ref) => (
+                <option key={ref} value={ref}>
+                  {emoteName(ref, s.customEmotes)}
+                </option>
+              ))}
+            </select>
+          )}
+        </Row>
         <Slider label="表情大小" value={s.emoteSizePx} min={80} max={300} step={1} unit=" 像素" onChange={(v) => onChange({ emoteSizePx: v })} />
-        <Row label="表情音效" hint="音量跟信号页的音量走">
+        <Row label="表情音效" tip="音量跟信号页的音量走">
           <Switch label="表情音效" checked={s.emoteSound} onChange={(emoteSound) => onChange({ emoteSound })} />
         </Row>
-        <Row label="显示队友导入的表情" hint="关掉后队友导入的表情显示成问号，你导入的也不发给队友">
+        <Row label="显示队友导入的表情" tip="关掉后队友导入的表情显示成问号，你导入的也不发给队友">
           <Switch label="显示队友导入的表情" checked={s.friendEmotes} onChange={(friendEmotes) => onChange({ friendEmotes })} />
         </Row>
       </section>
@@ -197,10 +176,13 @@ function CustomEmotes({ settings: s, onChange, onSaved }: Props) {
 
   return (
     <section className="card">
-      <h2>导入的表情</h2>
-      <p className="muted">
-        用自己的图（PNG、JPEG、GIF、WebP）做表情，最多 {MAX_CUSTOM_EMOTES} 个。队友收到的是缩小的静态图；动图和音效只在你这边放。
-      </p>
+      <h2>
+        导入的表情
+        <span className="muted">
+          {s.customEmotes.length} / {MAX_CUSTOM_EMOTES}
+        </span>
+        <Tip text="用自己的图（PNG、JPEG、GIF、WebP）做表情。队友收到的是缩小的静态图；动图和音效只在你这边放" />
+      </h2>
       {error && <p className="banner error">{error}</p>}
 
       {s.customEmotes.length > 0 && (
@@ -254,7 +236,7 @@ function CustomEmotes({ settings: s, onChange, onSaved }: Props) {
       )}
 
       {full ? (
-        <p className="muted">已经导入了 {MAX_CUSTOM_EMOTES} 个，删掉一个才能再导入。</p>
+        <p className="muted">满了，删掉一个才能再导入</p>
       ) : (
         <div className="emote-import">
           <label className="soft file-pick">
@@ -279,7 +261,7 @@ function CustomEmotes({ settings: s, onChange, onSaved }: Props) {
               <button className="primary" disabled={busy} onClick={save}>
                 导入
               </button>
-              {picked.anim && <span className="hint">动图，你这边会放原动画</span>}
+              {picked.anim && <span className="hint">动图</span>}
             </>
           )}
         </div>

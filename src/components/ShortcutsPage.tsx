@@ -1,0 +1,149 @@
+// 「快捷键」页：所有按键集中在这一页，每一行都能当场录。改动交给 App 统一保存。
+// 同一个键不能两用，由 Rust 的 settings2::normalize 把关：撞了它会换掉（文字快捷键换备用、面板键换备用、表情轮盘关掉）。
+// 这里记下每一行「刚才要的是什么」，存好后发现被换了，就在那一行下面说换成了什么、和谁撞了。
+import { useState } from "react";
+import type { NamedTrigger, Settings, TriggerKey } from "../api";
+import { hotkeyParts, vkLabel, type Hotkey } from "../shared/keys";
+import { Row } from "./controls";
+import { KeyCapture } from "./KeyCapture";
+
+export const TRIGGERS: { value: NamedTrigger; label: string }[] = [
+  { value: "alt", label: "Alt" },
+  { value: "ctrl", label: "Ctrl" },
+  { value: "shift", label: "Shift" },
+  { value: "win", label: "Win" },
+  { value: "capslock", label: "Caps Lock" },
+  { value: "mouse4", label: "鼠标侧键（后退）" },
+  { value: "mouse5", label: "鼠标侧键（前进）" },
+];
+const CUSTOM = "custom";
+const OFF = "off";
+
+/** 触发键的名字：Alt、鼠标侧键（后退）、自定义键的键名。 */
+export function triggerLabel(t: TriggerKey): string {
+  return typeof t === "object" ? vkLabel(t.vk) : (TRIGGERS.find((x) => x.value === t)?.label ?? t);
+}
+
+type RowId = "trigger" | "emote" | "toggle" | "text" | "panel";
+type Value = TriggerKey | "off" | Hotkey | number;
+
+const NAMES: Record<RowId, string> = {
+  trigger: "信号轮盘",
+  emote: "表情轮盘",
+  toggle: "暂停 / 恢复",
+  text: "打字给队友",
+  panel: "队伍面板",
+};
+
+const valueOf = (s: Settings, id: RowId): Value =>
+  ({ trigger: s.trigger, emote: s.emoteTrigger, toggle: s.toggleHotkey, text: s.textHotkey, panel: s.panelKey })[id];
+
+function label(id: RowId, v: Value): string {
+  if (v === OFF) return "关";
+  if (id === "toggle" || id === "text") return hotkeyParts(v as Hotkey).join(" + ");
+  if (id === "panel") return vkLabel(v as number);
+  return triggerLabel(v as TriggerKey);
+}
+
+/** 一个按键「占着」哪些东西：触发键按名字，自定义键和 Caps Lock 还占着那个键码，快捷键占着组合和它的键码。 */
+function marks(id: RowId, v: Value): string[] {
+  if (v === OFF) return [];
+  if (id === "toggle" || id === "text") {
+    const h = v as Hotkey;
+    return [`hk:${h.mods}:${h.vk}`, `vk:${h.vk}`];
+  }
+  if (id === "panel") return [`vk:${v as number}`];
+  const t = v as TriggerKey;
+  if (typeof t === "object") return [`t:vk${t.vk}`, `vk:${t.vk}`];
+  return t === "capslock" ? [`t:${t}`, "vk:20"] : [`t:${t}`];
+}
+
+/** 要的键被 Rust 换掉了：说换成了什么、和谁撞了（找不到撞的就说这个键不能用）。 */
+function adjustment(id: RowId, asked: Value, s: Settings): string | null {
+  const now = valueOf(s, id);
+  if (JSON.stringify(now) === JSON.stringify(asked)) return null;
+  const want = marks(id, asked);
+  const other = (Object.keys(NAMES) as RowId[]).find(
+    (o) => o !== id && marks(o, valueOf(s, o)).some((m) => want.includes(m)),
+  );
+  const why = other ? `和「${NAMES[other]}」撞了` : `${label(id, asked)} 不能用`;
+  return now === OFF ? `${why}，表情轮盘先关了` : `${why}，换成了 ${label(id, now)}`;
+}
+
+function TriggerPick(props: { value: TriggerKey | "off"; allowOff: boolean; taken?: TriggerKey; onPick: (t: TriggerKey | "off") => void }) {
+  const { value, allowOff, taken, onPick } = props;
+  const custom = typeof value === "object";
+  return (
+    <span className="shortcut-controls">
+      <select
+        aria-label="触发键"
+        value={value === OFF ? OFF : custom ? CUSTOM : value}
+        onChange={(e) => {
+          const v = e.target.value;
+          // 自定义先给一个不常用的键，用户再录
+          if (v === CUSTOM) onPick({ vk: allowOff ? 0x54 : 0x56 });
+          else onPick(v as NamedTrigger | "off");
+        }}
+      >
+        {allowOff && <option value={OFF}>关</option>}
+        {TRIGGERS.map((t) => (
+          <option key={t.value} value={t.value} disabled={t.value === taken}>
+            {t.label}
+            {t.value === taken ? "（信号在用）" : ""}
+          </option>
+        ))}
+        <option value={CUSTOM}>自定义按键…</option>
+      </select>
+      {custom && <KeyCapture kind="key" value={value.vk} onPick={(vk) => onPick({ vk })} />}
+    </span>
+  );
+}
+
+interface Props {
+  settings: Settings;
+  onChange: (patch: Partial<Settings>) => void;
+}
+
+export function ShortcutsPage({ settings: s, onChange }: Props) {
+  const [asked, setAsked] = useState<Partial<Record<RowId, Value>>>({});
+  const pick = (id: RowId, value: Value, patch: Partial<Settings>) => {
+    setAsked((a) => ({ ...a, [id]: value }));
+    onChange(patch);
+  };
+  const note = (id: RowId) => {
+    const a = asked[id];
+    const text = a === undefined ? null : adjustment(id, a, s);
+    return text && <span className="adjusted">{text}</span>;
+  };
+
+  return (
+    <div className="page">
+      <h1>快捷键</h1>
+      <section className="card">
+        <Row label="信号轮盘（按住拖动）" tip="按住这个键用左键拖动，在按下的位置打开信号轮盘。只拦这个手势，别的点击和按键照常" hint={note("trigger")}>
+          <TriggerPick value={s.trigger} allowOff={false} onPick={(t) => pick("trigger", t, { trigger: t as TriggerKey })} />
+        </Row>
+        <Row label="表情轮盘（按住拖动）" tip="和信号轮盘一样，打开的是表情轮盘。不能和信号轮盘用同一个键" hint={note("emote")}>
+          <TriggerPick value={s.emoteTrigger} allowOff taken={s.trigger} onPick={(t) => pick("emote", t, { emoteTrigger: t })} />
+        </Row>
+        <Row label="暂停 / 恢复" tip="随时停掉或恢复全部拦截" hint={note("toggle")}>
+          <KeyCapture kind="hotkey" value={s.toggleHotkey} onPick={(h) => pick("toggle", h, { toggleHotkey: h })} />
+        </Row>
+        <Row
+          label="打字给队友"
+          tip="在队伍里按下打开输入框，回车后这句话出现在队友屏幕上"
+          hint={note("text") || (!s.teamText && "已关，在「功能」页打开")}
+        >
+          <KeyCapture kind="hotkey" value={s.textHotkey} onPick={(h) => pick("text", h, { textHotkey: h })} />
+        </Row>
+        <Row
+          label="队伍面板（按住）"
+          tip="在队伍里按住显示队员和投票。单独一个键，不带 Ctrl、Alt"
+          hint={note("panel") || (!s.teamPanel && "已关，在「功能」页打开")}
+        >
+          <KeyCapture kind="plain" value={s.panelKey} onPick={(vk) => pick("panel", vk, { panelKey: vk })} />
+        </Row>
+      </section>
+    </div>
+  );
+}
