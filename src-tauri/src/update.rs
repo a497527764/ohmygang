@@ -6,6 +6,8 @@
 //! 3. 用户点「更新并重启」才下载。下载的包先用 `tauri.conf.json` 里的公钥校验签名，签名里记的版本也要和清单一致
 //!    （`requireSignedVersion`，防止拿旧版本的真包冒充新版本），不对就放弃并显示原因；装好后重启。
 //! 4. 状态放在 `Updates` 里（一把锁），每次变化推 "update://changed" 给控制面板。
+//! 5. 测试实例（`LOLGANG_INSTANCE=2/3`）不查更新、不装（3.2.0）：测试版的版本号可能比装好的旧，查到「新版本」一装，
+//!    安装包会覆盖正式安装、关掉所有 lolgang.exe（2026-11-10 实际发生过）。
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -104,6 +106,13 @@ pub async fn check(app: &AppHandle, quiet: bool) -> UpdateView {
     if busy {
         return view(app);
     }
+    if crate::dev_instance().is_some() {
+        set(app, |i| {
+            i.phase = Some(Phase::Idle);
+            i.error = Some("测试实例不检查更新".into());
+        });
+        return view(app);
+    }
     set(app, |i| {
         i.phase = Some(Phase::Checking);
         i.error = None;
@@ -158,6 +167,9 @@ pub async fn check(app: &AppHandle, quiet: bool) -> UpdateView {
 
 /// 启动后 30 秒查一次，之后每 6 小时查一次（设置关了就跳过这一次）。
 pub fn start_schedule(app: &AppHandle) {
+    if crate::dev_instance().is_some() {
+        return;
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FIRST_CHECK).await;
