@@ -1,6 +1,6 @@
 // 「队伍」页：我的资料、建队或进队、队伍码、队员和他们的状态、退出和解散、网络。
-// 数据流：打开时取一次整份 TeamView；Rust 推 "team://changed" 时重取；另外每 3 秒重取一次，
-// 因为队友走局域网还是中继、掉没掉线，不会每次都推送。所有改动都返回新的 TeamView，直接换上。
+// 数据流：打开时取一次整份 TeamView；Rust 推 "team://changed" 时重取（走局域网还是中继、掉线这些，
+// Rust 每 5 秒看一次，变了才推）。所有改动都返回新的 TeamView，直接换上。
 import { useCallback, useEffect, useState } from "react";
 import {
   onProtocolMismatch,
@@ -20,8 +20,6 @@ import { Avatar } from "./Avatar";
 import { Row, Switch, Tip } from "./controls";
 import { Icon } from "./Icon";
 import { ProfileCard } from "./ProfileCard";
-
-const REFRESH_MS = 3000;
 
 const STATUS_TEXT: Record<NonNullable<Member["status"]>, string> = { online: "在线", paused: "信号暂停", away: "离开电脑" };
 const PATH_TEXT: Record<NonNullable<Member["path"]>, string> = { lan: "局域网", relay: "中继", offline: "离线" };
@@ -58,11 +56,9 @@ export function TeamPage({ settings, onSettings }: Props) {
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, REFRESH_MS);
     const offChanged = onTeamChanged(load);
     const offMismatch = onProtocolMismatch(() => setMismatch(true));
     return () => {
-      clearInterval(timer);
       void offChanged.then((f) => f());
       void offMismatch.then((f) => f());
     };

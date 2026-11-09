@@ -204,6 +204,8 @@ export const updateCheck = (): Promise<UpdateView> => invoke("update_check");
 export const updateInstall = (): Promise<void> => invoke("update_install");
 export const onUpdate = (cb: (v: UpdateView) => void): Promise<UnlistenFn> =>
   listen<UpdateView>("update://changed", (e) => cb(e.payload));
+/** 状态变了（比如 Linux 上有键被占着），重新取一次。 */
+export const onStatusChanged = (cb: () => void): Promise<UnlistenFn> => listen("status://changed", () => cb());
 /** 托盘要求打开某一页（比如「检查更新」打开「关于」）。 */
 export const onNavigate = (cb: (page: string) => void): Promise<UnlistenFn> =>
   listen<string>("nav://page", (e) => cb(e.payload));

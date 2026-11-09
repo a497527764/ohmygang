@@ -66,6 +66,18 @@ pub struct Status {
     pub input_warning: Option<String>,
 }
 
+/// 状态里只有「有键被占着」（Linux）会在运行中变：在线状态线程每 5 秒看一次，变了才通知控制面板重新取状态
+/// （3.0-M6：以前是控制面板每 5 秒取一次）。
+pub fn watch_status(app: &AppHandle) {
+    static LAST: Mutex<Option<String>> = Mutex::new(None);
+    let now = crate::input::warning();
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last != now {
+        *last = now;
+        let _ = app.emit_to("main", "status://changed", ());
+    }
+}
+
 /// 开关信号，并让托盘、控制面板跟上。
 pub fn set_enabled(app: &AppHandle, on: bool) {
     let Some(state) = app.try_state::<AppState>() else {

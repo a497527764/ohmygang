@@ -94,13 +94,18 @@ pub fn run() {
                 }
             });
         })
-        // 点控制面板的关闭按钮只收进托盘，信号照常工作；真正退出用托盘菜单的「退出」。
+        // 点控制面板的关闭按钮：信号照常工作，控制面板的网页销毁（省下一个网页进程的内存和 CPU，3.0-M6），
+        // 下次打开时再建（`tray::show_main`）。真正退出用托盘菜单的「退出」。
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event
+            if let WindowEvent::CloseRequested { .. } = event
                 && window.label() == "main"
             {
-                let _ = window.hide();
-                api.prevent_close();
+                // 正在录按键时关掉：页面来不及恢复拦截，这里替它恢复
+                if let Some(state) = window.app_handle().try_state::<AppState>()
+                    && let Some(input) = &state.input
+                {
+                    input.send(input::Command::Suspended(false));
+                }
                 // macOS：控制面板关了，程序坞里不显示图标（需求 4.8）
                 #[cfg(target_os = "macos")]
                 let _ = window.app_handle().set_dock_visibility(false);
@@ -143,8 +148,17 @@ pub fn run() {
             team::team_rename,
             team::profile_set,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // 控制面板关掉后还有透明窗口；万一窗口全关了也不退出。托盘的「退出」带退出码，照常退出。
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                api.prevent_exit();
+            }
+        });
 }
 
 /// 启动流程：在应用数据目录打开 `gang2.db`、读设置 → 从凭据管理器取主密钥、读出身份，启动节点（局域网 + 中继）
@@ -237,7 +251,8 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|a| a == AUTOSTART_ARG)
         && let Some(w) = app.get_webview_window("main")
     {
-        w.hide()?;
+        // 开机启动只进托盘：控制面板的网页不建（销毁），点托盘时再建
+        w.destroy()?;
         #[cfg(target_os = "macos")]
         app.handle().set_dock_visibility(false)?;
     }
@@ -247,6 +262,8 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .spawn(move || {
             loop {
                 team::refresh_presence(&presence);
+                team::watch(&presence);
+                api::watch_status(&presence);
                 std::thread::sleep(Duration::from_secs(5));
             }
         })?;

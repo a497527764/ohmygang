@@ -4,7 +4,7 @@
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, Wry};
 
 use crate::api;
 
@@ -18,6 +18,11 @@ struct UpdateItem(MenuItem<Wry>);
 
 /// 把控制面板调到前面（托盘、再次打开程序都用它）。
 pub fn show_main(app: &AppHandle) {
+    show_page(app, None);
+}
+
+/// 把控制面板调到前面，`page` 是要打开的那一页。关掉过的控制面板网页已经销毁（3.0-M6），按配置重新建一个。
+pub fn show_page(app: &AppHandle, page: Option<&'static str>) {
     // macOS：控制面板开着时程序坞里才有图标（关掉时藏起来，见 lib.rs）
     #[cfg(target_os = "macos")]
     let _ = app.set_dock_visibility(true);
@@ -25,7 +30,35 @@ pub fn show_main(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+        if let Some(p) = page {
+            let _ = app.emit_to("main", "nav://page", p);
+        }
+        return;
     }
+    let app = app.clone();
+    // Windows 上在事件回调里同步建窗口可能卡住（Tauri 的已知问题），放到别的线程去建。
+    std::thread::spawn(move || {
+        let Some(mut cfg) = app.config().app.windows.first().cloned() else {
+            return;
+        };
+        if let Some(p) = page {
+            cfg.url = WebviewUrl::App(format!("index.html#{p}").into());
+        }
+        match WebviewWindowBuilder::from_config(&app, &cfg).and_then(|b| b.build()) {
+            Ok(w) => {
+                let _ = w.set_focus();
+                if let Some(state) = app.try_state::<api::AppState>() {
+                    let theme = state
+                        .settings
+                        .lock()
+                        .map(|s| s.theme.clone())
+                        .unwrap_or_default();
+                    api::apply_window_theme(&app, &theme);
+                }
+            }
+            Err(e) => eprintln!("控制面板建不起来：{e}"),
+        }
+    });
 }
 
 pub fn setup(app: &tauri::App, enabled: bool) -> tauri::Result<()> {

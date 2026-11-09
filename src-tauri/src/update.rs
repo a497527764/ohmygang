@@ -188,8 +188,7 @@ pub fn start_schedule(app: &AppHandle) {
 
 /// 打开控制面板的「关于」页。
 pub fn tray_show_about(app: &AppHandle) {
-    crate::tray::show_main(app);
-    let _ = app.emit_to("main", "nav://page", "about");
+    crate::tray::show_page(app, Some("about"));
 }
 
 #[tauri::command]

@@ -10,6 +10,8 @@
 //!    变了才交给节点，节点自己按周期重复发。
 //! 4. 队友的在线状态 15 秒（中继 3 个周期）没更新就当作没有。投票人是本人加上在线状态新鲜、没关投票的队友。
 //! 5. 进了队伍或不在队伍里了（`refresh_names` 查到的状态变了），就让手势重新拿配置：文字快捷键和面板键只在队伍里拦。
+//! 6. 队伍页上会变、却没有事件的东西（队友走局域网还是中继、掉线、在线状态过期、连着几个中继、局域网端口）由在线状态线程
+//!    每 5 秒看一次（`watch`），变了才通知控制面板刷新（3.0-M6：以前是控制面板自己每 3 秒取一遍整份队伍页）。
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -56,6 +58,10 @@ pub struct TeamState {
     mine: Mutex<Option<LiveBody>>,
     /// 在一个已加入的队伍里。
     pub active: AtomicBool,
+    /// 现在所在的队伍（加入中或已加入），`refresh_names` 记下，`watch` 用。
+    room: Mutex<Option<RoomId>>,
+    /// `watch` 上一次看到的样子。
+    watched: Mutex<Option<String>>,
 }
 
 /// 投票人：本人加上在线、没关投票的队友。
@@ -395,6 +401,39 @@ pub async fn profile_set(
     .await
 }
 
+/// 队伍页上会变、却没有事件的东西，变了才通知控制面板（文件头第 6 条）。在线状态线程里调用，可以等节点。
+pub fn watch(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let room = *state.team.room.lock().expect("队伍锁没有中毒");
+    let node = state.node.clone();
+    let net = tauri::async_runtime::block_on(node.inspect(move |n| {
+        (
+            room.map(|r| n.member_paths(&r)).unwrap_or_default(),
+            n.lan_status().degraded,
+            n.relay_status()
+                .map(|l| l.iter().filter(|r| r.state == RelayState::Ok).count())
+                .unwrap_or(0),
+        )
+    }));
+    let mut fresh: Vec<(MemberId, bool)> = state
+        .team
+        .presence
+        .lock()
+        .expect("在线状态锁没有中毒")
+        .iter()
+        .map(|(m, s)| (*m, s.at.elapsed() < PRESENCE_STALE))
+        .collect();
+    fresh.sort();
+    let now = format!("{net:?}{fresh:?}");
+    let mut watched = state.team.watched.lock().expect("队伍锁没有中毒");
+    if watched.as_deref() != Some(now.as_str()) {
+        *watched = Some(now);
+        let _ = app.emit_to("main", "team://changed", ());
+    }
+}
+
 /// 本人的在线状态，变了才交给节点。
 pub fn refresh_presence(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
@@ -473,6 +512,7 @@ pub fn refresh_names(app: &AppHandle) {
         if let Some(Ok((room, active, names))) = names {
             // 历史记录只留现在所在的队伍：退出、被踢、解散后这里是 None，记录全删（计划 3.6）
             state.history.set_room(room);
+            *state.team.room.lock().expect("队伍锁没有中毒") = room;
             state.panel.send(PanelMsg::Names(names.clone()));
             state.overlays.send(Msg::Names(names));
             if state.team.active.swap(active, Ordering::Relaxed) != active {

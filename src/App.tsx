@@ -1,9 +1,10 @@
 // 控制面板（3.0）：左边是分页，右边是当前页：「队伍」「信号」「表情」「语音」「快捷键」「功能」「关于」。
 // 数据流：启动时读设置和状态 → 改设置时先更新界面，停手 300 毫秒后把最新的整份设置交给 Rust 存（Rust 修正后的值再回填）；
 // 导入、删除表情由 Rust 直接存，返回的设置换上（还有没存的改动时只换表情那几项，改动随后一起存）；
-// 信号开关在托盘或暂停快捷键那边变了，Rust 推送过来，这里跟着变。
+// 信号开关在托盘或暂停快捷键那边变了，Rust 推送过来，这里跟着变；状态里的提示变了也是 Rust 推（"status://changed"）。
+// 关掉控制面板时网页会被销毁，下次打开重新加载：从托盘「检查更新」打开时地址带 #about，直接到那一页。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getStatus, onEnabled, onNavigate, readSettings, setEnabled, writeSettings, type Settings, type Status } from "./api";
+import { getStatus, onEnabled, onNavigate, onStatusChanged, readSettings, setEnabled, writeSettings, type Settings, type Status } from "./api";
 import { AboutPage } from "./components/AboutPage";
 import { EmotesPage } from "./components/EmotesPage";
 import { FeaturesPage } from "./components/FeaturesPage";
@@ -32,7 +33,10 @@ const SAVE_DELAY_MS = 300;
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
-  const [page, setPage] = useState<Page>("team");
+  const [page, setPage] = useState<Page>(() => {
+    const hash = window.location.hash.slice(1);
+    return PAGES.some((p) => p.id === hash) ? (hash as Page) : "team";
+  });
   const [error, setError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 最新的设置（包括还没存的改动），定时保存时存它。 */
@@ -48,17 +52,14 @@ export default function App() {
     );
     getStatus().then(setStatus, (e) => setError(String(e)));
     const off = onEnabled((on) => setStatus((s) => (s ? { ...s, enabled: on } : s)));
-    // 状态里的提示（比如 Linux 上有键被占着）会在启动后才出现：每 5 秒取一次
-    const statusTimer = setInterval(() => {
-      getStatus().then(setStatus, () => undefined);
-    }, 5000);
+    const offStatus = onStatusChanged(() => void getStatus().then(setStatus, () => undefined));
     const offNav = onNavigate((p) => {
       if (PAGES.some((x) => x.id === p)) setPage(p as Page);
     });
     return () => {
       void off.then((f) => f());
       void offNav.then((f) => f());
-      clearInterval(statusTimer);
+      void offStatus.then((f) => f());
     };
   }, []);
 
