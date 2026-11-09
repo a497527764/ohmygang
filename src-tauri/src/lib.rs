@@ -25,7 +25,7 @@ pub mod voice;
 pub mod votes;
 
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use tauri::{Manager, WindowEvent};
@@ -47,8 +47,24 @@ pub fn dev_instance() -> Option<u16> {
     }
 }
 
+/// 节点、中继、局域网和 Tauri 的异步命令跑在这里。Tauri 默认一个逻辑核一个工作线程（32 核的电脑就是 32 个），
+/// 这些任务几乎都在等网络，2 个足够（3.2.0）。Tauri 只拿句柄，运行时本身放在静态变量里活到程序退出。
+fn use_small_async_runtime() {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    let rt = RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("lolgang-async")
+            .enable_all()
+            .build()
+            .expect("能建异步运行时")
+    });
+    tauri::async_runtime::set(rt.handle().clone());
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use_small_async_runtime();
     let mut builder = tauri::Builder::default();
     // 再次打开程序时不起新进程，而是把已经打开的控制面板调到前面。
     // 开发用的第二、第三实例不注册，单机多开不受影响。这个插件只在 Rust 侧检查，不给前端任何权限。
@@ -57,7 +73,7 @@ pub fn run() {
             tray::show_main(app)
         }));
     }
-    builder
+    let mut app = builder
         // 开机启动（Windows 注册表 Run、macOS 登录项）；只在 Rust 侧用，不给前端权限。
         // 自动更新：只在 Rust 侧用（update.rs），不给前端权限；公钥和地址在 tauri.conf.json 的 plugins.updater。
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -152,16 +168,19 @@ pub fn run() {
             team::commands::profile_set,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
-        .run(|_app, event| {
-            // 控制面板关掉后还有透明窗口；万一窗口全关了也不退出。托盘的「退出」带退出码，照常退出。
-            if let tauri::RunEvent::ExitRequested {
-                code: None, api, ..
-            } = event
-            {
-                api.prevent_exit();
-            }
-        });
+        .expect("error while building tauri application");
+    // 不要窗口库的「设备事件」（原始鼠标、键盘输入，3.2.0）：我们一个都不用（手势走自己的钩子），
+    // 订着的话，鼠标在别的程序上每动一下，主线程也要收一条消息（量过 10 秒 2500 次移动占主线程 190–300 毫秒）
+    app.set_device_event_filter(tauri::DeviceEventFilter::Always);
+    app.run(|_app, event| {
+        // 控制面板关掉后还有透明窗口；万一窗口全关了也不退出。托盘的「退出」带退出码，照常退出。
+        if let tauri::RunEvent::ExitRequested {
+            code: None, api, ..
+        } = event
+        {
+            api.prevent_exit();
+        }
+    });
 }
 
 /// 启动流程：在应用数据目录打开 `gang2.db`、读设置 → 从凭据管理器取主密钥、读出身份，启动节点（局域网 + 中继）

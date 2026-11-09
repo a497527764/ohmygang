@@ -1,7 +1,7 @@
 //! 导入表情传输的运行时：把 `transfer`（纯逻辑）接到节点、表情文件和设置上。
 //!
 //! 实现流程：
-//! 1. 一个专门的线程，每 100 毫秒走一步；别处（节点交来的实时帧）只往它的通道里发消息。
+//! 1. 一个专门的线程，有传输进行时每 100 毫秒走一步，没有时只等消息（3.2.0）；别处（节点交来的实时帧）只往它的通道里发消息。
 //! 2. 每条消息和每一步都先看设置：关了「显示队友的表情」或表情轮盘，就清空进行中的，不收也不发。
 //! 3. Want 只处理发给我的；`transfer` 交出来的 Want 和分块发给队伍，收齐验过的图存进缓存。
 
@@ -77,10 +77,21 @@ impl Runner {
         let tick = Duration::from_millis(TICK_MS);
         let mut next = Instant::now() + tick;
         loop {
-            match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
+            let busy = self.transfer.busy();
+            let got = if busy {
+                rx.recv_timeout(next.saturating_duration_since(Instant::now()))
+            } else {
+                rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            };
+            match got {
                 Ok(m) => self.handle(m),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
+            }
+            if !busy {
+                // 刚有了传输：从现在起每 100 毫秒走一步
+                next = Instant::now() + tick;
+                continue;
             }
             if Instant::now() >= next {
                 next = Instant::now() + tick;

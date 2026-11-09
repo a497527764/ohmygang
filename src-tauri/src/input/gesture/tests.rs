@@ -1246,6 +1246,24 @@ fn mouse_is_wanted_while_paused_only_to_finish_a_gesture() {
 }
 
 #[test]
+fn the_once_a_second_tick_is_needed_only_while_something_is_held() {
+    let mut g = Gesture::new();
+    assert!(!g.needs_tick(), "什么都没按：不用定时醒");
+    g.on_event(&kd(KEY_G));
+    assert!(
+        g.needs_tick(),
+        "有按着的键：每秒和系统对一次，抬起丢了也能发现"
+    );
+    g.on_event(&ku(KEY_G));
+    assert!(!g.needs_tick());
+    open_wheel(&mut g);
+    g.on_event(&ku(ALT));
+    assert!(g.needs_tick(), "轮盘开着：看门狗要每秒查");
+    g.on_event(&mu(Btn::Left, 130, 100));
+    assert!(!g.needs_tick());
+}
+
+#[test]
 fn side_button_triggers_always_want_the_mouse() {
     let g = with_trigger(Trigger::Mouse4, false);
     assert!(g.wants_mouse(), "侧键本身就是鼠标事件，只能一直看");

@@ -4,15 +4,16 @@
 //! 1. 一个 UDP socket，默认绑定 `0.0.0.0:47480`，开启广播。第一次运行时 Windows 防火墙会弹窗，需要允许「专用网络」。
 //! 2. `broadcast`：发往 255.255.255.255，以及每块「已启用、非回环、非点对点、有广播地址」网卡的定向广播地址。
 //!    这台机器开着 Clash TUN（点对点网卡）和 VMware 虚拟网卡，只发 255.255.255.255 可能走错网卡。
-//!    网卡列表每次广播时现查，换了网络也能跟上。
+//!    网卡列表最多 5 秒查一次（3.2.0：以前每次广播都现查，在线状态每 2 秒、说话时每秒好几个包，查网卡挺费）；
+//!    换了网络最多 5 秒后跟上，和节点查「网络变了没」的间隔一样。
 //! 3. 接收循环在后台任务里：每个包先过洪水防护，再连同来源地址送进通道，交给节点处理；
 //!    节点停止（通道接收端被丢弃）时接收循环随之退出，释放端口。
 //!    Windows 上发往无人监听的端口后，下一次接收会报「连接被重置」，这类错误直接忽略、继续接收。
 //! 4. 测试和单机双开时，可以绑定 127.0.0.1，并用固定的对端列表代替广播。
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -20,6 +21,8 @@ use tokio::sync::mpsc;
 use super::flood::FloodGuard;
 
 pub const LAN_PORT: u16 = 47480;
+/// 算好的广播地址用多久再重新查网卡（文件头第 2 条）。
+const TARGETS_FRESH: Duration = Duration::from_secs(5);
 
 /// 收到的包：(来源地址, 字节)。
 pub type Inbox = mpsc::Receiver<(SocketAddr, Vec<u8>)>;
@@ -89,6 +92,8 @@ pub fn broadcast_targets(cfg: &LanConfig) -> Vec<SocketAddr> {
 pub struct LanTransport {
     socket: Arc<UdpSocket>,
     cfg: LanConfig,
+    /// 上次算出的广播地址和算的时间。
+    targets: Mutex<Option<(Instant, Vec<SocketAddr>)>>,
 }
 
 impl LanTransport {
@@ -123,6 +128,7 @@ impl LanTransport {
             LanTransport {
                 socket,
                 cfg: cfg.clone(),
+                targets: Mutex::new(None),
             },
             rx,
         ))
@@ -136,9 +142,22 @@ impl LanTransport {
 
     /// 发往所有广播地址。单个地址发送失败（比如某块网卡刚断开）不影响其他地址。
     pub async fn broadcast(&self, bytes: &[u8]) {
-        for t in broadcast_targets(&self.cfg) {
+        for t in self.targets() {
             let _ = self.socket.send_to(bytes, t).await;
         }
+    }
+
+    /// 广播地址：5 秒内算过就直接用，过了再查一次网卡。
+    fn targets(&self) -> Vec<SocketAddr> {
+        let mut cache = self.targets.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, list)) = cache.as_ref()
+            && at.elapsed() < TARGETS_FRESH
+        {
+            return list.clone();
+        }
+        let list = broadcast_targets(&self.cfg);
+        *cache = Some((Instant::now(), list.clone()));
+        list
     }
 
     pub async fn send_to(&self, addr: SocketAddr, bytes: &[u8]) {

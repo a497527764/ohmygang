@@ -3,7 +3,8 @@
 //!
 //! 实现流程：
 //! 1. 一个专门的线程拥有投票和三个小窗口（队伍面板 roster、投票 vote、输入框 text），别处只往它的通道里发消息。
-//!    每秒检查一次投票结果，每 3 秒重发一次自己的回答（实时帧可能丢）；结果出来后投票窗口再留 3 秒。
+//!    有投票时每秒检查一次结果，每 3 秒重发一次自己的回答（实时帧可能丢）；结果出来后投票窗口再留 3 秒。
+//!    没有投票时只等消息，不定时醒（3.2.0）。
 //!    窗口第一次用到时才建，之后藏起来复用。命令要的投票状态放在共享的 `Mutex` 里，命令不等这个线程。
 //! 2. 队伍面板：按住面板键时在鼠标所在的显示器中间显示，松开收起。面板和投票窗口能点但不拿焦点，
 //!    游戏或正在打字的程序不丢键盘。面板页面每次显示时自己取一次队伍信息（team_view）。
@@ -140,10 +141,21 @@ impl Runner {
     fn run(mut self, rx: Receiver<PanelMsg>) {
         let mut next_check = Instant::now() + CHECK;
         loop {
-            match rx.recv_timeout(next_check.saturating_duration_since(Instant::now())) {
+            let voting = self.tally.view().is_some() || self.result_until.is_some();
+            let got = if voting {
+                rx.recv_timeout(next_check.saturating_duration_since(Instant::now()))
+            } else {
+                rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            };
+            match got {
                 Ok(m) => self.handle(m),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
+            }
+            if !voting {
+                // 刚开了投票：从现在起每秒走一步
+                next_check = Instant::now() + CHECK;
+                continue;
             }
             if Instant::now() >= next_check {
                 next_check = Instant::now() + CHECK;

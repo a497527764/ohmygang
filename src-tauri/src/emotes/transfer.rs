@@ -198,6 +198,11 @@ impl Transfer {
     }
 
     /// 关了「显示队友的表情」：两个方向都停，进行中的丢掉。
+    /// 有正在发的或正在收的：`tick` 才有事做（没有时运行时不用定时醒，3.2.0）。
+    pub fn busy(&self) -> bool {
+        !self.sends.is_empty() || !self.assemblies.is_empty()
+    }
+
     pub fn clear(&mut self) {
         self.announcers.clear();
         self.assemblies.clear();
@@ -324,6 +329,26 @@ mod tests {
             }],
             "倒着来也能拼对"
         );
+    }
+
+    #[test]
+    fn busy_only_while_sending_or_receiving() {
+        let still = test_webp(100, 100, 3000);
+        let h = hash_of(&still);
+        let mine = vec![h.clone()];
+        let mut a = Transfer::default();
+        assert!(!a.busy(), "刚开始没事做，线程不用定时醒");
+        a.on_want(&h, &[], &mine, |_| Some(still.clone()));
+        assert!(a.busy(), "有人要图：在发");
+        for t in 1..20 {
+            a.tick(t * TICK_MS, &mine);
+        }
+        assert!(!a.busy(), "发完了");
+        let mut b = Transfer::default();
+        b.announced(A, mine.clone(), |_| false, 0);
+        assert!(b.busy(), "在收");
+        b.clear();
+        assert!(!b.busy());
     }
 
     #[test]

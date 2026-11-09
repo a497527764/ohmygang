@@ -509,7 +509,8 @@ impl Connection {
                         _ => {}
                     }
                 }
-                _ = check.tick() => {
+                // 只在等着回显或者在冷却时才每秒查（3.2.0：没事时不定时醒）
+                _ = check.tick(), if !pending.is_empty() || cooling_until.is_some() => {
                     if pending.front().is_some_and(|(_, t)| t.elapsed() > self.cfg.echo_timeout) {
                         return End::Reconnect { healthy: false };
                     }

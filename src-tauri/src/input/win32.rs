@@ -9,7 +9,8 @@
 //!    回放的事件在 `dwExtraInfo` 里带标记，回调认出来就直接放行。
 //! 4. 排队的回放还没发出去时来了真实的按键或点击：如果直接放行，它会抢在回放前面（比如补发的按下落在真实的抬起之后，
 //!    按键就卡在按下状态）。这时把它也拦下，排在队尾回放。
-//! 5. 每秒一次：用 `GetAsyncKeyState` 跟系统对按键状态，再让状态机检查看门狗。
+//! 5. 每秒一次：用 `GetAsyncKeyState` 跟系统对按键状态，再让状态机检查看门狗。3.2.0 起这个计时器只在要的时候开
+//!    （`needs_tick`：有按着的键、手势没做完），和鼠标钩子一样在消息循环里开关。
 //! 6. 设置和开关通过通道送进来，`PostThreadMessageW` 叫醒消息循环处理。
 //! 7. 进程退出或崩溃时钩子随进程消失，键鼠不会被卡住。
 //! 8. 鼠标钩子按需装（3.2.0）：低级鼠标钩子让全系统每一次鼠标移动都经过这个线程（量过约 44 微秒一次，游戏鼠标每秒上千次），
@@ -39,7 +40,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GWL_STYLE, GetClassNameW, GetCursorPos, GetForegroundWindow, GetMessageW,
-    GetWindowLongPtrW, GetWindowRect, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
+    GetWindowLongPtrW, GetWindowRect, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, KillTimer, LLKHF_INJECTED,
     LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetTimer,
     SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_KEYDOWN,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN,
@@ -68,6 +69,8 @@ struct HookState {
     thread_id: u32,
     /// 装着的鼠标钩子；没装是 None（第 8 条）。
     mouse_hook: Option<HHOOK>,
+    /// 每秒一次的计时器（第 5 条）；没开是 0。
+    timer: usize,
 }
 
 thread_local! {
@@ -124,6 +127,7 @@ fn run(
             pending: Vec::new(),
             thread_id,
             mouse_hook: None,
+            timer: 0,
         })
     });
 
@@ -157,10 +161,6 @@ fn run(
     };
     with_state(|s| s.mouse_hook = Some(mouse_hook));
     sync_mouse_hook();
-    // SAFETY: 不带窗口的线程计时器，每秒往本线程队列投一条 WM_TIMER，没有回调函数。
-    unsafe {
-        SetTimer(None, 0, 1000, None);
-    }
     let _ = ready.send(Ok(thread_id));
 
     // SAFETY: msg 是有效的本地结构体；GetMessageW 返回 0（WM_QUIT）或 -1（出错）时退出循环。
@@ -201,11 +201,27 @@ fn run(
     }
 }
 
-/// 按手势现在的需要装上或摘掉鼠标钩子（第 8 条）。只在消息循环里调用，不在钩子回调里。
+/// 按手势现在的需要装上或摘掉鼠标钩子（第 8 条）、开关每秒的计时器（第 5 条）。只在消息循环里调用，不在钩子回调里。
 fn sync_mouse_hook() {
-    let Some((want, have)) = with_state(|s| (s.gesture.wants_mouse(), s.mouse_hook)) else {
+    let Some((want, have, tick, timer)) = with_state(|s| {
+        (
+            s.gesture.wants_mouse(),
+            s.mouse_hook,
+            s.gesture.needs_tick(),
+            s.timer,
+        )
+    }) else {
         return;
     };
+    if tick && timer == 0 {
+        // SAFETY: 不带窗口的线程计时器，每秒往本线程队列投一条 WM_TIMER，没有回调函数。
+        let id = unsafe { SetTimer(None, 0, 1000, None) };
+        with_state(|s| s.timer = id);
+    } else if !tick && timer != 0 {
+        // SAFETY: timer 是上面在本线程开的计时器；关掉以后马上清零，不再用它。
+        let _ = unsafe { KillTimer(None, timer) };
+        with_state(|s| s.timer = 0);
+    }
     match (want, have) {
         (true, None) => {
             // SAFETY: 同启动时：回调是本文件里签名匹配的 extern "system" 函数，进程活着就一直有效；
@@ -230,10 +246,13 @@ fn sync_mouse_hook() {
     }
 }
 
-/// 回调里用：手势要不要鼠标和钩子装没装对不上了，就叫醒消息循环去装或摘。
+/// 回调里用：手势要不要鼠标、要不要计时器，和现在装没装、开没开对不上了，就叫醒消息循环去改。
 fn request_mouse_sync() {
-    let stale =
-        with_state(|s| (s.gesture.wants_mouse() != s.mouse_hook.is_some()).then_some(s.thread_id));
+    let stale = with_state(|s| {
+        (s.gesture.wants_mouse() != s.mouse_hook.is_some()
+            || s.gesture.needs_tick() != (s.timer != 0))
+            .then_some(s.thread_id)
+    });
     if let Some(Some(id)) = stale {
         // SAFETY: 给自己的线程队列投一条消息，参数是普通整数。
         let _ = unsafe { PostThreadMessageW(id, WM_SYNC_MOUSE, WPARAM(0), LPARAM(0)) };

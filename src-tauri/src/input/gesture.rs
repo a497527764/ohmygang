@@ -511,6 +511,12 @@ impl Gesture {
                     .any(|&k| self.is_mouse_trigger(k) || self.held(k)))
     }
 
+    /// 平台层要不要每秒调 `tick`、和系统对一次按键状态（3.2.0）：有以为按着的键（抬起可能丢了）、
+    /// 手势还没做完（看门狗）、或者按着触发键时打过别的键，才要；没事时不定时醒。
+    pub fn needs_tick(&self) -> bool {
+        self.state != State::Idle || self.foreign_key || self.key_down.iter().any(|&d| d)
+    }
+
     fn active(&self) -> bool {
         self.enabled && !self.suspended
     }
