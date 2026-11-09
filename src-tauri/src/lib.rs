@@ -4,6 +4,7 @@ pub mod base32;
 pub mod crypto;
 pub mod emotes;
 pub mod error;
+pub mod history;
 pub mod identity;
 pub mod input;
 pub mod keystore;
@@ -121,6 +122,9 @@ pub fn run() {
             api::app_relaunch,
             api::voice_view,
             api::voice_test,
+            api::history_list,
+            api::history_play,
+            api::history_stop,
             panel::vote_view,
             panel::vote_start,
             panel::vote_answer,
@@ -157,6 +161,10 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let db = storage::open(&dir.join("gang2.db"))?;
     let settings = storage::settings::load(&db)?;
     let node = start_node(app.handle(), &dir, &settings)?;
+    let me = tauri::async_runtime::block_on(node.call(|core, _| core.identity().member_id))
+        .ok_or("网络模块没起来")?;
+    let history = history::History::start(app.handle(), storage::open(&dir.join("gang2.db"))?, me);
+    let own_live = history.clone();
 
     let handle = app.handle().clone();
     let on_toggled = Box::new(move |on: bool| {
@@ -184,7 +192,10 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let (text_to, panel_to) = (panel.clone(), panel.clone());
     let hooks = Hooks {
         on_toggled,
-        on_live: Box::new(move |body| share.send_live(body)),
+        on_live: Box::new(move |body| {
+            own_live.own_live(&body);
+            share.send_live(body);
+        }),
         on_text: Box::new(move || text_to.send(panel::PanelMsg::TextRequested)),
         on_talk: Box::new(move |p| talk_to.send(voice::VoiceMsg::Talk(p))),
         on_panel: Box::new(move |show| panel_to.send(panel::PanelMsg::Show(show))),
@@ -215,6 +226,7 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         panel,
         updates: Default::default(),
         voice,
+        history,
     });
     tray::setup(app, true)?;
     api::apply_window_theme(app.handle(), &theme);

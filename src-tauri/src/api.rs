@@ -43,6 +43,8 @@ pub struct AppState {
     pub updates: crate::update::Updates,
     /// 语音（按住说话）。
     pub voice: crate::voice::Voice,
+    /// 历史记录（聊天框里的文字、语音、信号、表情）。
+    pub history: crate::history::History,
 }
 
 impl AppState {
@@ -339,6 +341,27 @@ pub fn voice_view(state: State<'_, AppState>) -> VoiceView {
 #[tauri::command]
 pub fn voice_test(state: State<'_, AppState>) {
     state.voice.send(crate::voice::VoiceMsg::Test);
+}
+
+/// 聊天框：现在所在队伍的历史记录，从旧到新。
+#[tauri::command]
+pub fn history_list(state: State<'_, AppState>) -> Vec<crate::history::EntryDto> {
+    state.history.list()
+}
+
+/// 回放一条语音（只在本机放，像微信语音）。播放和停止经 "voice:playing" 推给聊天框。
+#[tauri::command]
+pub fn history_play(state: State<'_, AppState>, id: i64) {
+    if let Some(frames) = state.history.voice(id) {
+        state
+            .voice
+            .send(crate::voice::VoiceMsg::Play { id, frames });
+    }
+}
+
+#[tauri::command]
+pub fn history_stop(state: State<'_, AppState>) {
+    state.voice.send(crate::voice::VoiceMsg::StopPlay);
 }
 
 #[tauri::command]

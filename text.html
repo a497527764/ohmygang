@@ -5,13 +5,25 @@
     <title>lolGang</title>
   </head>
   <body>
-    <form class="box" onsubmit="return false">
-      <div class="line">
-        <input id="message" type="text" autocomplete="off" spellcheck="false" placeholder="对队友说…" aria-label="对队友说的话" />
-        <span id="count" hidden></span>
-      </div>
-      <div id="hint"></div>
-    </form>
+    <section class="chat">
+      <header class="cap">
+        <div class="tabs" role="tablist" aria-label="只看">
+          <button type="button" role="tab" data-filter="all" aria-selected="true">全部</button>
+          <button type="button" role="tab" data-filter="text" aria-selected="false">文字</button>
+          <button type="button" role="tab" data-filter="voice" aria-selected="false">语音</button>
+          <button type="button" role="tab" data-filter="signal" aria-selected="false">信号和表情</button>
+        </div>
+        <button type="button" id="close" aria-label="收起聊天框">✕</button>
+      </header>
+      <ol id="log" aria-live="polite"></ol>
+      <form class="box" onsubmit="return false">
+        <div class="line">
+          <input id="message" type="text" autocomplete="off" spellcheck="false" placeholder="对队友说…" aria-label="对队友说的话" />
+          <span id="count" hidden></span>
+        </div>
+        <div id="hint"></div>
+      </form>
+    </section>
     <script type="module" src="/src/text/main.ts"></script>
   </body>
 </html>

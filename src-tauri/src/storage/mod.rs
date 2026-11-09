@@ -7,6 +7,7 @@
 //!    所以由调用方决定事务边界：一次业务操作的多次写入要么全部生效，要么全部不生效。
 
 pub mod events;
+pub mod history;
 pub mod identity;
 pub mod rooms;
 mod schema;

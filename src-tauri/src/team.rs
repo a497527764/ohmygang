@@ -4,7 +4,7 @@
 //! 1. 命令都是异步的：在节点任务里执行（`NodeHandle::call`），完了返回整份 `TeamView`，控制面板直接换上。
 //!    退出队伍时先发一帧 Bye 再写 Leave，队友马上就能看到人走了。
 //! 2. 节点的通知（`on_node_event`）在节点任务里调用，不能等节点：
-//!    队友的信号、表情、文字交给透明窗口，导入表情的传输帧交给 `emotes::net`，投票交给 `panel`，语音交给 `voice`；在线状态记进 `TeamState`；队伍有变化（进队、退出、改名、资料、解散）就
+//!    队友的信号、表情、文字交给透明窗口（同时记进历史记录），导入表情的传输帧交给 `emotes::net`，投票交给 `panel`，语音交给 `voice`；在线状态记进 `TeamState`；队伍有变化（进队、退出、改名、资料、解散）就
 //!    另开一个异步任务把队员名字交给透明窗口、通知控制面板刷新。
 //! 3. 本人的在线状态（`refresh_presence`）：信号关着是「暂停」，5 分钟没碰键鼠是「离开」，否则「在线」。
 //!    变了才交给节点，节点自己按周期重复发。
@@ -23,6 +23,7 @@ use crate::api::AppState;
 use crate::app_core::{AppError, Core, MemberView, RoomStatus, RoomSummary};
 use crate::crypto::{MemberId, RoomId};
 use crate::emotes::{self, net::NetMsg};
+use crate::history::{Kind, NewEntry};
 use crate::identity::IdentityView;
 use crate::node::{NodeEvent, Outbox, now_ms};
 use crate::overlay::Msg;
@@ -435,7 +436,10 @@ fn platform_name() -> &'static str {
     }
 }
 
-/// 把队员名字交给透明窗口（信号下面的标签用），并通知控制面板刷新。不在节点任务里等。
+/// 现在所在的队伍（加入中或已加入）、是不是已加入、队员名字。
+type TeamNames = (Option<RoomId>, bool, Vec<(MemberId, String)>);
+
+/// 把队员名字交给透明窗口（信号下面的标签用），并通知控制面板刷新；告诉历史记录现在是哪个队伍。不在节点任务里等。
 pub fn refresh_names(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -444,30 +448,31 @@ pub fn refresh_names(app: &AppHandle) {
         };
         let node = state.node.clone();
         let names = node
-            .call(
-                |core, _| -> Result<(bool, Vec<(MemberId, String)>), AppError> {
-                    let Some(team) = core.current_team()? else {
-                        return Ok((false, Vec::new()));
-                    };
-                    let active = team.status == RoomStatus::Active;
-                    Ok((
-                        active,
-                        core.list_members(&team.room_id)?
-                            .into_iter()
-                            .map(|m| {
-                                (
-                                    m.member_id,
-                                    m.nickname
-                                        .filter(|n| !n.is_empty())
-                                        .unwrap_or(m.fingerprint),
-                                )
-                            })
-                            .collect(),
-                    ))
-                },
-            )
+            .call(|core, _| -> Result<TeamNames, AppError> {
+                let Some(team) = core.current_team()? else {
+                    return Ok((None, false, Vec::new()));
+                };
+                let active = team.status == RoomStatus::Active;
+                Ok((
+                    Some(team.room_id),
+                    active,
+                    core.list_members(&team.room_id)?
+                        .into_iter()
+                        .map(|m| {
+                            (
+                                m.member_id,
+                                m.nickname
+                                    .filter(|n| !n.is_empty())
+                                    .unwrap_or(m.fingerprint),
+                            )
+                        })
+                        .collect(),
+                ))
+            })
             .await;
-        if let Some(Ok((active, names))) = names {
+        if let Some(Ok((room, active, names))) = names {
+            // 历史记录只留现在所在的队伍：退出、被踢、解散后这里是 None，记录全删（计划 3.6）
+            state.history.set_room(room);
             state.panel.send(PanelMsg::Names(names.clone()));
             state.overlays.send(Msg::Names(names));
             if state.team.active.swap(active, Ordering::Relaxed) != active {
@@ -486,13 +491,24 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
     };
     match e {
         NodeEvent::Live { from, body, .. } => match body {
-            LiveBody::Ping { display, x, y, id } => state.overlays.send(Msg::RemotePing {
-                from,
-                display,
-                x,
-                y,
-                id,
-            }),
+            LiveBody::Ping { display, x, y, id } => {
+                if crate::settings2::PING_IDS.contains(&id.as_str()) {
+                    state.history.add(NewEntry {
+                        member: Some(from),
+                        ts_ms: now_ms(),
+                        kind: Kind::Ping,
+                        text: id.clone(),
+                        voice: None,
+                    });
+                }
+                state.overlays.send(Msg::RemotePing {
+                    from,
+                    display,
+                    x,
+                    y,
+                    id,
+                });
+            }
             LiveBody::Emote {
                 display,
                 x,
@@ -501,6 +517,13 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                 fx,
             } => {
                 if emotes::is_ref_shape(&emote) && fx < emotes::FX_VARIANTS {
+                    state.history.add(NewEntry {
+                        member: Some(from),
+                        ts_ms: now_ms(),
+                        kind: Kind::Emote,
+                        text: emote.clone(),
+                        voice: None,
+                    });
                     state.overlays.send(Msg::RemoteEmote {
                         from,
                         display,
@@ -520,6 +543,13 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                 let on = state.settings.lock().expect("设置锁没有中毒").team_text;
                 let text = crate::team_text::sanitize(&text);
                 if on && !text.is_empty() {
+                    state.history.add(NewEntry {
+                        member: Some(from),
+                        ts_ms: now_ms(),
+                        kind: Kind::Text,
+                        text: text.clone(),
+                        voice: None,
+                    });
                     state.overlays.send(Msg::Text {
                         from: Some(from),
                         display,

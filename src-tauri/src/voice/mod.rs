@@ -14,6 +14,8 @@
 //!    变了才通知。
 //! 5. 试音：录 3 秒，在本机编码再解码放给自己听（不发给任何人），走的是和队友语音一样的路。
 //! 6. 关了语音：说话键本来就不拦（手势配置），收到的语音也不放。
+//! 7. 历史记录（3.0-M4）：自己说完的一段、队友放完的一段，整段 Opus 小帧交给 `history` 存下；
+//!    聊天框点了播放，就把那一段当成一段本机的话放出来（和试音一样不发给任何人），放完或点了停止告诉聊天框。
 
 pub mod audio;
 pub mod jitter;
@@ -57,8 +59,14 @@ const SPEAKER_IDLE: Duration = Duration::from_secs(3);
 /// 同时最多放这么多段话（队伍最多 16 人，留余量）。
 const MAX_STREAMS: usize = 32;
 const TICK: Duration = Duration::from_millis(10);
-/// 试音那段话的「说话人」：不会和真正的公钥撞。
+/// 本机放的声音（试音、回放历史记录）的「说话人」：不会和真正的公钥撞。
 const LOCAL: MemberId = [0; 32];
+const TEST_KEY: (MemberId, u32) = (LOCAL, 0);
+const PLAYBACK_KEY: (MemberId, u32) = (LOCAL, 1);
+/// 队友一段话最多存这么多个小帧（30 秒是 1500 个，留余量）。
+const MAX_RECORDED: usize = 2000;
+/// 聊天框的窗口名。
+const CHAT_WINDOW: &str = "text";
 
 pub enum VoiceMsg {
     Talk(TalkPhase),
@@ -80,6 +88,13 @@ pub enum VoiceMsg {
         take: u32,
         pcm: Vec<f32>,
     },
+    /// 回放历史记录里的一段语音（只在本机放）。
+    Play {
+        id: i64,
+        frames: Vec<Vec<u8>>,
+    },
+    /// 停止回放。
+    StopPlay,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -122,6 +137,7 @@ impl Voice {
             speaker: None,
             idle_since: None,
             shown: (None, Vec::new()),
+            playing: None,
         };
         std::thread::Builder::new()
             .name("voice".into())
@@ -154,16 +170,21 @@ struct Recording {
     take: u32,
     _mic: cpal::Stream,
     since: Instant,
+    /// 开始录的时间（Unix 毫秒），记进历史记录。
+    started_ms: u64,
     pcm: Vec<f32>,
     encoder: OpusEncoder,
     packer: Packer,
-    /// 试音录下的小帧（不发出去）。
+    /// 录下的小帧：试音的放给自己听，说话的放完存进历史记录。
     kept: Vec<Vec<u8>>,
 }
 
 struct Incoming {
     jitter: Jitter,
     decoder: OpusDecoder,
+    /// 收到的小帧（按序号），这段话放完后存进历史记录。
+    recorded: std::collections::BTreeMap<u32, Vec<u8>>,
+    started_ms: u64,
 }
 
 struct Runner {
@@ -178,6 +199,8 @@ struct Runner {
     idle_since: Option<Instant>,
     /// 上一次交给透明窗口的：自己还剩几秒、谁在说。
     shown: (Option<u64>, Vec<MemberId>),
+    /// 正在回放的历史记录。
+    playing: Option<i64>,
 }
 
 impl Runner {
@@ -247,12 +270,30 @@ impl Runner {
                     return;
                 }
                 let Some(s) = self.incoming(key) else { return };
+                for (k, f) in frames.iter().enumerate() {
+                    if s.recorded.len() < MAX_RECORDED {
+                        s.recorded.insert(first + k as u32, f.clone());
+                    }
+                }
                 s.jitter.push(first, frames, end, now_ms());
             }
-            VoiceMsg::Gone(from) => self.streams.retain(|(m, _), _| *m != from),
+            VoiceMsg::Gone(from) => {
+                let gone: Vec<_> = self
+                    .streams
+                    .keys()
+                    .filter(|(m, _)| *m == from)
+                    .copied()
+                    .collect();
+                for key in gone {
+                    if let Some(s) = self.streams.remove(&key) {
+                        self.archive(key, s);
+                    }
+                }
+            }
             VoiceMsg::Config(c) => {
                 if !c.enabled {
                     self.streams.clear();
+                    self.set_playing(None);
                     if self
                         .rec
                         .as_ref()
@@ -269,6 +310,41 @@ impl Runner {
                 }
             }
             VoiceMsg::Captured { take, pcm } => self.captured(take, pcm),
+            VoiceMsg::Play { id, frames } => {
+                self.streams.remove(&PLAYBACK_KEY);
+                if let Some(s) = self.incoming(PLAYBACK_KEY) {
+                    s.jitter.push(0, frames, true, now_ms());
+                    self.set_playing(Some(id));
+                }
+            }
+            VoiceMsg::StopPlay => {
+                self.streams.remove(&PLAYBACK_KEY);
+                self.set_playing(None);
+            }
+        }
+    }
+
+    /// 告诉聊天框正在回放哪一条（None：没在放）。
+    fn set_playing(&mut self, id: Option<i64>) {
+        if self.playing != id {
+            self.playing = id;
+            let _ = self.app.emit_to(CHAT_WINDOW, "voice:playing", id);
+        }
+    }
+
+    /// 队友的一段话放完了（或者他走了）：收到的小帧按顺序存进历史记录。
+    fn archive(&self, key: (MemberId, u32), s: Incoming) {
+        if key.0 == LOCAL || s.recorded.is_empty() {
+            return;
+        }
+        if let Some(state) = self.state() {
+            state.history.add(crate::history::NewEntry {
+                member: Some(key.0),
+                ts_ms: s.started_ms,
+                kind: crate::history::Kind::Voice,
+                text: String::new(),
+                voice: Some(s.recorded.into_values().collect()),
+            });
         }
     }
 
@@ -280,6 +356,8 @@ impl Runner {
                 Some(v.insert(Incoming {
                     jitter: Jitter::default(),
                     decoder,
+                    recorded: std::collections::BTreeMap::new(),
+                    started_ms: now_ms(),
                 }))
             }
         }
@@ -324,6 +402,7 @@ impl Runner {
             take,
             _mic: mic,
             since: Instant::now(),
+            started_ms: now_ms(),
             pcm: Vec::new(),
             encoder,
             packer: Packer::new(getrandom::u32().unwrap_or(take)),
@@ -350,7 +429,10 @@ impl Runner {
                 continue;
             };
             match rec.purpose {
-                Purpose::Talk => out.extend(rec.packer.push(packet)),
+                Purpose::Talk => {
+                    rec.kept.push(packet.clone());
+                    out.extend(rec.packer.push(packet));
+                }
                 Purpose::Test => rec.kept.push(packet),
             }
         }
@@ -377,6 +459,7 @@ impl Runner {
         if !rec.pcm.is_empty() {
             rec.pcm.resize(FRAME, 0.0);
             if let Some(p) = encode(&mut rec.encoder, &rec.pcm) {
+                rec.kept.push(p.clone());
                 out.extend(rec.packer.push(p));
             }
         }
@@ -384,13 +467,24 @@ impl Runner {
         for body in out {
             self.send_live(body);
         }
+        if let Some(state) = self.state()
+            && !rec.kept.is_empty()
+        {
+            state.history.add(crate::history::NewEntry {
+                member: None,
+                ts_ms: rec.started_ms,
+                kind: crate::history::Kind::Voice,
+                text: String::new(),
+                voice: Some(rec.kept),
+            });
+        }
     }
 
     /// 试音录完：把录下的小帧当成一段本机的话放出来。
     fn finish_test(&mut self) {
         let Some(rec) = self.rec.take() else { return };
         let count = rec.kept.len();
-        if let Some(s) = self.incoming((LOCAL, 0)) {
+        if let Some(s) = self.incoming(TEST_KEY) {
             s.jitter = Jitter::default();
             s.jitter.push(0, rec.kept, true, now_ms());
         }
@@ -469,7 +563,6 @@ impl Runner {
         let mut decoded = vec![0f32; FRAME];
         let volume = self.config.volume;
         let mut done = Vec::new();
-        let mut test_done = false;
         for (key, s) in &mut self.streams {
             let input: &[u8] = match s.jitter.pull(now) {
                 Pull::Frame(f) => {
@@ -481,18 +574,21 @@ impl Runner {
                 Pull::Wait => continue,
                 Pull::Done => {
                     done.push(*key);
-                    test_done |= key.0 == LOCAL;
                     continue;
                 }
             };
             let n = s.decoder.decode(input, FRAME, &mut decoded).unwrap_or(0);
             add(&mut sum, &decoded[..n.min(FRAME)], volume);
         }
-        for k in done {
-            self.streams.remove(&k);
-        }
-        if test_done {
-            self.set_status(|s| s.test = None);
+        for key in done {
+            let Some(s) = self.streams.remove(&key) else {
+                continue;
+            };
+            match key {
+                TEST_KEY => self.set_status(|st| st.test = None),
+                PLAYBACK_KEY => self.set_playing(None),
+                _ => self.archive(key, s),
+            }
         }
         for v in &mut sum {
             *v = v.clamp(-1.0, 1.0);

@@ -9,8 +9,9 @@
 //!    游戏或正在打字的程序不丢键盘。面板页面每次显示时自己取一次队伍信息（team_view）。
 //! 3. 投票：发起时定下投票人（本人加上在线、没关投票的队友，`team::voters`），发一帧 Vote；收到队友的 Vote 同样开一个。
 //!    回答发 Ballot 帧。规则在 `votes`。踢人通过时，被踢的人自己的程序退出队伍：队伍记录里没有「踢人」，靠被踢的人配合。
-//! 4. 文字：快捷键打开输入框（在鼠标上方；要拿焦点才能打字），记下按键时鼠标的位置；回车后清理、认指令（`team_text`），
-//!    普通文字画在自己的透明窗口上并发给队伍，落到队友同号显示器的同一比例处。
+//! 4. 聊天框（3.0-M4，原来的输入框）：文字快捷键打开、再按一次收起，放在鼠标所在显示器的左下角（要拿焦点才能打字）；
+//!    上面是历史记录（页面自己取 `history_list`），下面是输入框。记下按键时鼠标的位置；回车后清理、认指令（`team_text`），
+//!    普通文字画在自己的透明窗口上、发给队伍、记进历史记录，落到队友同号显示器的同一比例处。发完不关，可以接着说。
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -41,7 +42,9 @@ const RESULT_SHOW: Duration = Duration::from_secs(3);
 const ROSTER_SIZE: (f64, f64) = (720.0, 470.0);
 const VOTE_SIZE: (f64, f64) = (260.0, 136.0);
 const READY_SIZE: (f64, f64) = (400.0, 230.0);
-const TEXT_SIZE: (f64, f64) = (480.0, 92.0);
+/// 聊天框的大小，和离显示器左边、下边的距离（CSS 像素）。
+const CHAT_SIZE: (f64, f64) = (420.0, 520.0);
+const CHAT_MARGIN: (f64, f64) = (24.0, 140.0);
 
 pub enum PanelMsg {
     /// 面板键按下或松开。
@@ -202,7 +205,13 @@ impl Runner {
     fn handle(&mut self, m: PanelMsg) {
         match m {
             PanelMsg::Show(on) => self.show_roster(on),
-            PanelMsg::TextRequested => self.open_text(),
+            PanelMsg::TextRequested => {
+                if self.text_at.is_some() {
+                    self.close_text();
+                } else {
+                    self.open_text();
+                }
+            }
             PanelMsg::TextSubmit(raw, reply) => {
                 let _ = reply.send(self.submit_text(&raw));
             }
@@ -265,6 +274,7 @@ impl Runner {
                     self.tally.clear();
                     self.result_until = None;
                     self.publish(None);
+                    self.text_at = None;
                     for w in [&self.roster, &self.vote, &self.text].into_iter().flatten() {
                         let _ = w.hide();
                     }
@@ -610,11 +620,13 @@ impl Runner {
             to_ratio(f64::from(cx - d.rect.x), f64::from(d.rect.width)),
             to_ratio(f64::from(cy - d.rect.y), f64::from(d.rect.height)),
         ));
-        // 输入框在鼠标上方，放不下就挪进显示器里。
-        let (w_px, h_px) = physical(d, TEXT_SIZE);
-        let gap = (18.0 * d.scale) as i32;
-        let x = (cx - w_px / 2).clamp(d.rect.x, d.rect.x + d.rect.width - w_px);
-        let y = (cy - h_px - gap).clamp(d.rect.y, d.rect.y + d.rect.height - h_px);
+        // 聊天框在这块显示器的左下角（和英雄联盟的聊天框一个位置），放不下就挪进显示器里。
+        let (w_px, h_px) = physical(d, CHAT_SIZE);
+        let (mx, my) = physical(d, CHAT_MARGIN);
+        let x = (d.rect.x + mx)
+            .min(d.rect.x + d.rect.width - w_px)
+            .max(d.rect.x);
+        let y = (d.rect.y + d.rect.height - h_px - my).max(d.rect.y);
         let Some(w) = self.window(Which::Text) else {
             return;
         };
@@ -629,6 +641,9 @@ impl Runner {
         if let Some(w) = &self.text {
             let _ = w.hide();
         }
+        if let Some(state) = self.state() {
+            state.voice.send(crate::voice::VoiceMsg::StopPlay);
+        }
     }
 
     /// 输入框交来的一句话。返回 sent、empty、unknown、votesOff、busy。
@@ -638,6 +653,13 @@ impl Runner {
             Input::Unknown => "unknown",
             Input::Text(text) => {
                 if let (Some((display, x, y)), Some(state)) = (self.text_at, self.state()) {
+                    state.history.add(crate::history::NewEntry {
+                        member: None,
+                        ts_ms: now_ms(),
+                        kind: crate::history::Kind::Text,
+                        text: text.clone(),
+                        voice: None,
+                    });
                     state.overlays.send(Msg::Text {
                         from: None,
                         display,
@@ -678,7 +700,8 @@ impl Runner {
                 }
             }
         };
-        if matches!(answer, "sent" | "empty") {
+        // 发完不关，可以接着说；空着按回车就收起（同英雄联盟）
+        if answer == "empty" {
             self.close_text();
         }
         answer

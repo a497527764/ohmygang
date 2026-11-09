@@ -595,7 +595,7 @@ fn css_size(d: &Display) -> (f64, f64) {
 }
 
 /// 队友名字标签的颜色：按公钥固定挑一种，同一个人在所有人屏幕上颜色一样。
-fn tag_color(m: &MemberId) -> &'static str {
+pub fn tag_color(m: &MemberId) -> &'static str {
     const PALETTE: [&str; 10] = [
         "#4fc3f7", "#ffb74d", "#81c784", "#f06292", "#ba68c8", "#fff176", "#4db6ac", "#ff8a65",
         "#9575cd", "#aed581",
