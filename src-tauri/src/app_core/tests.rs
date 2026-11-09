@@ -377,3 +377,36 @@ fn hit_events_from_2_0_are_kept_but_ignored() {
         Some(RoomStatus::Active)
     );
 }
+
+/// 持有情况有缓存（节点每 100 毫秒要用好几次），每一种写入事件的路径之后都要跟着变：
+/// 自己写的、收到队友的、取消加入时整个队伍的事件删掉。
+#[test]
+fn cached_holdings_follow_every_event_write() {
+    let total = |c: &Core, room: &RoomId| -> u64 {
+        c.holdings(room)
+            .unwrap()
+            .vector()
+            .iter()
+            .map(|e| e.max)
+            .sum()
+    };
+    let (mut a, mut b, room) = pair();
+    let before = total(&a, &room);
+    assert!(before > 0);
+    assert_eq!(total(&a, &room), before, "没写东西：用缓存，结果一样");
+    let written = a.rename_room(&room, "新队名", 5000).unwrap();
+    assert_eq!(total(&a, &room), before + 1, "自己写了一条");
+    let b_before = total(&b, &room);
+    b.ingest_events(&room, &written).unwrap();
+    assert_eq!(total(&b, &room), b_before + 1, "收到队友的一条");
+    b.ingest_events(&room, &written).unwrap();
+    assert_eq!(total(&b, &room), b_before + 1, "重复收到不算");
+
+    let mut c = new_core();
+    c.join_room(&a.room_code(&room).unwrap(), 6000).unwrap();
+    c.ingest_events(&room, &a.room_events(&room).unwrap())
+        .unwrap();
+    assert!(total(&c, &room) > 0);
+    c.cancel_join(&room).unwrap();
+    assert_eq!(total(&c, &room), 0, "整个队伍删掉以后不再用旧的缓存");
+}

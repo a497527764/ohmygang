@@ -982,6 +982,13 @@ impl Node {
 
     /// 没有在途的 Want 时，挑最近联系过、还没失败太多次的同伴，要它有、本机缺的事件。
     async fn plan_want(&mut self, room: RoomId) {
+        // 先看有没有要做的（每 100 毫秒都会进来）：有在途的 Want、队伍解散了、没有队友，就不查库
+        let idle = self.rooms.get(&room).is_none_or(|rs| {
+            rs.want.is_some() || rs.status == RoomStatus::Dissolved || rs.peers.is_empty()
+        });
+        if idle {
+            return;
+        }
         let Ok(holdings) = self.core.holdings(&room) else {
             return;
         };
@@ -1026,6 +1033,10 @@ impl Node {
 
     /// 在途的 Want 有进展（缺的总数变少）就放行下一个；超时没进展记一次失败，换人。
     fn check_want(&mut self, room: RoomId) {
+        // 没有在途的 Want 就不查库（每 100 毫秒都会进来）
+        if self.rooms.get(&room).is_none_or(|rs| rs.want.is_none()) {
+            return;
+        }
         let Ok(holdings) = self.core.holdings(&room) else {
             return;
         };

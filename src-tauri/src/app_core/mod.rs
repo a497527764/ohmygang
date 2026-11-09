@@ -7,6 +7,12 @@
 //! 4. 入站（`ingest_events`）：无状态校验不过的丢弃；入库（重复跳过、分叉提示）；有新事件就重新推导队伍缓存。
 //! 5. 实时帧：签名用本机身份（`sign_live`），收到的帧由节点验签，再用 `is_member` 查发送者是不是队员。
 //! 6. 它是唯一知道所有模块的地方，业务模块之间不互相回调。
+//! 7. 持有情况（每个作者有哪些序号）节点每 100 毫秒要用好几次，按「这个队伍最新一条事件的本地序号」缓存：
+//!    序号没变就直接用，有新事件或事件被删才重新从库里算（3.1.1：以前每次都读这个队伍的全部事件）。
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::crypto::{EventId, Identity, MemberId, RoomId, RoomKey};
 use crate::error::AppResult;
@@ -44,11 +50,15 @@ pub struct CreatedRoom {
     pub events: Vec<SignedEvent>,
 }
 
+/// 队伍 → （算的时候最新一条事件的本地序号，持有情况）。见文件头第 7 条。
+type HoldingsCache = HashMap<RoomId, (Option<i64>, Arc<Holdings>)>;
+
 pub struct Core {
     conn: Connection,
     me: Identity,
     view: IdentityView,
     master: [u8; 32],
+    holdings_cache: RefCell<HoldingsCache>,
 }
 
 impl Core {
@@ -60,6 +70,7 @@ impl Core {
             me,
             view,
             master,
+            holdings_cache: RefCell::default(),
         })
     }
 
@@ -296,11 +307,21 @@ impl Core {
             .collect())
     }
 
-    pub fn holdings(&self, room: &RoomId) -> AppResult<Holdings> {
+    pub fn holdings(&self, room: &RoomId) -> AppResult<Arc<Holdings>> {
+        let mark = events::latest_local_seq(&self.conn, room)?;
+        if let Some((seen, h)) = self.holdings_cache.borrow().get(room)
+            && *seen == mark
+        {
+            return Ok(h.clone());
+        }
         let mut h = Holdings::default();
         for (author, seq) in events::holdings_rows(&self.conn, room)? {
             h.add(short_id(&author), seq);
         }
+        let h = Arc::new(h);
+        self.holdings_cache
+            .borrow_mut()
+            .insert(*room, (mark, h.clone()));
         Ok(h)
     }
 

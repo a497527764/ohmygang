@@ -5,7 +5,9 @@
 //!    别处只往通道里发消息，所以节点任务、透明窗口线程、语音线程记一条都不用等数据库。
 //! 2. 记在「现在所在的队伍」下面：队伍有变化时（`team::refresh_names`）告诉这里现在是哪个队伍，
 //!    别的队伍的记录当场删掉（`storage::history::keep_only`）——退出、被踢、解散（包括不在线时被解散、上线后才同步到）都是这一条。
-//! 3. 加一条：存库、修剪（每个队伍 2000 条、语音总共 100 MB），再推给聊天框（"history:added"），开着的聊天框直接加上这一条。
+//! 3. 加一条：存库、该修剪时修剪（每个队伍 2000 条、语音总共 100 MB），再推给聊天框（"history:added"），开着的聊天框直接加上这一条。
+//!    条数和语音总字节数记在内存里（`Counts`，换队伍时从库里数一次），不用每加一条都扫全表（3.1.1）：
+//!    条数超出上限 `TRIM_MARGIN` 条才一次删回上限；语音一超就从最旧的删。删过就从库里重新数。
 //! 4. 语音存成一串 Opus 小帧：每个前面两字节长度（小端），回放时拆开交给语音线程。
 
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -13,14 +15,18 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use rusqlite::Connection;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+use tokio::sync::oneshot;
 
 use crate::crypto::{MemberId, RoomId};
+use crate::error::AppResult;
 use crate::protocol::live::LiveBody;
 pub use crate::storage::history::Kind;
 use crate::storage::history::{self as store, Row};
 
 /// 每个队伍最多留多少条。
 pub const MAX_ROWS: usize = 2000;
+/// 条数超出上限这么多才修剪一次。
+const TRIM_MARGIN: usize = 50;
 /// 所有队伍的语音加起来最多这么多字节。
 pub const MAX_VOICE_BYTES: u64 = 100 * 1024 * 1024;
 /// 一个 Opus 小帧多长（毫秒）。
@@ -59,8 +65,8 @@ pub struct EntryDto {
 enum Msg {
     Room(Option<RoomId>),
     Add(NewEntry),
-    List(Sender<Vec<EntryDto>>),
-    Voice(i64, Sender<Option<Vec<Vec<u8>>>>),
+    List(oneshot::Sender<Vec<EntryDto>>),
+    Voice(i64, oneshot::Sender<Option<Vec<Vec<u8>>>>),
 }
 
 #[derive(Clone)]
@@ -76,6 +82,7 @@ impl History {
             conn,
             me,
             room: None,
+            counts: Counts::default(),
         };
         std::thread::Builder::new()
             .name("history".into())
@@ -119,18 +126,18 @@ impl History {
         }
     }
 
-    /// 现在所在队伍的全部记录，从旧到新。
-    pub fn list(&self) -> Vec<EntryDto> {
-        let (tx, rx) = mpsc::channel();
+    /// 现在所在队伍的全部记录，从旧到新。异步等回话（3.1.1：聊天框的命令不再在主线程上等）。
+    pub async fn list(&self) -> Vec<EntryDto> {
+        let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(Msg::List(tx));
-        rx.recv().unwrap_or_default()
+        rx.await.unwrap_or_default()
     }
 
     /// 一条语音的 Opus 小帧。
-    pub fn voice(&self, id: i64) -> Option<Vec<Vec<u8>>> {
-        let (tx, rx) = mpsc::channel();
+    pub async fn voice(&self, id: i64) -> Option<Vec<Vec<u8>>> {
+        let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(Msg::Voice(id, tx));
-        rx.recv().ok().flatten()
+        rx.await.ok().flatten()
     }
 }
 
@@ -148,6 +155,54 @@ struct Runner {
     me: MemberId,
     /// 现在所在的队伍；还没听说过时是 None（这时不记）。
     room: Option<RoomId>,
+    counts: Counts,
+}
+
+/// 内存里记着的条数和语音总字节数，加一条时不用扫全表（3.1.1）。
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Counts {
+    /// 现在所在队伍有几条（库里也只有这个队伍的记录）。
+    rows: usize,
+    /// 库里的语音一共多少字节。
+    voice_bytes: u64,
+}
+
+impl Counts {
+    /// 从库里数（换队伍时，或者修剪出错时）。
+    fn load(conn: &Connection, room: Option<&RoomId>) -> Self {
+        Self {
+            rows: room.and_then(|r| store::count(conn, r).ok()).unwrap_or(0),
+            voice_bytes: store::voice_bytes(conn).unwrap_or(0),
+        }
+    }
+
+    /// 加了一条（语音 `voice_len` 字节）之后：条数超出上限 `TRIM_MARGIN` 条就删回 `max_rows`，
+    /// 语音超了从最旧的删；删过就从库里重新数（删的条里可能有语音，删的语音也算条数）。
+    fn added(
+        &mut self,
+        conn: &Connection,
+        room: &RoomId,
+        voice_len: u64,
+        max_rows: usize,
+        max_voice_bytes: u64,
+    ) -> AppResult<()> {
+        self.rows += 1;
+        self.voice_bytes += voice_len;
+        let mut trimmed = false;
+        if self.rows > max_rows + TRIM_MARGIN {
+            store::trim_rows(conn, room, max_rows)?;
+            self.voice_bytes = store::voice_bytes(conn)?;
+            trimmed = true;
+        }
+        if self.voice_bytes > max_voice_bytes {
+            self.voice_bytes = store::trim_voice(conn, self.voice_bytes, max_voice_bytes)?;
+            trimmed = true;
+        }
+        if trimmed {
+            self.rows = store::count(conn, room)?;
+        }
+        Ok(())
+    }
 }
 
 impl Runner {
@@ -159,6 +214,7 @@ impl Runner {
                     if let Err(e) = store::keep_only(&self.conn, room.as_ref()) {
                         eprintln!("历史记录没删掉：{e}");
                     }
+                    self.counts = Counts::load(&self.conn, room.as_ref());
                 }
                 Msg::Add(e) => self.add(e),
                 Msg::List(reply) => {
@@ -193,8 +249,17 @@ impl Runner {
             e.kind,
             &e.text,
             voice.as_ref().map(|(b, ms)| (b.as_slice(), *ms)),
-        )
-        .and_then(|id| store::trim(&self.conn, &room, MAX_ROWS, MAX_VOICE_BYTES).map(|()| id));
+        );
+        if added.is_ok() {
+            let voice_len = voice.as_ref().map_or(0, |(b, _)| b.len() as u64);
+            if let Err(err) =
+                self.counts
+                    .added(&self.conn, &room, voice_len, MAX_ROWS, MAX_VOICE_BYTES)
+            {
+                eprintln!("历史记录没修剪：{err}");
+                self.counts = Counts::load(&self.conn, Some(&room));
+            }
+        }
         match added {
             Ok(id) => {
                 let dto = self.dto(&Row {
@@ -266,6 +331,46 @@ mod tests {
         let mut b = pack(&frames);
         b.truncate(b.len() - 10);
         assert_eq!(unpack(&b), frames[..2].to_vec());
+    }
+
+    #[test]
+    fn trims_only_past_the_margin_and_keeps_counts_right() {
+        let c = crate::storage::open_in_memory().unwrap();
+        let room: RoomId = [1; 16];
+        let me: MemberId = [7; 32];
+        let add = |counts: &mut Counts, voice: Option<&[u8]>| {
+            store::add(&c, &room, &me, 0, Kind::Text, "", voice.map(|v| (v, 20))).unwrap();
+            let len = voice.map_or(0, |v| v.len() as u64);
+            counts.added(&c, &room, len, 2, 100).unwrap();
+        };
+        let mut counts = Counts::load(&c, Some(&room));
+        assert_eq!(counts, Counts::default());
+        for _ in 0..2 + TRIM_MARGIN {
+            add(&mut counts, None);
+        }
+        assert_eq!(
+            store::count(&c, &room).unwrap(),
+            2 + TRIM_MARGIN,
+            "没超出余量不删"
+        );
+        add(&mut counts, None);
+        assert_eq!(counts.rows, 2, "超出余量一次删回上限");
+        assert_eq!(store::count(&c, &room).unwrap(), 2);
+
+        add(&mut counts, Some(&[0; 40]));
+        add(&mut counts, Some(&[0; 40]));
+        assert_eq!((counts.rows, counts.voice_bytes), (4, 80));
+        add(&mut counts, Some(&[0; 40]));
+        assert_eq!(
+            (counts.rows, counts.voice_bytes),
+            (4, 80),
+            "语音一超就删最旧的一条"
+        );
+        assert_eq!(
+            counts,
+            Counts::load(&c, Some(&room)),
+            "内存里的数和库里一致"
+        );
     }
 
     #[test]

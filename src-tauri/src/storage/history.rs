@@ -3,7 +3,8 @@
 //! 实现流程：
 //! 1. 一行一条：队伍、谁、什么时候、种类、内容（文字、信号 id 或表情引用）、语音（Opus 小帧，每个前面两字节长度）和时长。
 //!    按自增 id 排先后（就是这台电脑收到的顺序）。
-//! 2. 加一条后修剪：每个队伍只留最新的若干条；所有队伍的语音加起来超过上限时，从最旧的语音开始删整条。
+//! 2. 修剪：每个队伍只留最新的若干条；所有队伍的语音加起来超过上限时，从最旧的语音开始删整条。
+//!    什么时候修剪由运行时（`history.rs`）决定，这里只管删和数。
 //! 3. 只留现在所在的队伍：别的队伍（退出了、解散了）的记录全部删掉；不在任何队伍里就全删。
 //!    解散事件晚到（解散时不在线）也一样：同步到以后就不在这个队伍里了，记录跟着删。
 //! 4. 不和队友补齐：每台电脑只有自己收到的那些（所有者的决定）。
@@ -69,35 +70,60 @@ pub fn add(
     Ok(conn.last_insert_rowid())
 }
 
-/// 这个队伍只留最新的 `max_rows` 条；所有队伍的语音加起来超过 `max_voice_bytes` 时从最旧的语音删起。
-pub fn trim(
-    conn: &Connection,
-    room: &RoomId,
-    max_rows: usize,
-    max_voice_bytes: u64,
-) -> AppResult<()> {
-    conn.execute(
+/// 这个队伍有几条。
+pub fn count(conn: &Connection, room: &RoomId) -> AppResult<usize> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM history WHERE room_id = ?1",
+        [room],
+        |r| r.get(0),
+    )?;
+    Ok(n as usize)
+}
+
+/// 所有队伍的语音加起来多少字节。
+pub fn voice_bytes(conn: &Connection) -> AppResult<u64> {
+    let n: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(LENGTH(voice)), 0) FROM history WHERE voice IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(n as u64)
+}
+
+/// 这个队伍只留最新的 `max_rows` 条。返回删了几条。
+pub fn trim_rows(conn: &Connection, room: &RoomId, max_rows: usize) -> AppResult<usize> {
+    Ok(conn.execute(
         "DELETE FROM history WHERE room_id = ?1 AND id NOT IN
            (SELECT id FROM history WHERE room_id = ?1 ORDER BY id DESC LIMIT ?2)",
         params![room, max_rows as i64],
-    )?;
-    loop {
-        let total: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(LENGTH(voice)), 0) FROM history WHERE voice IS NOT NULL",
-            [],
-            |r| r.get(0),
-        )?;
-        if total as u64 <= max_voice_bytes {
-            return Ok(());
-        }
-        let deleted = conn.execute(
-            "DELETE FROM history WHERE id = (SELECT MIN(id) FROM history WHERE voice IS NOT NULL)",
-            [],
-        )?;
-        if deleted == 0 {
-            return Ok(());
+    )?)
+}
+
+/// 所有队伍的语音加起来（现在是 `total` 字节）超过 `max_voice_bytes` 时，从最旧的语音删起，删整条。
+/// 只读刚好够数的那几条最旧的语音，一次删掉；返回删完后的总字节数。
+pub fn trim_voice(conn: &Connection, total: u64, max_voice_bytes: u64) -> AppResult<u64> {
+    if total <= max_voice_bytes {
+        return Ok(total);
+    }
+    let mut left = total;
+    let mut last = None;
+    {
+        let mut stmt = conn
+            .prepare("SELECT id, LENGTH(voice) FROM history WHERE voice IS NOT NULL ORDER BY id")?;
+        let mut rows = stmt.query([])?;
+        while left > max_voice_bytes {
+            let Some(r) = rows.next()? else { break };
+            last = Some(r.get::<_, i64>(0)?);
+            left = left.saturating_sub(r.get::<_, i64>(1)? as u64);
         }
     }
+    if let Some(id) = last {
+        conn.execute(
+            "DELETE FROM history WHERE voice IS NOT NULL AND id <= ?1",
+            [id],
+        )?;
+    }
+    Ok(left)
 }
 
 /// 这个队伍的全部记录，从旧到新（不带语音数据，回放时再取）。
@@ -191,9 +217,11 @@ mod tests {
             add(&c, &A, &ME, i, Kind::Text, &i.to_string(), None).unwrap();
         }
         add(&c, &B, &ME, 9, Kind::Text, "b", None).unwrap();
-        trim(&c, &A, 3, u64::MAX).unwrap();
+        assert_eq!(count(&c, &A).unwrap(), 5);
+        assert_eq!(trim_rows(&c, &A, 3).unwrap(), 2);
         assert_eq!(texts(&c, &A), vec!["2", "3", "4"]);
         assert_eq!(texts(&c, &B), vec!["b"], "别的队伍不受影响");
+        assert_eq!(trim_rows(&c, &A, 3).unwrap(), 0, "没超就不删");
     }
 
     #[test]
@@ -203,9 +231,16 @@ mod tests {
         add(&c, &A, &ME, 2, Kind::Text, "t", None).unwrap();
         add(&c, &B, &ME, 3, Kind::Voice, "v2", Some((&[0; 40], 20))).unwrap();
         add(&c, &A, &ME, 4, Kind::Voice, "v3", Some((&[0; 40], 20))).unwrap();
-        trim(&c, &A, 100, 80).unwrap();
+        assert_eq!(voice_bytes(&c).unwrap(), 120);
+        assert_eq!(trim_voice(&c, 120, 120).unwrap(), 120, "没超就不删");
+        assert_eq!(trim_voice(&c, 120, 80).unwrap(), 80);
         assert_eq!(texts(&c, &A), vec!["t", "v3"], "最旧的语音删了，文字留着");
         assert_eq!(texts(&c, &B), vec!["v2"]);
+        // 一次超出好几条：删到够为止，只删语音
+        add(&c, &A, &ME, 5, Kind::Voice, "v4", Some((&[0; 40], 20))).unwrap();
+        assert_eq!(trim_voice(&c, 120, 50).unwrap(), 40);
+        assert_eq!(texts(&c, &A), vec!["t", "v4"]);
+        assert_eq!(voice_bytes(&c).unwrap(), 40);
     }
 
     #[test]

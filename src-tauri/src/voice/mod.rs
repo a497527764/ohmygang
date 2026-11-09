@@ -2,7 +2,8 @@
 //!
 //! 实现流程：
 //! 1. 一个专门的线程拥有全部状态，别处只往它的通道里发消息（`VoiceMsg`）：手势交来的说话键、
-//!    队友的语音帧、设置、试音；麦克风录到的声音也从声卡线程发到这里。闲着时只等消息，有事时每 10 毫秒走一步。
+//!    队友的语音帧、设置、试音。闲着时只等消息，有事时每 10 毫秒走一步；
+//!    麦克风录到的声音由声卡线程追加到共享的缓冲区，每一步取走（`audio::MicBuffer`）。
 //! 2. 说话：按下就开麦克风（`audio`），录到的声音是 16 kHz 单声道，每 20 毫秒编一个 Opus 小帧（16 kbps 恒定码率），
 //!    攒够 400 毫秒打成一个语音帧（`packet`）交给节点发出去（局域网和中继都走）。
 //!    点了一下或在打字（手势说「丢掉」）就关麦克风、什么都不发；400 毫秒内松开的第一帧还没发，也就不会有半个字。
@@ -10,6 +11,7 @@
 //! 3. 播放：每个人的每段话一个抖动缓冲（`jitter`）和一个 Opus 解码器。扬声器的队列里保持约 60 毫秒的声音：
 //!    不够时从每段话各取 20 毫秒、解码（丢了的让解码器补）、乘上语音音量、加起来，转成扬声器的采样率放进去。
 //!    所以放的快慢跟着声卡的时钟走。没人说话 3 秒后关掉扬声器。
+//!    混音、解码、重采样用的缓冲区都留着复用，每 20 毫秒不再新分配（3.1.1）。
 //! 4. 显示：自己在录时透明窗口右下角显示「正在录音」和剩余秒数；队友在说时显示他的名字（队伍面板里他那一行也亮起），
 //!    变了才通知。
 //! 5. 试音：录 3 秒，在本机编码再解码放给自己听（不发给任何人），走的是和队友语音一样的路。
@@ -83,11 +85,6 @@ pub enum VoiceMsg {
     Config(VoiceConfig),
     /// 试音：录 3 秒放给自己听。
     Test,
-    /// 麦克风录到的一块（16 kHz 单声道）；`take` 是第几次开麦，旧的丢掉。
-    Captured {
-        take: u32,
-        pcm: Vec<f32>,
-    },
     /// 回放历史记录里的一段语音（只在本机放）。
     Play {
         id: i64,
@@ -128,7 +125,6 @@ impl Voice {
         let status = Arc::new(Mutex::new(VoiceStatus::default()));
         let runner = Runner {
             app: app.clone(),
-            tx: tx.clone(),
             status: status.clone(),
             config,
             rec: None,
@@ -138,6 +134,9 @@ impl Voice {
             idle_since: None,
             shown: (None, Vec::new()),
             playing: None,
+            mixed: vec![0.0; FRAME],
+            decoded: vec![0.0; FRAME],
+            resampled: Vec::new(),
         };
         std::thread::Builder::new()
             .name("voice".into())
@@ -167,11 +166,13 @@ enum Purpose {
 /// 正在录的一段：说话或试音。
 struct Recording {
     purpose: Purpose,
-    take: u32,
     _mic: cpal::Stream,
+    /// 声卡线程往里加录到的声音，每一步取到 `pcm` 里。
+    captured: audio::MicBuffer,
     since: Instant,
     /// 开始录的时间（Unix 毫秒），记进历史记录。
     started_ms: u64,
+    /// 取来还没编码的声音（不满 20 毫秒的留到下次）。
     pcm: Vec<f32>,
     encoder: OpusEncoder,
     packer: Packer,
@@ -189,7 +190,6 @@ struct Incoming {
 
 struct Runner {
     app: AppHandle,
-    tx: Sender<VoiceMsg>,
     status: Arc<Mutex<VoiceStatus>>,
     config: VoiceConfig,
     rec: Option<Recording>,
@@ -201,6 +201,10 @@ struct Runner {
     shown: (Option<u64>, Vec<MemberId>),
     /// 正在回放的历史记录。
     playing: Option<i64>,
+    /// 混好的 20 毫秒、一个解码器解出来的 20 毫秒、转成扬声器采样率的：每次复用。
+    mixed: Vec<f32>,
+    decoded: Vec<f32>,
+    resampled: Vec<f32>,
 }
 
 impl Runner {
@@ -309,7 +313,6 @@ impl Runner {
                     self.start_recording(Purpose::Test);
                 }
             }
-            VoiceMsg::Captured { take, pcm } => self.captured(take, pcm),
             VoiceMsg::Play { id, frames } => {
                 self.streams.remove(&PLAYBACK_KEY);
                 if let Some(s) = self.incoming(PLAYBACK_KEY) {
@@ -374,10 +377,10 @@ impl Runner {
 
     fn start_recording(&mut self, purpose: Purpose) {
         self.take = self.take.wrapping_add(1);
-        let (tx, take) = (self.tx.clone(), self.take);
-        let mic = audio::open_mic(&self.config.mic, move |pcm| {
-            let _ = tx.send(VoiceMsg::Captured { take, pcm });
-        });
+        let take = self.take;
+        // 预留 1 秒：语音线程每 10 毫秒取一次，正常不会变大
+        let captured: audio::MicBuffer = Arc::new(Mutex::new(Vec::with_capacity(RATE as usize)));
+        let mic = audio::open_mic(&self.config.mic, captured.clone());
         let mic = match mic {
             Ok(m) => m,
             Err(e) => {
@@ -399,11 +402,11 @@ impl Runner {
         encoder.use_cbr = true;
         self.rec = Some(Recording {
             purpose,
-            take,
             _mic: mic,
+            captured,
             since: Instant::now(),
             started_ms: now_ms(),
-            pcm: Vec::new(),
+            pcm: Vec::with_capacity(RATE as usize),
             encoder,
             packer: Packer::new(getrandom::u32().unwrap_or(take)),
             kept: Vec::new(),
@@ -416,16 +419,22 @@ impl Runner {
         });
     }
 
-    /// 录到的声音：凑够 20 毫秒就编一个小帧；说话的攒够 400 毫秒就发出去。
-    fn captured(&mut self, take: u32, pcm: Vec<f32>) {
-        let Some(rec) = self.rec.as_mut().filter(|r| r.take == take) else {
+    /// 取走录到的声音：凑够 20 毫秒就编一个小帧；说话的攒够 400 毫秒就发出去。
+    fn drain_mic(&mut self) {
+        let Some(rec) = self.rec.as_mut() else {
             return;
         };
-        rec.pcm.extend(pcm);
+        {
+            let mut captured = rec.captured.lock().unwrap_or_else(|e| e.into_inner());
+            rec.pcm.extend_from_slice(&captured);
+            captured.clear();
+        }
         let mut out = Vec::new();
-        while rec.pcm.len() >= FRAME {
-            let frame: Vec<f32> = rec.pcm.drain(..FRAME).collect();
-            let Some(packet) = encode(&mut rec.encoder, &frame) else {
+        let mut used = 0;
+        while rec.pcm.len() - used >= FRAME {
+            let frame = &rec.pcm[used..used + FRAME];
+            used += FRAME;
+            let Some(packet) = encode(&mut rec.encoder, frame) else {
                 continue;
             };
             match rec.purpose {
@@ -436,6 +445,7 @@ impl Runner {
                 Purpose::Test => rec.kept.push(packet),
             }
         }
+        rec.pcm.drain(..used);
         for body in out {
             self.send_live(body);
         }
@@ -449,6 +459,7 @@ impl Runner {
 
     /// 说完了：剩下的（不满 20 毫秒的补静音）编完，和「结束」一起发出去。还没发过东西、说得又太短就算了。
     fn finish_talk(&mut self) {
+        self.drain_mic();
         let Some(mut rec) = self.rec.take() else {
             return;
         };
@@ -492,6 +503,7 @@ impl Runner {
     }
 
     fn step(&mut self) {
+        self.drain_mic();
         if let Some(rec) = &self.rec {
             let elapsed = rec.since.elapsed();
             match rec.purpose {
@@ -547,27 +559,30 @@ impl Runner {
         let target = speaker.rate as usize * AHEAD_MS / 1000;
         let queue = speaker.queue.clone();
         while !self.streams.is_empty() && queue.lock().map(|q| q.len()).unwrap_or(target) < target {
-            let block = self.mix(now);
+            self.mix(now);
             let Some((_, resampler)) = self.speaker.as_mut() else {
                 return;
             };
-            let mut out = Vec::with_capacity(block.len() * 3);
-            resampler.process(&block, &mut out);
-            queue.lock().unwrap_or_else(|e| e.into_inner()).extend(out);
+            self.resampled.clear();
+            resampler.process(&self.mixed, &mut self.resampled);
+            queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend(&self.resampled);
         }
     }
 
-    /// 每段话各取 20 毫秒，解码、加起来；放完的去掉。
-    fn mix(&mut self, now: u64) -> Vec<f32> {
-        let mut sum = vec![0f32; FRAME];
-        let mut decoded = vec![0f32; FRAME];
+    /// 每段话各取 20 毫秒，解码、加起来放进 `mixed`；放完的去掉。
+    fn mix(&mut self, now: u64) {
+        self.mixed.fill(0.0);
+        let (sum, decoded) = (&mut self.mixed, &mut self.decoded);
         let volume = self.config.volume;
         let mut done = Vec::new();
         for (key, s) in &mut self.streams {
             let input: &[u8] = match s.jitter.pull(now) {
                 Pull::Frame(f) => {
-                    let n = s.decoder.decode(&f, FRAME, &mut decoded).unwrap_or(0);
-                    add(&mut sum, &decoded[..n.min(FRAME)], volume);
+                    let n = s.decoder.decode(&f, FRAME, decoded).unwrap_or(0);
+                    add(sum, &decoded[..n.min(FRAME)], volume);
                     continue;
                 }
                 Pull::Lost => &[],
@@ -577,8 +592,11 @@ impl Runner {
                     continue;
                 }
             };
-            let n = s.decoder.decode(input, FRAME, &mut decoded).unwrap_or(0);
-            add(&mut sum, &decoded[..n.min(FRAME)], volume);
+            let n = s.decoder.decode(input, FRAME, decoded).unwrap_or(0);
+            add(sum, &decoded[..n.min(FRAME)], volume);
+        }
+        for v in sum.iter_mut() {
+            *v = v.clamp(-1.0, 1.0);
         }
         for key in done {
             let Some(s) = self.streams.remove(&key) else {
@@ -590,10 +608,6 @@ impl Runner {
                 _ => self.archive(key, s),
             }
         }
-        for v in &mut sum {
-            *v = v.clamp(-1.0, 1.0);
-        }
-        sum
     }
 
     /// 透明窗口上的「正在录音」「谁在说」，队伍面板里亮起的人；变了才通知。

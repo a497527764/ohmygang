@@ -341,19 +341,23 @@ pub fn voice_test(state: State<'_, AppState>) {
 }
 
 /// 聊天框：现在所在队伍的历史记录，从旧到新。
+/// 这个和下面的回放是异步命令（3.1.1）：等历史记录线程读库时不占主线程。
 #[tauri::command]
-pub fn history_list(state: State<'_, AppState>) -> Vec<crate::history::EntryDto> {
-    state.history.list()
+pub async fn history_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::history::EntryDto>, String> {
+    Ok(state.history.list().await)
 }
 
 /// 回放一条语音（只在本机放，像微信语音）。播放和停止经 "voice:playing" 推给聊天框。
 #[tauri::command]
-pub fn history_play(state: State<'_, AppState>, id: i64) {
-    if let Some(frames) = state.history.voice(id) {
+pub async fn history_play(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    if let Some(frames) = state.history.voice(id).await {
         state
             .voice
             .send(crate::voice::VoiceMsg::Play { id, frames });
     }
+    Ok(())
 }
 
 #[tauri::command]

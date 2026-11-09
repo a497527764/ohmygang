@@ -4,6 +4,7 @@
 //! 1. 线性插值，按块处理，块与块之间接得上（记住上一块的最后一个采样和小数位置）。
 //! 2. 降采样前先过一个一阶低通（约 7 kHz），减少高频折叠成的杂音；16 kHz 的语音本来只到 8 kHz。
 //!    对说话够用，不追求音乐的音质，也不引入新依赖。
+//! 3. 中间用的缓冲区留着下次用（3.1.1）：在声卡线程里也跑，第一块之后不再分配内存。
 
 use std::f64::consts::PI;
 
@@ -16,6 +17,8 @@ pub struct Resampler {
     /// 低通的系数（0 表示不过滤）和状态。
     alpha: f32,
     lp: f32,
+    /// 「上一块最后一个采样 + 这一块（过完低通）」，每次复用。
+    buf: Vec<f32>,
 }
 
 impl Resampler {
@@ -31,6 +34,7 @@ impl Resampler {
             prev: 0.0,
             alpha,
             lp: 0.0,
+            buf: Vec::new(),
         }
     }
 
@@ -38,7 +42,8 @@ impl Resampler {
         if input.is_empty() {
             return;
         }
-        let mut buf = Vec::with_capacity(input.len() + 1);
+        let buf = &mut self.buf;
+        buf.clear();
         buf.push(self.prev);
         if self.alpha > 0.0 {
             for &x in input {

@@ -3,7 +3,8 @@
 //!
 //! 实现流程：
 //! 1. 麦克风按保存的设备 id 找，找不到（拔了、换了）就用系统默认的。用设备自己的默认格式开，
-//!    每块录到的声音在声卡线程里混成单声道、转成 16 kHz，交给调用方（往语音线程的通道里放，不阻塞）。
+//!    每块录到的声音在声卡线程里混成单声道、转成 16 kHz，追加到和语音线程共享的缓冲区（语音线程每 10 毫秒取走）。
+//!    声卡线程里不分配内存（3.1.1：以前每块新建一个 Vec 发进通道）：缓冲区都是复用的，第一块之后不再变大。
 //! 2. 扬声器用系统默认的输出设备和格式。语音线程把要放的声音（扬声器的采样率、单声道）放进共享队列，
 //!    声卡线程每次从队列里取，复制到每个声道；队列空了就是静音。
 //! 3. 返回的 `cpal::Stream` 丢掉就停：麦克风只在按住说话（或试音）时开着，系统的「麦克风在用」提示不会一直亮。
@@ -49,17 +50,20 @@ fn mic_device(id: &str) -> Option<Device> {
     host.default_input_device()
 }
 
-/// 开麦克风：每块录到的声音（16 kHz 单声道）交给 `sink`。
-pub fn open_mic(id: &str, sink: impl FnMut(Vec<f32>) + Send + 'static) -> Result<Stream, String> {
+/// 麦克风录到的声音（16 kHz 单声道）：声卡线程往后加，语音线程从前面取走。
+pub type MicBuffer = Arc<Mutex<Vec<f32>>>;
+
+/// 开麦克风：录到的声音（16 kHz 单声道）追加到 `buffer`。
+pub fn open_mic(id: &str, buffer: MicBuffer) -> Result<Stream, String> {
     let dev = mic_device(id).ok_or("找不到麦克风")?;
     let cfg = dev.default_input_config().map_err(|e| e.to_string())?;
     let (channels, rate) = (usize::from(cfg.channels()).max(1), cfg.sample_rate());
     let config = cfg.config();
     let stream = match cfg.sample_format() {
-        SampleFormat::F32 => build_mic::<f32>(&dev, config, channels, rate, sink),
-        SampleFormat::I16 => build_mic::<i16>(&dev, config, channels, rate, sink),
-        SampleFormat::U16 => build_mic::<u16>(&dev, config, channels, rate, sink),
-        SampleFormat::I32 => build_mic::<i32>(&dev, config, channels, rate, sink),
+        SampleFormat::F32 => build_mic::<f32>(&dev, config, channels, rate, buffer),
+        SampleFormat::I16 => build_mic::<i16>(&dev, config, channels, rate, buffer),
+        SampleFormat::U16 => build_mic::<u16>(&dev, config, channels, rate, buffer),
+        SampleFormat::I32 => build_mic::<i32>(&dev, config, channels, rate, buffer),
         f => return Err(format!("麦克风的采样格式 {f} 不支持")),
     }?;
     stream.play().map_err(|e| e.to_string())?;
@@ -71,7 +75,7 @@ fn build_mic<T>(
     config: StreamConfig,
     channels: usize,
     rate: u32,
-    mut sink: impl FnMut(Vec<f32>) + Send + 'static,
+    buffer: MicBuffer,
 ) -> Result<Stream, String>
 where
     T: SizedSample,
@@ -87,9 +91,8 @@ where
                 data.chunks(channels)
                     .map(|c| c.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / c.len() as f32),
             );
-            let mut out = Vec::with_capacity(mono.len());
+            let mut out = buffer.lock().unwrap_or_else(|e| e.into_inner());
             resampler.process(&mono, &mut out);
-            sink(out);
         },
         |e| eprintln!("麦克风出错：{e}"),
         None,

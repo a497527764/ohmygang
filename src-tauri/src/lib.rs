@@ -70,11 +70,12 @@ pub fn run() {
             Ok(())
         })
         // 导入的表情和收到的队友表情：emote://localhost/<哈希>.<webp|anim|sound>（Windows 上是 http://emote.localhost/…）。
-        // 只认这种名字，别的一律 404；读文件放到别的线程，不卡主线程。
+        // 只认这种名字，别的一律 404。读文件放进 Tauri 的阻塞线程池（3.1.1：以前每个请求新开一个系统线程），不卡主线程。
+        // 不给长缓存：3.1.1 试过，WebView2 不缓存自定义协议的回应，缓存头不起作用；同一个页面里同一张图浏览器本来就复用。
         .register_asynchronous_uri_scheme_protocol("emote", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let name = request.uri().path().trim_start_matches('/').to_string();
-            std::thread::spawn(move || {
+            tauri::async_runtime::spawn_blocking(move || {
                 let found = app
                     .try_state::<AppState>()
                     .and_then(|state| state.emotes.read(&name));

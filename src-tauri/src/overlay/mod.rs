@@ -195,8 +195,9 @@ impl Actor {
                                 .emit_to(w.label.as_str(), "overlay:settings", &self.settings);
                     }
                 }
+                // 预览、提示、语音的提示只画在主显示器上，不用先查显示器（3.1.1）：
+                // 显示器变了，最多 3 秒后的轮询就会重建窗口；要按位置放的东西（轮盘、信号、表情、冒字）才先查一遍
                 Msg::Preview(id) => {
-                    self.refresh();
                     if let Some(d) = self.displays.first().cloned() {
                         let (w, h) = (
                             f64::from(d.rect.width) / d.scale,
@@ -210,7 +211,6 @@ impl Actor {
                     }
                 }
                 Msg::Toast { title, body } => {
-                    self.refresh();
                     if let Some(d) = self.displays.first().cloned() {
                         self.show(
                             &d.key,
@@ -224,7 +224,6 @@ impl Actor {
                     size,
                     effect,
                 } => {
-                    self.refresh();
                     if let Some(d) = self.displays.first().cloned() {
                         let (w, h) = css_size(&d);
                         self.show(
@@ -238,7 +237,6 @@ impl Actor {
                     }
                 }
                 Msg::EmotePreview(emote) => {
-                    self.refresh();
                     if let Some(d) = self.displays.first().cloned() {
                         let (w, h) = css_size(&d);
                         let fx = self.own_fx(&emote);
@@ -522,7 +520,6 @@ impl Actor {
 
     /// 语音的提示画在主显示器右下角。从没有变成有时才挪回、置顶窗口，之后（比如每秒的倒计时）只通知页面。
     fn speaking(&mut self, me: Option<u64>, others: &[MemberId]) {
-        self.refresh();
         let Some(d) = self.displays.first().cloned() else {
             return;
         };

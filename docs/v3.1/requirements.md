@@ -44,12 +44,13 @@
 | 编号 | 问题 | 证据 | 改法 |
 |---|---|---|---|
 | P1 | 节点每 100 毫秒、每个队伍查两次「本机持有哪些事件」，每次读出这个队伍的**全部**事件行重新算，空闲时也一样（约 20 次全表读/秒）。2.0 打对线留下的命中事件越多越慢 | `node/mod.rs` 的 `check_want`、`plan_want` 每次先调 `core.holdings`；`storage/events.rs` 的 `holdings_rows` 是 `SELECT author_id, seq FROM events WHERE room_id = ?` | 先判断有没有要做的（有没有在途的 Want、有没有队友、队伍是否解散）再查；持有情况缓存在内存里，只在写入新事件时更新 |
-| P2 | 每取一张表情图（`emote://`）就新开一个系统线程；回应头 `no-store`，同一张图每次都从磁盘重读 | `lib.rs` 的 `register_asynchronous_uri_scheme_protocol` 里 `std::thread::spawn`；`Cache-Control: no-store` | 用 Tauri 的阻塞线程池（`spawn_blocking`）；静态图按自己内容的哈希命名、永远不变，给长缓存。动图和音效会随重新导入变，404 也不能缓存，这几样保持不缓存 |
+| P2 | 每取一张表情图（`emote://`）就新开一个系统线程；回应头 `no-store`，同一张图每次都从磁盘重读 | `lib.rs` 的 `register_asynchronous_uri_scheme_protocol` 里 `std::thread::spawn`；`Cache-Control: no-store` | 用 Tauri 的阻塞线程池（`spawn_blocking`）；静态图按自己内容的哈希命名、永远不变，给长缓存。动图和音效会随重新导入变，404 也不能缓存，这几样保持不缓存。**M3 实测**：WebView2 不缓存自定义协议的回应，长缓存头不起作用（同一个页面里同一张图本来就复用），所以没加，只改了线程池 |
 | P3 | 透明窗口线程很多消息都先去主线程查一遍显示器（`refresh`），说话时的倒计时每秒一次也查；本来就有每 3 秒的轮询 | `overlay/mod.rs` 有 9 处 `self.refresh()`，包括 `speaking` | 只在要按位置放东西（开轮盘、放信号、放表情、冒字）时查；倒计时、提示这类只用主显示器的不查 |
 | P4 | 历史记录每加一条都扫一遍全表：算所有语音的总大小、删多余的行 | `storage/history.rs` 的 `trim`，`history.rs` 每次 `add` 后都调 | 超过上限一定余量（比如 50 条）才修剪；语音总大小在内存里记着，启动时算一次 |
 | P5 | 语音线程每 20 毫秒的混音、重采样都新分配内存；麦克风回调（声卡线程）里也分配 | `voice/mod.rs` 的 `mix`、`play`；`voice/resample.rs` 的 `process`；`voice/audio.rs` 的回调 | 复用缓冲区，声卡线程里不分配内存 |
 | P6 | 聊天框取记录、取语音是同步命令：在主线程上等历史记录线程回话 | `api.rs` 的 `history_list`、`history_play` | 改成异步命令，不占主线程 |
 | P7 | 每个包（在线状态每 5 秒、说话时每秒约 2.5 个语音帧）都发给全部 8 个中继，经中继说话时上行约 20 包/秒 | `transport/relay.rs` 的 `publish`：「发给所有可用中继」 | **只评估、不改**（所有者已定）：发给最好的 3 个、收照常全听能省流量和 CPU，但中继不稳时可能连不上。3.1.1 把评估结果写进发版说明，改不改以后再定 |
+| P8 | （M3 量空闲 CPU 时发现）透明窗口放音效用的 AudioContext 建好后一直在跑，没有声音也在混静音：空闲 60 秒里网页进程约 0.4 秒、系统音频服务约 0.2 秒 CPU | `src/overlay/soundBank.ts` 的 `new AudioContext`，只在播放时 `resume`，从不暂停 | 3 秒没有声音就暂停，下次放声音时再启动 |
 
 查过、没问题的（记下来，免得以后重查）：
 

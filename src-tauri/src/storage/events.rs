@@ -234,6 +234,16 @@ pub fn pending_own(
     )
 }
 
+/// 这个队伍最新一条事件的本地序号；一条都没有时是 None。本地序号只增不减（AUTOINCREMENT，回滚也会退回去），
+/// 所以它没变就说明这个队伍的事件没变：持有情况的缓存靠它判断（走 events_by_local 索引，很快）。
+pub fn latest_local_seq(conn: &Connection, room: &RoomId) -> AppResult<Option<i64>> {
+    Ok(conn.query_row(
+        "SELECT MAX(local_seq) FROM events WHERE room_id = ?1",
+        [room],
+        |r| r.get(0),
+    )?)
+}
+
 /// 队伍里每条事件的 (作者, seq)，用来算持有向量。
 pub fn holdings_rows(conn: &Connection, room: &RoomId) -> AppResult<Vec<(MemberId, u64)>> {
     let mut stmt = conn.prepare("SELECT author_id, seq FROM events WHERE room_id = ?1")?;
