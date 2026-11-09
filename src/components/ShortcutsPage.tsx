@@ -117,6 +117,9 @@ export function ShortcutsPage({ settings: s, clashes, onChange }: Props) {
       return next;
     });
   }, [clashes]);
+  /** 侧键当触发键时程序要一直看鼠标（3.2.0 起键盘触发只在按住时才看），在那一行说一声。 */
+  const sideButton = (t: TriggerKey | "off") => t === "mouse4" || t === "mouse5";
+  const SIDE_HINT = "用侧键触发时程序要一直看鼠标移动，玩游戏时比键盘触发多占一点 CPU";
   const note = (id: RowId) => {
     const a = asked[id];
     const c = why[id];
@@ -128,10 +131,18 @@ export function ShortcutsPage({ settings: s, clashes, onChange }: Props) {
     <div className="page">
       <h1>快捷键</h1>
       <section className="card">
-        <Row label="信号轮盘（按住拖动）" tip="按住这个键用左键拖动，在按下的位置打开信号轮盘。只拦这个手势，别的点击和按键照常" hint={note("trigger")}>
+        <Row
+          label="信号轮盘（按住拖动）"
+          tip="按住这个键用左键拖动，在按下的位置打开信号轮盘。只拦这个手势，别的点击和按键照常"
+          hint={note("trigger") || (sideButton(s.trigger) && SIDE_HINT)}
+        >
           <TriggerPick value={s.trigger} allowOff={false} onPick={(t) => pick("trigger", t, { trigger: t as TriggerKey })} />
         </Row>
-        <Row label="表情轮盘（按住拖动）" tip="和信号轮盘一样，打开的是表情轮盘。不能和信号轮盘用同一个键" hint={note("emote")}>
+        <Row
+          label="表情轮盘（按住拖动）"
+          tip="和信号轮盘一样，打开的是表情轮盘。不能和信号轮盘用同一个键"
+          hint={note("emote") || (sideButton(s.emoteTrigger) && SIDE_HINT)}
+        >
           <TriggerPick value={s.emoteTrigger} allowOff taken={s.trigger} onPick={(t) => pick("emote", t, { emoteTrigger: t })} />
         </Row>
         <Row label="暂停 / 恢复" tip="随时停掉或恢复全部拦截" hint={note("toggle")}>

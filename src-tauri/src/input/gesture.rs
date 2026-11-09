@@ -499,6 +499,18 @@ impl Gesture {
         r
     }
 
+    /// 现在要不要看鼠标事件（3.2.0）：平台层只在要的时候装鼠标钩子，不然全系统每次鼠标移动都要经过我们。
+    /// 要：手势还没做完（等按下的那个键抬起）、还有一个右键抬起要拦，或者开着时按住了某个轮盘的触发键；
+    /// 侧键当触发键时开着就一直要（按下侧键本身就是鼠标事件）。只看状态，不改状态。
+    pub fn wants_mouse(&self) -> bool {
+        self.state != State::Idle
+            || self.swallow_right_up
+            || (self.active()
+                && WHEELS
+                    .iter()
+                    .any(|&k| self.is_mouse_trigger(k) || self.held(k)))
+    }
+
     fn active(&self) -> bool {
         self.enabled && !self.suspended
     }

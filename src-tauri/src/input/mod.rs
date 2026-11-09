@@ -23,14 +23,22 @@ use stub as platform;
 #[cfg(windows)]
 use win32 as platform;
 
+#[cfg(not(windows))]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(windows))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use gesture::{Config, Emit, TalkPhase, Trigger, WheelKind};
 
+// 鼠标位置和多久没碰键鼠：Windows 直接问系统（3.2.0，鼠标钩子不再一直装着）；macOS 还是在监听回调里记。
+#[cfg(windows)]
+pub use win32::{cursor, idle_ms};
+
 /// 最后一次真实键鼠输入的时间（Unix 毫秒），0 表示还没见过。平台层在钩子回调里更新，用来判断离开电脑。
+#[cfg(not(windows))]
 static LAST_INPUT_MS: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(not(windows))]
 fn unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -39,16 +47,19 @@ fn unix_ms() -> u64 {
 }
 
 /// 平台层收到一个真实（不是自己回放的）键鼠事件时调用。
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+#[cfg(not(windows))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn touch() {
     LAST_INPUT_MS.store(unix_ms(), Ordering::Relaxed);
 }
 
 /// 鼠标最后的位置（物理像素，x 在高 32 位、y 在低 32 位），文字框和队伍面板放在鼠标所在的屏幕要用。
+#[cfg(not(windows))]
 static CURSOR: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// 平台层收到真实的鼠标移动时调用。
-#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+#[cfg(not(windows))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn set_cursor(x: i32, y: i32) {
     CURSOR.store(
         (u64::from(x as u32) << 32) | u64::from(y as u32),
@@ -57,6 +68,7 @@ fn set_cursor(x: i32, y: i32) {
 }
 
 /// 鼠标现在的位置（物理像素）；平台层还没报告过时返回 None。
+#[cfg(not(windows))]
 pub fn cursor() -> Option<(i32, i32)> {
     match CURSOR.load(Ordering::Relaxed) {
         u64::MAX => None,
@@ -65,6 +77,7 @@ pub fn cursor() -> Option<(i32, i32)> {
 }
 
 /// 多久没碰键鼠了；平台层还没报告过输入时返回 None。
+#[cfg(not(windows))]
 pub fn idle_ms() -> Option<u64> {
     match LAST_INPUT_MS.load(Ordering::Relaxed) {
         0 => None,
@@ -98,7 +111,8 @@ pub fn start(cfg: Config, sink: Sink) -> Result<InputHandle, String> {
     platform::start(cfg, sink).map(InputHandle)
 }
 
-#[cfg(test)]
+// 只在 macOS 和别的平台上有：Windows 的鼠标位置直接问系统（win32::cursor）
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
 

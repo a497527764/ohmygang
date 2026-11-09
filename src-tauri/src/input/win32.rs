@@ -1,7 +1,7 @@
 //! Windows 的全局键鼠监听（架构 2.3）。移植自 lolPing `native/hook-helper/src/hooks_win.cpp`（MIT，© 2026 Danrui Meng）。
 //!
 //! 实现流程：
-//! 1. 一个专门的线程装 `WH_MOUSE_LL` 和 `WH_KEYBOARD_LL`，跑自己的消息循环。系统在这个线程上调钩子回调。
+//! 1. 一个专门的线程装 `WH_KEYBOARD_LL`，跑自己的消息循环；`WH_MOUSE_LL` 只在要看鼠标时才装（第 8 条）。系统在这个线程上调钩子回调。
 //! 2. 回调里只做纯计算：把事件交给手势状态机，按结果拦下（返回 1）或放行（交给下一个钩子），
 //!    要画的东西通过不阻塞的通道交出去。回调慢了 Windows 会悄悄摘掉钩子，所以这里不做 IO、不等锁。
 //! 3. 回放（`SendInput`）不能在回调里做：注入的事件要再过一遍钩子链，而处理钩子的正是这个卡在 `SendInput` 里的线程，
@@ -12,6 +12,10 @@
 //! 5. 每秒一次：用 `GetAsyncKeyState` 跟系统对按键状态，再让状态机检查看门狗。
 //! 6. 设置和开关通过通道送进来，`PostThreadMessageW` 叫醒消息循环处理。
 //! 7. 进程退出或崩溃时钩子随进程消失，键鼠不会被卡住。
+//! 8. 鼠标钩子按需装（3.2.0）：低级鼠标钩子让全系统每一次鼠标移动都经过这个线程（量过约 44 微秒一次，游戏鼠标每秒上千次），
+//!    没按触发键时一次也用不着。手势状态机说要（`wants_mouse`：按住了触发键、手势还没做完，或者侧键当触发键）才装，不要了就摘。
+//!    回调里只投一条消息，装和摘都在消息循环里做。启动时两个钩子先都装一次，确认装得上（装不上照旧报错），再按需要摘掉鼠标钩子。
+//!    离开电脑看 `GetLastInputInfo`（系统记的最后一次输入），鼠标位置用 `GetCursorPos`，都不靠钩子。
 //!
 //! `unsafe` 只在这个文件里：都是 Win32 调用和钩子回调里对系统给的结构体指针的读取，每处写了为什么成立。
 
@@ -24,22 +28,22 @@ use windows::Win32::Graphics::Gdi::{
     MonitorFromWindow,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::SystemInformation::GetTickCount64;
+use windows::Win32::System::SystemInformation::{GetTickCount, GetTickCount64};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, MOUSE_EVENT_FLAGS,
-    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT,
-    MapVirtualKeyW, SendInput, VIRTUAL_KEY,
+    GetAsyncKeyState, GetLastInputInfo, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE,
+    KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, LASTINPUTINFO,
+    MAPVK_VK_TO_VSC, MOUSE_EVENT_FLAGS, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, MapVirtualKeyW, SendInput, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GWL_STYLE, GetClassNameW, GetForegroundWindow, GetMessageW, GetWindowLongPtrW,
-    GetWindowRect, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED, MSG,
-    MSLLHOOKSTRUCT, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetTimer, SetWindowsHookExW,
-    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SYSKEYDOWN, WM_TIMER, WM_USER, WM_XBUTTONDOWN, WM_XBUTTONUP, WS_CAPTION,
+    CallNextHookEx, GWL_STYLE, GetClassNameW, GetCursorPos, GetForegroundWindow, GetMessageW,
+    GetWindowLongPtrW, GetWindowRect, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED,
+    LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetTimer,
+    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SYSKEYDOWN, WM_TIMER, WM_USER, WM_XBUTTONDOWN, WM_XBUTTONUP, WS_CAPTION,
 };
 
 use super::Command;
@@ -49,6 +53,8 @@ use super::gesture::{Btn, EvKind, Gesture, Inject, InputEvent, Outcome};
 const SELF_MARKER: usize = 0x4C47_4E47;
 const WM_COMMAND_READY: u32 = WM_APP + 1;
 const WM_INJECT: u32 = WM_APP + 2;
+/// 手势要不要鼠标变了：去装或摘鼠标钩子。
+const WM_SYNC_MOUSE: u32 = WM_APP + 3;
 const XBUTTON1: u16 = 1;
 const XBUTTON2: u16 = 2;
 
@@ -60,6 +66,8 @@ struct HookState {
     /// 等回调返回后再发的回放。
     pending: Vec<Inject>,
     thread_id: u32,
+    /// 装着的鼠标钩子；没装是 None（第 8 条）。
+    mouse_hook: Option<HHOOK>,
 }
 
 thread_local! {
@@ -115,6 +123,7 @@ fn run(
             sink,
             pending: Vec::new(),
             thread_id,
+            mouse_hook: None,
         })
     });
 
@@ -146,6 +155,8 @@ fn run(
             return;
         }
     };
+    with_state(|s| s.mouse_hook = Some(mouse_hook));
+    sync_mouse_hook();
     // SAFETY: 不带窗口的线程计时器，每秒往本线程队列投一条 WM_TIMER，没有回调函数。
     unsafe {
         SetTimer(None, 0, 1000, None);
@@ -163,6 +174,7 @@ fn run(
                 });
             }
             WM_INJECT => drain_injects(),
+            WM_SYNC_MOUSE => {}
             WM_COMMAND_READY => {
                 while let Ok(c) = commands.try_recv() {
                     with_state(|s| {
@@ -178,12 +190,77 @@ fn run(
             }
             _ => {}
         }
+        sync_mouse_hook();
     }
-    // SAFETY: 两个钩子都是上面在本线程装上的有效句柄。
+    // SAFETY: 两个钩子都是在本线程装上的有效句柄（鼠标钩子此刻可能已经摘了）。
     unsafe {
-        let _ = UnhookWindowsHookEx(mouse_hook);
+        if let Some(h) = with_state(|s| s.mouse_hook.take()).flatten() {
+            let _ = UnhookWindowsHookEx(h);
+        }
         let _ = UnhookWindowsHookEx(key_hook);
     }
+}
+
+/// 按手势现在的需要装上或摘掉鼠标钩子（第 8 条）。只在消息循环里调用，不在钩子回调里。
+fn sync_mouse_hook() {
+    let Some((want, have)) = with_state(|s| (s.gesture.wants_mouse(), s.mouse_hook)) else {
+        return;
+    };
+    match (want, have) {
+        (true, None) => {
+            // SAFETY: 同启动时：回调是本文件里签名匹配的 extern "system" 函数，进程活着就一直有效；
+            // 模块句柄取本进程的主模块；dwThreadId 为 0 表示全局低级钩子，由系统在本线程上调回调。
+            let hook = unsafe {
+                let module = GetModuleHandleW(None).ok();
+                SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module.map(Into::into), 0)
+            };
+            match hook {
+                Ok(h) => {
+                    with_state(|s| s.mouse_hook = Some(h));
+                }
+                Err(e) => eprintln!("鼠标钩子装不上：{e}"),
+            }
+        }
+        (false, Some(h)) => {
+            // SAFETY: h 是本线程装上的有效钩子句柄；摘掉以后马上从状态里清掉，不再用它。
+            let _ = unsafe { UnhookWindowsHookEx(h) };
+            with_state(|s| s.mouse_hook = None);
+        }
+        _ => {}
+    }
+}
+
+/// 回调里用：手势要不要鼠标和钩子装没装对不上了，就叫醒消息循环去装或摘。
+fn request_mouse_sync() {
+    let stale =
+        with_state(|s| (s.gesture.wants_mouse() != s.mouse_hook.is_some()).then_some(s.thread_id));
+    if let Some(Some(id)) = stale {
+        // SAFETY: 给自己的线程队列投一条消息，参数是普通整数。
+        let _ = unsafe { PostThreadMessageW(id, WM_SYNC_MOUSE, WPARAM(0), LPARAM(0)) };
+    }
+}
+
+/// 鼠标现在的位置（物理像素）。鼠标钩子不再一直装着，位置直接问系统。
+pub fn cursor() -> Option<(i32, i32)> {
+    let mut p = POINT::default();
+    // SAFETY: p 是本地的有效结构体，GetCursorPos 只往里写。
+    unsafe { GetCursorPos(&mut p) }.ok()?;
+    Some((p.x, p.y))
+}
+
+/// 多久没碰键鼠了：系统记的最后一次输入（整个登录会话的键鼠都算），不需要钩子。
+pub fn idle_ms() -> Option<u64> {
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    // SAFETY: info 是本地的有效结构体，cbSize 按要求填好；GetLastInputInfo 只往里写。
+    if !unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+        return None;
+    }
+    // SAFETY: 读开机以来的毫秒数，没有前置条件。它和 dwTime 是同一个 32 位时钟（约 49.7 天回绕一次），所以用回绕减法。
+    let now = unsafe { GetTickCount() };
+    Some(u64::from(now.wrapping_sub(info.dwTime)))
 }
 
 /// 在钩子线程上用状态。拿不到（只可能是重入）就什么都不做：回调里绝不能 panic。
@@ -248,12 +325,6 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         // SAFETY: WH_MOUSE_LL 在 HC_ACTION 时，lParam 指向系统提供的 MSLLHOOKSTRUCT，回调期间有效、只读。
         let m = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
         let injected = m.flags & LLMHF_INJECTED != 0 && m.dwExtraInfo == SELF_MARKER;
-        if !injected {
-            super::touch();
-            if wparam.0 as u32 == WM_MOUSEMOVE {
-                super::set_cursor(m.pt.x, m.pt.y);
-            }
-        }
         let side = if (m.mouseData >> 16) as u16 == XBUTTON1 {
             Btn::X1
         } else {
@@ -295,6 +366,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                     apply_in_order(&e, replay)
                 }
             };
+            request_mouse_sync();
             if swallow {
                 return LRESULT(1);
             }
@@ -316,15 +388,14 @@ unsafe extern "system" fn key_proc(code: i32, wparam: WPARAM, lparam: LPARAM) ->
         );
         e.self_injected =
             k.flags & LLKHF_INJECTED != Default::default() && k.dwExtraInfo == SELF_MARKER;
-        if !e.self_injected {
-            super::touch();
-        }
         let replay = if down {
             Inject::KeyDown(k.vkCode)
         } else {
             Inject::KeyUp(k.vkCode)
         };
-        if apply_in_order(&e, replay) {
+        let swallow = apply_in_order(&e, replay);
+        request_mouse_sync();
+        if swallow {
             return LRESULT(1);
         }
     }

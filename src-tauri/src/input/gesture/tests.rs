@@ -1207,3 +1207,53 @@ fn a_lost_talk_key_up_ends_talking_after_the_repeats_stop() {
         vec![TalkPhase::Start]
     );
 }
+
+#[test]
+fn mouse_is_wanted_only_while_a_trigger_is_held_or_a_gesture_is_open() {
+    let mut g = Gesture::new();
+    assert!(!g.wants_mouse(), "没按触发键：鼠标事件一个都不用看");
+    g.on_event(&kd(ALT));
+    assert!(g.wants_mouse(), "按住 Alt：要看");
+    g.on_event(&ku(ALT));
+    assert!(!g.wants_mouse());
+    // 按住 Alt 开了轮盘、先松开 Alt：手势还没完，要等到左键抬起
+    open_wheel(&mut g);
+    g.on_event(&ku(ALT));
+    assert!(g.wants_mouse(), "轮盘开着，等左键抬起");
+    g.on_event(&mu(Btn::Left, 130, 100));
+    assert!(!g.wants_mouse(), "手势完了");
+    // 右键取消轮盘：右键的抬起也要拦下，所以在它来之前还要看
+    open_wheel(&mut g);
+    g.on_event(&ku(ALT));
+    g.on_event(&md(Btn::Right, 130, 100));
+    g.on_event(&mu(Btn::Left, 130, 100));
+    assert!(g.wants_mouse(), "还有一个右键抬起要拦");
+    assert!(g.on_event(&mu(Btn::Right, 130, 100)).swallow);
+    assert!(!g.wants_mouse());
+}
+
+#[test]
+fn mouse_is_wanted_while_paused_only_to_finish_a_gesture() {
+    let mut g = Gesture::new();
+    g.set_enabled(false);
+    g.on_event(&kd(ALT));
+    assert!(!g.wants_mouse(), "暂停时按 Alt 也不开手势");
+    g.on_event(&ku(ALT));
+    g.set_enabled(true);
+    g.set_suspended(true);
+    g.on_event(&kd(ALT));
+    assert!(!g.wants_mouse(), "录按键时也不看");
+}
+
+#[test]
+fn side_button_triggers_always_want_the_mouse() {
+    let g = with_trigger(Trigger::Mouse4, false);
+    assert!(g.wants_mouse(), "侧键本身就是鼠标事件，只能一直看");
+    let mut g = with_emote(Trigger::Mouse5, false);
+    assert!(g.wants_mouse());
+    g.set_enabled(false);
+    assert!(!g.wants_mouse(), "暂停时侧键也不开手势");
+    let mut g = with_emote(Trigger::None, false);
+    g.on_event(&kd(CTRL));
+    assert!(!g.wants_mouse(), "表情轮盘关着，Ctrl 不算触发键");
+}
