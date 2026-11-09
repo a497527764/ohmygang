@@ -17,13 +17,6 @@ impl Rect {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
     }
 
-    fn overlaps(&self, o: &Rect) -> bool {
-        self.x < o.x + o.width
-            && o.x < self.x + self.width
-            && self.y < o.y + o.height
-            && o.y < self.y + self.height
-    }
-
     /// 点到矩形的距离的平方（在里面是 0）。
     fn dist_sq(&self, x: i32, y: i32) -> i64 {
         let dx = i64::from((self.x - x).max(0).max(x - (self.x + self.width - 1)));
@@ -78,32 +71,15 @@ pub fn overlay_rect(d: &Display) -> Rect {
     }
 }
 
-/// 空闲时窗口挪到哪：挪出自己的显示器，只在一条不挨着别的显示器的边上留一点（一个 CSS 像素对应的物理像素），
-/// 这样窗口还算在这块屏幕上、缩放不变，截图工具也不会把它当成要截的窗口。四条边都挨着别的显示器时返回 None（改成隐藏）。
-pub fn parked_rect(d: &Display, others: &[Rect]) -> Option<Rect> {
+/// 空闲时窗口缩成哪：显示器上边一条（一个 CSS 像素对应的物理像素那么高），这样窗口还算在这块屏幕上、缩放不变，
+/// 截图工具也不会把它当成要截的窗口。3.2.0 以前是整块屏幕大小挪到屏幕外只露这一条；露出来的一样，
+/// 但窗口本身小了，WebView2 不用一直留着整屏大小的显卡缓冲。这一条在自己的显示器里，不会压到别的显示器。
+pub fn parked_rect(d: &Display) -> Rect {
     let o = overlay_rect(d);
-    let keep = d.scale.ceil() as i32;
-    let sides = [
-        Rect {
-            y: d.rect.y - o.height + keep,
-            ..o
-        },
-        Rect {
-            y: d.rect.y + d.rect.height - keep,
-            ..o
-        },
-        Rect {
-            x: d.rect.x - o.width + keep,
-            ..o
-        },
-        Rect {
-            x: d.rect.x + d.rect.width - keep,
-            ..o
-        },
-    ];
-    sides
-        .into_iter()
-        .find(|r| !others.iter().any(|other| r.overlaps(other)))
+    Rect {
+        height: d.scale.ceil() as i32,
+        ..o
+    }
 }
 
 #[cfg(test)]
@@ -170,65 +146,28 @@ mod tests {
     }
 
     #[test]
-    fn parked_overlay_keeps_a_sliver_on_a_free_side() {
+    fn parked_overlay_is_a_strip_on_its_own_top_edge() {
         let a = disp("a", 0, 0, 2560, 1600, 1.5, true);
-        // 一块屏幕：上边是空的，挪到上面，留 2 个物理像素（1.5 倍向上取整）。
+        // 上边一条，2 个物理像素高（1.5 倍向上取整），整个窗口就这么大
         assert_eq!(
-            parked_rect(&a, &[]),
-            Some(Rect {
+            parked_rect(&a),
+            Rect {
                 x: 0,
-                y: -1597,
+                y: 0,
                 width: 2560,
-                height: 1599
-            })
+                height: 2
+            }
         );
-        // 上面有别的屏幕：换下边。
-        let above = Rect {
-            x: 0,
-            y: -1080,
-            width: 1920,
-            height: 1080,
-        };
+        // 左边的副屏是负坐标；1 倍缩放只留 1 个像素
+        let b = disp("b", -1920, 200, 1920, 1080, 1.0, false);
         assert_eq!(
-            parked_rect(&a, &[above]),
-            Some(Rect {
-                x: 0,
-                y: 1598,
-                width: 2560,
-                height: 1599
-            })
+            parked_rect(&b),
+            Rect {
+                x: -1920,
+                y: 200,
+                width: 1920,
+                height: 1
+            }
         );
-    }
-
-    #[test]
-    fn parked_overlay_has_no_place_when_boxed_in() {
-        let a = disp("a", 0, 0, 100, 100, 1.0, true);
-        let around = [
-            Rect {
-                x: 0,
-                y: -100,
-                width: 100,
-                height: 100,
-            },
-            Rect {
-                x: 0,
-                y: 100,
-                width: 100,
-                height: 100,
-            },
-            Rect {
-                x: -100,
-                y: 0,
-                width: 100,
-                height: 100,
-            },
-            Rect {
-                x: 100,
-                y: 0,
-                width: 100,
-                height: 100,
-            },
-        ];
-        assert_eq!(parked_rect(&a, &around), None);
     }
 }

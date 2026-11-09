@@ -9,7 +9,8 @@
 //! 3. 手势事件进来是物理像素：开轮盘时记下中心和所在的显示器，之后每次移动都按那块屏幕的缩放算出偏移、选出高亮的格子，
 //!    只在格子变了时通知页面；松开时按同样的算法定格，在中心放那一格的信号或表情。页面只管画，不算规则。
 //!    信号轮盘和表情轮盘几何一样，只是格子里的东西不同；同一时间只开一个。
-//! 4. 空闲时挪开：页面没东西画 250 毫秒后报告空闲，就把窗口挪到显示器外只留一点（截图工具就不会把它当成要截的窗口）；
+//! 4. 空闲时缩小：页面没东西画 250 毫秒后报告空闲，就把窗口缩成显示器上边的一条（截图工具就不会把它当成要截的窗口，
+//!    3.2.0 起窗口真的缩小，不再是整屏大小挪到屏幕外，显卡缓冲跟着变小）；
 //!    要画新东西前先挪回来，并重新置顶（Windows 10 偶尔会把置顶窗口压到普通窗口下面）。
 
 pub mod displays;
@@ -33,7 +34,9 @@ use displays::{Display, Rect};
 
 /// 所有 WebView2 窗口必须用同一串启动参数（同一数据目录下参数不同会建不起来），主窗口在 `tauri.conf.json` 里写同一串：
 /// wry 默认关掉的几项，加上「不要求用户手势就能出声」——透明窗口永远收不到点击。
-pub const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required";
+/// 3.2.0 加了不下组件、不在后台联网：WebView2 会自己下广告拦截列表、语音识别、断字词典这些（新的配置目录 4 分钟就 27 MB），
+/// 程序一样都用不到，加上这两个以后只剩 5.6 MB，也不再在后台连微软的服务器。
+pub const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --disable-component-update --disable-background-networking";
 
 /// 定时查显示器的间隔。按位置画的东西（轮盘、信号、表情、字）画之前自己会查（3.1.1），这里只是兜底，3.2.0 从 3 秒放宽到 10 秒。
 const POLL: Duration = Duration::from_secs(10);
@@ -540,7 +543,7 @@ impl Actor {
         if let Some(w) = self.windows.get_mut(key) {
             if w.idle {
                 w.idle = false;
-                place(w, &self.displays);
+                place(w);
             }
             // tao 在已经置顶时不会再调 SetWindowPos，先取消再设，等于重新放到所有置顶窗口的最上面。
             let _ = w.window.set_always_on_top(false);
@@ -554,7 +557,7 @@ impl Actor {
             && w.idle != idle
         {
             w.idle = idle;
-            place(w, &self.displays);
+            place(w);
         }
     }
 
@@ -579,7 +582,7 @@ impl Actor {
         for d in self.displays.clone() {
             if let Some(w) = self.windows.get_mut(&d.key) {
                 w.display = d;
-                place(w, &self.displays);
+                place(w);
                 continue;
             }
             let label = format!("overlay-{}", self.next_id);
@@ -592,9 +595,9 @@ impl Actor {
                         display: d.clone(),
                         idle: false,
                     };
-                    place(&mut w, &self.displays);
+                    place(&mut w);
                     let _ = w.window.show();
-                    place(&mut w, &self.displays); // 再放一次：不同缩放的屏幕上第一次可能算错大小
+                    place(&mut w); // 再放一次：不同缩放的屏幕上第一次可能算错大小
                     self.windows.insert(d.key, w);
                 }
                 Err(e) => eprintln!("透明窗口建不起来：{e}"),
@@ -652,32 +655,20 @@ pub fn floating_window(
         .build()
 }
 
-/// 把窗口放到它该在的位置：有东西画时盖住显示器，空闲时挪开（没地方挪就隐藏）。
-fn place(w: &mut Win, all: &[Display]) {
-    let target = if w.idle {
-        let others: Vec<Rect> = all
-            .iter()
-            .filter(|d| d.key != w.display.key)
-            .map(|d| d.rect)
-            .collect();
-        displays::parked_rect(&w.display, &others)
+/// 把窗口放到它该在的位置：有东西画时盖住显示器，空闲时缩成显示器上边的一条。
+fn place(w: &mut Win) {
+    let r = if w.idle {
+        displays::parked_rect(&w.display)
     } else {
-        Some(displays::overlay_rect(&w.display))
+        displays::overlay_rect(&w.display)
     };
-    match target {
-        Some(r) => {
-            let _ = w.window.set_position(PhysicalPosition::new(r.x, r.y));
-            let _ = w.window.set_size(PhysicalSize::new(
-                r.width.max(1) as u32,
-                r.height.max(1) as u32,
-            ));
-            if !w.idle && !w.window.is_visible().unwrap_or(true) {
-                let _ = w.window.show();
-            }
-        }
-        None => {
-            let _ = w.window.hide();
-        }
+    let _ = w.window.set_position(PhysicalPosition::new(r.x, r.y));
+    let _ = w.window.set_size(PhysicalSize::new(
+        r.width.max(1) as u32,
+        r.height.max(1) as u32,
+    ));
+    if !w.idle && !w.window.is_visible().unwrap_or(true) {
+        let _ = w.window.show();
     }
 }
 

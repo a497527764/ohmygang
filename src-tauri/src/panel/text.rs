@@ -53,9 +53,7 @@ impl Runner {
 
     pub(super) fn close_text(&mut self) {
         self.text_at = None;
-        if let Some(w) = &self.text {
-            let _ = w.hide();
-        }
+        self.hide(Which::Text);
         if let Some(state) = self.state() {
             state.voice.send(crate::voice::VoiceMsg::StopPlay);
         }

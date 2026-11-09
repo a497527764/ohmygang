@@ -59,9 +59,7 @@ impl Runner {
         if self.result_until.is_some_and(|t| Instant::now() >= t) {
             self.result_until = None;
             self.publish(None);
-            if let Some(w) = &self.vote {
-                let _ = w.hide();
-            }
+            self.hide(Which::Vote);
         }
         // 开着的投票每秒刷新一次（倒计时之外的变化都会马上推，这里只是兜底）。
         if self.tally.view().is_some() {

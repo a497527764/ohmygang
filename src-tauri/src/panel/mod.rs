@@ -5,7 +5,8 @@
 //! 1. 一个专门的线程拥有投票和三个小窗口（队伍面板 roster、投票 vote、输入框 text），别处只往它的通道里发消息。
 //!    有投票时每秒检查一次结果，每 3 秒重发一次自己的回答（实时帧可能丢）；结果出来后投票窗口再留 3 秒。
 //!    没有投票时只等消息，不定时醒（3.2.0）。
-//!    窗口第一次用到时才建，之后藏起来复用。命令要的投票状态放在共享的 `Mutex` 里，命令不等这个线程。
+//!    窗口第一次用到时才建，用完藏起来；藏了 2 分钟还没再用就销毁（3.2.0，每个窗口占一个网页进程，约 35–40 MB），
+//!    下次用时再建。命令要的投票状态放在共享的 `Mutex` 里，命令不等这个线程。
 //! 2. 队伍面板：按住面板键时在鼠标所在的显示器中间显示，松开收起。面板和投票窗口能点但不拿焦点，
 //!    游戏或正在打字的程序不丢键盘。面板页面每次显示时自己取一次队伍信息（team_view）。
 //! 3. 投票：发起时定下投票人（本人加上在线、没关投票的队友，`team::voters`），发一帧 Vote；收到队友的 Vote 同样开一个。
@@ -36,6 +37,8 @@ use crate::votes::{Tally, VoteKind};
 use vote::VoteDto;
 
 const CHECK: Duration = Duration::from_secs(1);
+/// 小窗口藏起来这么久没再用就销毁（文件头第 1 条，所有者定的 2 分钟）。
+const DESTROY_AFTER: Duration = Duration::from_secs(120);
 const BALLOT_REPEAT: Duration = Duration::from_secs(3);
 /// 结果出来后投票窗口还留多久。
 const RESULT_SHOW: Duration = Duration::from_secs(3);
@@ -105,6 +108,7 @@ impl Panel {
             speaking: Vec::new(),
             vote: None,
             text: None,
+            hidden: HashMap::new(),
         };
         std::thread::Builder::new()
             .name("panel".into())
@@ -135,6 +139,8 @@ struct Runner {
     speaking: Vec<String>,
     vote: Option<WebviewWindow>,
     text: Option<WebviewWindow>,
+    /// 藏起来的小窗口和藏起来的时候。
+    hidden: HashMap<Which, Instant>,
 }
 
 impl Runner {
@@ -142,16 +148,22 @@ impl Runner {
         let mut next_check = Instant::now() + CHECK;
         loop {
             let voting = self.tally.view().is_some() || self.result_until.is_some();
-            let got = if voting {
-                rx.recv_timeout(next_check.saturating_duration_since(Instant::now()))
-            } else {
-                rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            // 下一次要醒：有投票时每秒一步，有藏着的窗口时到它该销毁的时候；都没有就只等消息
+            let destroy = self.hidden.values().min().map(|t| *t + DESTROY_AFTER);
+            let wake = [voting.then_some(next_check), destroy]
+                .into_iter()
+                .flatten()
+                .min();
+            let got = match wake {
+                Some(t) => rx.recv_timeout(t.saturating_duration_since(Instant::now())),
+                None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
             match got {
                 Ok(m) => self.handle(m),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
+            self.destroy_unused();
             if !voting {
                 // 刚开了投票：从现在起每秒走一步
                 next_check = Instant::now() + CHECK;
@@ -260,8 +272,8 @@ impl Runner {
                     self.result_until = None;
                     self.publish(None);
                     self.text_at = None;
-                    for w in [&self.roster, &self.vote, &self.text].into_iter().flatten() {
-                        let _ = w.hide();
+                    for which in [Which::Roster, Which::Vote, Which::Text] {
+                        self.hide(which);
                     }
                 }
             }
@@ -287,6 +299,7 @@ impl Runner {
             Which::Vote => &mut self.vote,
             Which::Text => &mut self.text,
         };
+        self.hidden.remove(&which);
         if let Some(w) = slot {
             return Some(w.clone());
         }
@@ -315,11 +328,43 @@ impl Runner {
         }
     }
 
+    /// 藏起一个小窗口，记下时候，2 分钟没再用就销毁（文件头第 1 条）。
+    fn hide(&mut self, which: Which) {
+        let slot = match which {
+            Which::Roster => &self.roster,
+            Which::Vote => &self.vote,
+            Which::Text => &self.text,
+        };
+        if let Some(w) = slot {
+            let _ = w.hide();
+            self.hidden.entry(which).or_insert_with(Instant::now);
+        }
+    }
+
+    /// 藏了 2 分钟还没再用的小窗口销毁掉，网页进程随之退出；下次用时 `window` 再建。
+    fn destroy_unused(&mut self) {
+        let due: Vec<Which> = self
+            .hidden
+            .iter()
+            .filter(|(_, t)| t.elapsed() >= DESTROY_AFTER)
+            .map(|(w, _)| *w)
+            .collect();
+        for which in due {
+            self.hidden.remove(&which);
+            let slot = match which {
+                Which::Roster => &mut self.roster,
+                Which::Vote => &mut self.vote,
+                Which::Text => &mut self.text,
+            };
+            if let Some(w) = slot.take() {
+                let _ = w.destroy();
+            }
+        }
+    }
+
     fn show_roster(&mut self, on: bool) {
         if !on {
-            if let Some(w) = &self.roster {
-                let _ = w.hide();
-            }
+            self.hide(Which::Roster);
             return;
         }
         if !self.in_team || !self.settings().is_some_and(|s| s.team_panel) {
@@ -339,7 +384,7 @@ impl Runner {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Which {
     Roster,
     Vote,
