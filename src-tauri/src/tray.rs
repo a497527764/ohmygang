@@ -4,9 +4,13 @@
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, Wry};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, Window, Wry,
+};
 
 use crate::api;
+use crate::settings2::PanelRect;
 
 const TRAY_ID: &str = "main";
 const TOOLTIP: &str = "lolGang";
@@ -46,7 +50,10 @@ pub fn show_page(app: &AppHandle, page: Option<&'static str>) {
         }
         match WebviewWindowBuilder::from_config(&app, &cfg).and_then(|b| b.build()) {
             Ok(w) => {
-                let _ = w.set_focus();
+                let rect = app
+                    .try_state::<api::AppState>()
+                    .and_then(|s| s.settings.lock().ok().and_then(|s| s.panel_rect));
+                reveal_main(&app, &w, rect);
                 if let Some(state) = app.try_state::<api::AppState>() {
                     let theme = state
                         .settings
@@ -59,6 +66,53 @@ pub fn show_page(app: &AppHandle, page: Option<&'static str>) {
             Err(e) => eprintln!("控制面板建不起来：{e}"),
         }
     });
+}
+
+/// 控制面板建好时是藏着的（tauri.conf.json 里 visible 是 false）：上次关掉时的位置还在某块显示器上，
+/// 就挪回那儿、还原大小，再显示出来（3.1.1；3.0-M6 起每次打开都是新建的，以前总回到屏幕中间）。
+/// 先挪位置再定大小：挪到缩放不同的显示器上时系统会按比例改大小，最后再按记下的定一次。
+pub fn reveal_main(app: &AppHandle, w: &WebviewWindow, rect: Option<PanelRect>) {
+    if let Some(r) = rect.filter(|r| on_screen(app, r)) {
+        let _ = w.set_position(PhysicalPosition::new(r.x, r.y));
+        let _ = w.set_size(PhysicalSize::new(r.width, r.height));
+    }
+    let _ = w.show();
+    let _ = w.set_focus();
+}
+
+/// 标题栏的中间（窗口上沿往下 16 像素）还在某块显示器上：显示器拔了、换了排列，就不还原，按默认的居中。
+fn on_screen(app: &AppHandle, r: &PanelRect) -> bool {
+    let (cx, cy) = (
+        r.x.saturating_add((r.width / 2) as i32),
+        r.y.saturating_add(16),
+    );
+    app.available_monitors().is_ok_and(|list| {
+        list.iter().any(|m| {
+            let (p, s) = (m.position(), m.size());
+            (p.x..p.x + s.width as i32).contains(&cx) && (p.y..p.y + s.height as i32).contains(&cy)
+        })
+    })
+}
+
+/// 关控制面板时记下它的位置和大小（存进设置）。最小化、最大化时不记，留着上一次正常时的。
+pub fn remember_main(window: &Window) {
+    if window.is_minimized().unwrap_or(true) || window.is_maximized().unwrap_or(true) {
+        return;
+    }
+    let (Ok(p), Ok(s)) = (window.outer_position(), window.inner_size()) else {
+        return;
+    };
+    if let Some(state) = window.app_handle().try_state::<api::AppState>() {
+        api::save_panel_rect(
+            &state,
+            PanelRect {
+                x: p.x,
+                y: p.y,
+                width: s.width,
+                height: s.height,
+            },
+        );
+    }
 }
 
 pub fn setup(app: &tauri::App, enabled: bool) -> tauri::Result<()> {

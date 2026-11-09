@@ -19,11 +19,20 @@
         "height": 700,
         "minWidth": 720,
         "minHeight": 480,
+        "visible": false,
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required"
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self'",
+        "img-src": "'self' data: blob: emote: http://emote.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost emote: http://emote.localhost",
+        "object-src": "'none'",
+        "base-uri": "'self'"
+      }
     }
   },
   "plugins": {

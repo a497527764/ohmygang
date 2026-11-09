@@ -122,6 +122,15 @@ mod emote_key {
     }
 }
 
+/// 控制面板的位置（外框左上角）和大小（网页区域），物理像素。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PanelRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// 快捷键：修饰键位（Ctrl 1、Alt 2、Shift 4、Win 8）加一个虚拟键码。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkey {
@@ -194,6 +203,9 @@ pub struct Settings {
     pub launch_at_startup: bool,
     /// 启动后和每 6 小时查一次新版本（只提示，不自己装）。
     pub auto_update_check: bool,
+    /// 控制面板上次关掉时的位置和大小（3.1.1）；没有就按默认的居中打开。
+    /// 只有 Rust 在关控制面板时写（`tray::remember_main`），控制面板存设置时不改它。
+    pub panel_rect: Option<PanelRect>,
 }
 
 impl Default for Settings {
@@ -240,6 +252,7 @@ impl Default for Settings {
             mic: String::new(),
             launch_at_startup: false,
             auto_update_check: true,
+            panel_rect: None,
         }
     }
 }
@@ -311,6 +324,8 @@ const EMOTE_SIZE: Limit = Limit {
 
 /// 自定义触发键不能用的键：触发键在全系统被拦下，这些键会弄坏打字、提交表单、切换焦点、移动光标。
 const UNSAFE_TRIGGER_VKS: [u32; 9] = [0x0D, 0x09, 0x08, 0x20, 0x1B, 0x25, 0x26, 0x27, 0x28];
+/// 记下的控制面板宽、高（物理像素）在这个范围里才用，别的当没记过。
+const PANEL_SIDE: std::ops::RangeInclusive<u32> = 200..=16_000;
 /// 修饰键有自己的名字，不当自定义键。
 const MODIFIER_VKS: [u32; 11] = [
     0x10, 0x11, 0x12, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C,
@@ -599,6 +614,9 @@ pub fn normalize_keys(raw: &Value) -> (Settings, Vec<KeyClash>) {
         mic,
         launch_at_startup: bool_or(get("launchAtStartup"), d.launch_at_startup),
         auto_update_check: bool_or(get("autoUpdateCheck"), d.auto_update_check),
+        panel_rect: get("panelRect")
+            .and_then(|v| serde_json::from_value::<PanelRect>(v.clone()).ok())
+            .filter(|r| PANEL_SIDE.contains(&r.width) && PANEL_SIDE.contains(&r.height)),
     };
     (settings, clashes)
 }

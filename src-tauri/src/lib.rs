@@ -101,6 +101,8 @@ pub fn run() {
             if let WindowEvent::CloseRequested { .. } = event
                 && window.label() == "main"
             {
+                // 记下位置和大小，下次打开时还原（3.1.1）
+                tray::remember_main(window);
                 // 正在录按键时关掉：页面来不及恢复拦截，这里替它恢复
                 if let Some(state) = window.app_handle().try_state::<AppState>()
                     && let Some(input) = &state.input
@@ -176,6 +178,11 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&dir)?;
     let db = storage::open(&dir.join("gang2.db"))?;
     let settings = storage::settings::load(&db)?;
+    // 控制面板建好时藏着：开机启动就一直不显示（后面销毁），否则回到上次关掉时的位置再显示
+    let autostart = std::env::args().any(|a| a == AUTOSTART_ARG);
+    if !autostart && let Some(w) = app.get_webview_window("main") {
+        tray::reveal_main(app.handle(), &w, settings.panel_rect);
+    }
     let node = start_node(app.handle(), &dir, &settings)?;
     let me = tauri::async_runtime::block_on(node.call(|core, _| core.identity().member_id))
         .ok_or("网络模块没起来")?;
@@ -249,9 +256,7 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     team::refresh_names(app.handle());
     update::start_schedule(app.handle());
     api::ensure_autostart(app.handle());
-    if std::env::args().any(|a| a == AUTOSTART_ARG)
-        && let Some(w) = app.get_webview_window("main")
-    {
+    if autostart && let Some(w) = app.get_webview_window("main") {
         // 开机启动只进托盘：控制面板的网页不建（销毁），点托盘时再建
         w.destroy()?;
         #[cfg(target_os = "macos")]

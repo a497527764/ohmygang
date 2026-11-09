@@ -13,6 +13,14 @@ export type Theme = "system" | "light" | "dark";
 export type TextEffect = "outline" | "gold" | "neon" | "bounce" | "typewriter" | "shake";
 
 /** 和 Rust 的 settings2::Settings 对应。 */
+/** 控制面板的位置和大小（物理像素），和 Rust 的 settings2::PanelRect 对应。 */
+export interface PanelRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface Settings {
   trigger: TriggerKey;
   dragThresholdPx: number;
@@ -68,6 +76,8 @@ export interface Settings {
   launchAtStartup: boolean;
   /** 启动后和每 6 小时查一次新版本。 */
   autoUpdateCheck: boolean;
+  /** 控制面板上次关掉时的位置和大小；只有 Rust 写，页面存设置时带过去的会被忽略。 */
+  panelRect: PanelRect | null;
 }
 
 export interface Status {

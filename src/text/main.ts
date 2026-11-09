@@ -200,6 +200,8 @@ input.addEventListener("input", (e) => {
   showHint(HINT, false);
 });
 input.addEventListener("compositionend", clamp);
+// 表单从不提交（发送走回车的处理）：内容安全策略不让在 HTML 里写 onsubmit，在这里拦（3.1.1）
+input.form?.addEventListener("submit", (e) => e.preventDefault());
 input.addEventListener("keydown", (e) => {
   if (e.isComposing) return;
   if (e.key === "Enter") {

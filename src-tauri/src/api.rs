@@ -169,13 +169,35 @@ pub fn settings_write(
     Ok(Saved { settings, clashes })
 }
 
+/// 记下控制面板的位置和大小（关面板时，`tray::remember_main`）。只改这一项，不用通知别的线程。
+pub fn save_panel_rect(state: &AppState, rect: settings2::PanelRect) {
+    let s = {
+        let mut s = state.settings.lock().expect("设置锁没有中毒");
+        if s.panel_rect == Some(rect) {
+            return;
+        }
+        s.panel_rect = Some(rect);
+        s.clone()
+    };
+    if let Err(e) = storage::settings::save(&state.db.lock().expect("数据库锁没有中毒"), &s)
+    {
+        eprintln!("控制面板的位置没存上：{e}");
+    }
+}
+
 /// 整份设置过 `normalize` → 存库 → 交给各线程（见文件头第 2 条）。
 fn apply_settings(app: &AppHandle, state: &AppState, settings: &Value) -> Result<Settings, String> {
     apply_normalized(app, state, settings2::normalize(settings))
 }
 
-fn apply_normalized(app: &AppHandle, state: &AppState, s: Settings) -> Result<Settings, String> {
+fn apply_normalized(
+    app: &AppHandle,
+    state: &AppState,
+    mut s: Settings,
+) -> Result<Settings, String> {
     let old = state.settings();
+    // 控制面板的位置只由关面板时记下（`save_panel_rect`），页面上存设置时带过来的是打开时的旧值
+    s.panel_rect = old.panel_rect;
     if s.launch_at_startup != old.launch_at_startup {
         set_autostart(app, s.launch_at_startup)?;
     }

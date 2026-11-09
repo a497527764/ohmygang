@@ -99,6 +99,12 @@ fn a_saved_file_reads_back_the_same() {
         mic: "wasapi:{abc}".into(),
         launch_at_startup: true,
         auto_update_check: false,
+        panel_rect: Some(PanelRect {
+            x: -1600,
+            y: 120,
+            width: 1500,
+            height: 1050,
+        }),
     };
     assert_eq!(normalize(&serde_json::to_value(&s).unwrap()), s);
 }
@@ -537,4 +543,26 @@ fn replaced_keys_say_what_they_clashed_with() {
         clashes(json!({ "trigger": { "vk": 0x0D } })),
         vec![clash("trigger", None)]
     );
+}
+
+#[test]
+fn panel_rect_reads_back_only_when_sane() {
+    let rect = |v: serde_json::Value| normalize(&json!({ "panelRect": v })).panel_rect;
+    assert_eq!(Settings::default().panel_rect, None, "没记过就按默认的居中");
+    assert_eq!(
+        rect(json!({ "x": -1920, "y": 40, "width": 1500, "height": 1050 })),
+        Some(PanelRect {
+            x: -1920,
+            y: 40,
+            width: 1500,
+            height: 1050
+        }),
+        "左边的副屏是负坐标"
+    );
+    assert_eq!(
+        rect(json!({ "x": 0, "y": 0, "width": 10, "height": 700 })),
+        None
+    );
+    assert_eq!(rect(json!({ "x": 0, "y": 0, "width": 1000 })), None);
+    assert_eq!(rect(json!("garbage")), None);
 }
