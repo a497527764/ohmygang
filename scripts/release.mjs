@@ -3,7 +3,7 @@
 //   collect <平台> <输出目录>          把这个平台打好的包改成英文文件名放进输出目录，另写一个片段：更新包的文件名和签名
 //   manifest <输出目录> <标签> <说明文件>  把各平台的片段合成 latest.json（自动更新读它），片段删掉
 // 平台：windows、macos、linux。安装包的英文名：lolgang_<版本>_x64-setup.exe、lolgang_<版本>_aarch64.dmg、
-// lolgang_<版本>_amd64.AppImage / .deb；Tauri 按产品名「钢一下」起名，GitHub 上中文文件名会被改掉，所以改名。
+// lolgang_<版本>_amd64.AppImage / .deb；Tauri 按产品名 lolGang 起名，这里统一成上面的小写文件名。
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
