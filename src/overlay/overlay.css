@@ -163,31 +163,68 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 @keyframes fxHeartIn { 0% { transform: scale(.3); opacity: 0 } 100% { transform: none; opacity: 1 } }
 @keyframes fxHeart { 0%, 28%, 55%, 100% { transform: scale(1) } 10% { transform: scale(1.1) } 22% { transform: scale(1.01) } 40% { transform: scale(1.08) } }
 
-/* ---------- 队伍文字：原处冒气泡，或者弹幕 ---------- */
+/* ---------- 队伍文字：原处冒出来，或者弹幕；字号和字幕特效（3.0）---------- */
 #texts { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
 .text-pop {
-  --tag: #c8aa6e; --lift: 0; position: absolute; max-width: min(420px, calc(100vw - 32px));
-  transform: translate(-50%, calc(-100% - 14px - var(--lift) * 8px)); color: #f0e6d2;
-  filter: drop-shadow(0 8px 14px rgba(0, 0, 0, .5)); transition: transform .2s ease-out;
+  --tag: #c8aa6e; --lift: 0; --size: 28px; position: absolute; width: max-content; max-width: min(560px, calc(100vw - 32px));
+  transform: translate(-50%, calc(-100% - 14px - var(--lift) * var(--size) * 1.4)); text-align: center;
+  transition: transform .2s ease-out;
   animation: textIn .2s cubic-bezier(.2, 1.5, .4, 1) both, textOut .35s ease-in calc(var(--dur) - .35s) forwards;
 }
-.text-name { margin: 0 0 4px 2px; color: var(--tag); font: 600 12px/16px var(--sans); text-shadow: 0 1px 2px #000; }
-.text-body {
-  position: relative; padding: 6px 10px; border: 1px solid rgba(200, 170, 110, .6); border-radius: 6px; background: rgba(8, 18, 24, .9);
-  overflow-wrap: anywhere; white-space: pre-wrap; font: 600 16px/1.35 var(--sans); text-shadow: 0 1px 2px #000;
+/* 说话人的名字：颜色和他的信号标签一样，大小跟着字号走 */
+.text-name {
+  display: inline-block; margin: 0 0 2px; padding: 0 8px; border-radius: 2px; background: rgba(1, 10, 19, .72);
+  color: var(--tag); font: 700 max(12px, calc(var(--size) * .46))/1.5 var(--sans); text-shadow: 0 1px 2px #000;
 }
-.text-body::after {
-  content: ''; position: absolute; left: calc(50% - 6px); bottom: -7px; width: 12px; height: 12px; box-sizing: border-box;
-  background: rgba(8, 18, 24, .95); border: solid rgba(200, 170, 110, .6); border-width: 0 1px 1px 0; transform: rotate(45deg);
-}
+.text-body { overflow-wrap: anywhere; white-space: pre-wrap; }
 @keyframes textIn { from { opacity: 0; scale: .8 } }
 @keyframes textOut { to { opacity: 0 } }
 /* 弹幕：从右边外面开始飘过整个屏幕；--travel 和 --dur 在分到一行时设好 */
 .danmaku {
-  --tag: #c8aa6e; position: absolute; left: 100%; display: flex; align-items: baseline; gap: 8px; white-space: nowrap;
-  color: #f0e6d2; font: 700 22px/34px var(--sans); text-shadow: 0 0 3px #000, 0 1px 3px #000, 0 0 8px rgba(0, 0, 0, .7);
+  --tag: #c8aa6e; --size: 28px; position: absolute; left: 100%; display: flex; align-items: center; gap: 10px; white-space: nowrap;
   animation: danmaku var(--dur) linear forwards;
 }
-.dm-name { color: var(--tag); font-size: 15px; font-weight: 600; }
+.dm-name { color: var(--tag); font: 700 max(13px, calc(var(--size) * .55))/1.2 var(--sans); text-shadow: 0 0 3px #000, 0 1px 3px #000; }
 @keyframes danmaku { to { transform: translateX(var(--travel)) } }
-@media (prefers-reduced-motion: reduce) { .text-pop { animation: none; } }
+
+/* 一句话本身（两种出场共用） */
+.text-body, .dm-text { font: 800 var(--size)/1.3 var(--sans); letter-spacing: .02em; }
+/* 逐字的特效：每个字单独出场 */
+.ch { display: inline-block; white-space: pre; }
+
+/* 描边大字：白字粗黑边（像视频字幕） */
+.fx-outline, .fx-bounce, .fx-typewriter {
+  color: #fff; -webkit-text-stroke: calc(var(--size) * .14) #000; paint-order: stroke fill;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .55));
+}
+/* 金色渐变：客户端的金，深色描边和投影 */
+.fx-gold {
+  background: linear-gradient(180deg, #fff8df 0%, #f4dc95 38%, #c8aa6e 58%, #8a6a30 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  -webkit-text-stroke: calc(var(--size) * .03) rgba(40, 26, 6, .9);
+  filter: drop-shadow(0 2px 1px rgba(0, 0, 0, .95)) drop-shadow(0 0 8px rgba(0, 0, 0, .55));
+}
+/* 霓虹发光：说话人信号标签的颜色发光，出来时闪两下像灯管点亮 */
+.fx-neon {
+  color: #f6fffe; text-shadow: 0 0 2px #fff, 0 0 calc(var(--size) * .3) var(--tag), 0 0 calc(var(--size) * .7) var(--tag), 0 0 calc(var(--size) * 1.3) var(--tag);
+  animation: neonOn .9s linear both;
+}
+@keyframes neonOn { 0% { opacity: .15 } 8% { opacity: 1 } 16% { opacity: .35 } 26% { opacity: 1 } 40% { opacity: .6 } 50%, 100% { opacity: 1 } }
+/* 逐字弹跳：每个字从上面掉下来弹一下 */
+.fx-bounce .ch { animation: chBounce .5s cubic-bezier(.3, 1.8, .5, 1) both; }
+@keyframes chBounce { 0% { transform: translateY(-.9em) scale(.5); opacity: 0 } 60% { transform: translateY(.06em); opacity: 1 } 100% { transform: none; opacity: 1 } }
+/* 打字机：一个字一个字出来 */
+.fx-typewriter .ch { animation: chType .12s ease-out both; }
+@keyframes chType { from { opacity: 0; transform: translateY(.15em) } to { opacity: 1; transform: none } }
+/* 抖动强调：黄字黑边，砸下来再抖几下 */
+.fx-shake {
+  color: #ffe14d; -webkit-text-stroke: calc(var(--size) * .14) #000; paint-order: stroke fill;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .6)); animation: shakeHit .7s ease-out both;
+}
+@keyframes shakeHit {
+  0% { transform: scale(1.8); opacity: 0 } 18% { transform: scale(1); opacity: 1 } 30% { translate: -5px 0 } 40% { translate: 5px 0 }
+  50% { translate: -4px 0 } 60% { translate: 3px 0 } 70% { translate: -2px 0 } 80%, 100% { translate: 0 0; transform: none; opacity: 1 }
+}
+@media (prefers-reduced-motion: reduce) {
+  .text-pop, .fx-neon, .fx-bounce .ch, .fx-typewriter .ch, .fx-shake { animation: none; }
+}

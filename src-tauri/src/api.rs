@@ -364,6 +364,20 @@ pub fn history_stop(state: State<'_, AppState>) {
     state.voice.send(crate::voice::VoiceMsg::StopPlay);
 }
 
+/// 功能页的预览：按页面上选的样子（还没存也行）在主显示器中间放一句字。
+#[tauri::command]
+pub fn text_preview(state: State<'_, AppState>, style: String, size: u32, effect: String) {
+    let ok = settings2::TEXT_STYLES.contains(&style.as_str())
+        && settings2::TEXT_EFFECTS.contains(&effect.as_str());
+    if ok {
+        state.overlays.send(Msg::TextPreview {
+            style,
+            size: size.clamp(16, 56),
+            effect,
+        });
+    }
+}
+
 #[tauri::command]
 pub fn emote_preview(state: State<'_, AppState>, emote: String) {
     if emotes::is_ref_shape(&emote) {

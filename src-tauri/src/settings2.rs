@@ -47,6 +47,8 @@ pub const DEFAULT_CLICK_PING: &str = "generic";
 pub const THEMES: [&str; 3] = ["system", "light", "dark"];
 /// 队友文字的显示方式：在说话的位置冒出来，或者弹幕从右往左飘过。
 pub const TEXT_STYLES: [&str; 2] = ["spot", "danmaku"];
+/// 屏幕上的字的字幕特效（3.0）：描边大字、金色渐变、霓虹发光、逐字弹跳、打字机、抖动强调。
+pub const TEXT_EFFECTS: [&str; 6] = ["outline", "gold", "neon", "bounce", "typewriter", "shake"];
 /// 文字快捷键的候选：默认 Alt+T，撞了依次换。
 const TEXT_HOTKEYS: [Hotkey; 3] = [
     Hotkey {
@@ -170,6 +172,10 @@ pub struct Settings {
     pub text_hotkey: Hotkey,
     /// spot 或 danmaku。
     pub text_style: String,
+    /// 屏幕上的字多大（CSS 像素），默认 28。
+    pub text_size_px: u32,
+    /// 字幕特效，`TEXT_EFFECTS` 之一。
+    pub text_effect: String,
     /// 投票：投降、准备确认、踢人。关掉后不算投票人。
     pub team_votes: bool,
     /// 按住面板键显示队伍面板。
@@ -223,6 +229,8 @@ impl Default for Settings {
             team_text: true,
             text_hotkey: TEXT_HOTKEYS[0],
             text_style: TEXT_STYLES[0].into(),
+            text_size_px: 28,
+            text_effect: TEXT_EFFECTS[0].into(),
             team_votes: true,
             team_panel: true,
             panel_key: PANEL_KEYS[0],
@@ -255,6 +263,8 @@ pub struct OverlaySettings {
     pub custom_emotes: Vec<CustomEmote>,
     pub friend_emotes: bool,
     pub text_style: String,
+    pub text_size_px: u32,
+    pub text_effect: String,
 }
 
 /// 数字设置的范围和步长（同 lolPing 的 LIMITS）。
@@ -286,6 +296,11 @@ const DURATION: Limit = Limit {
 const VOLUME: Limit = Limit {
     min: 0.0,
     max: 100.0,
+    step: 1.0,
+};
+const TEXT_SIZE: Limit = Limit {
+    min: 16.0,
+    max: 56.0,
     step: 1.0,
 };
 const EMOTE_SIZE: Limit = Limit {
@@ -525,6 +540,12 @@ pub fn normalize(raw: &Value) -> Settings {
             |t| TEXT_STYLES.contains(&t),
             TEXT_STYLES[0],
         ),
+        text_size_px: num(get("textSizePx"), &TEXT_SIZE, f64::from(d.text_size_px)) as u32,
+        text_effect: one_of(
+            get("textEffect"),
+            |t| TEXT_EFFECTS.contains(&t),
+            TEXT_EFFECTS[0],
+        ),
         team_votes: bool_or(get("teamVotes"), d.team_votes),
         team_panel: bool_or(get("teamPanel"), d.team_panel),
         panel_key: panel_key(get("panelKey"), &taken),
@@ -610,6 +631,8 @@ impl Settings {
             custom_emotes: self.custom_emotes.clone(),
             friend_emotes: self.friend_emotes,
             text_style: self.text_style.clone(),
+            text_size_px: self.text_size_px,
+            text_effect: self.text_effect.clone(),
         }
     }
 

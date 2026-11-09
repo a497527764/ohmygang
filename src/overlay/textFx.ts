@@ -1,5 +1,9 @@
-// 队伍文字在透明窗口上的样子：在说话的位置冒出一个气泡（每人最多留 3 句，6 秒后消失），
-// 或者当弹幕从右往左飘过屏幕上方。样子参考 lolPing 的 text-pop 和 danmaku（MIT，© 2026 Danrui Meng）。
+// 队伍文字在透明窗口上的样子：在说话的位置冒出来（每人最多留 3 句，6 秒后消失），
+// 或者当弹幕从右往左飘过屏幕上方。冒出和弹幕的做法参考 lolPing 的 text-pop 和 danmaku（MIT，© 2026 Danrui Meng）。
+// 3.0 加了字号和字幕特效（像剪映的字幕模板）：描边大字、金色渐变、霓虹发光、逐字弹跳、打字机、抖动强调。
+// 字号、特效、冒出还是弹幕都由 Rust 随每一句交过来（看的人自己在功能页选的），这里只管画。
+
+export type TextEffect = "outline" | "gold" | "neon" | "bounce" | "typewriter" | "shake";
 
 export interface TextSpawn {
   owner: string;
@@ -7,17 +11,22 @@ export interface TextSpawn {
   name: string;
   color: string;
   style: "spot" | "danmaku";
+  /** 字号（CSS 像素）。 */
+  size: number;
+  effect: TextEffect;
   x: number;
   y: number;
 }
 
 const SPOT_MS = 6000;
 const SPOT_PER_OWNER = 3;
-/** 弹幕的速度（CSS 像素每秒）、行高、最多几行、和上一条之间至少空多少。 */
+/** 弹幕的速度（CSS 像素每秒）、最多几行、和上一条之间至少空多少。行高跟着字号走。 */
 const DANMAKU_SPEED = 180;
-const LANE_PX = 38;
 const LANES = 6;
 const LANE_GAP_PX = 48;
+/** 逐字出现的特效：一个字最多隔多久，整句最多用多久出完（120 个字也不拖太久）。 */
+const CHAR_STEP_MS: Partial<Record<TextEffect, number>> = { bounce: 45, typewriter: 70 };
+const REVEAL_MAX_MS = 1600;
 
 const div = (cls: string, text?: string): HTMLDivElement => {
   const d = document.createElement("div");
@@ -25,6 +34,35 @@ const div = (cls: string, text?: string): HTMLDivElement => {
   if (text !== undefined) d.textContent = text; // 只当文字：内容来自别人的电脑
   return d;
 };
+
+/** 按「字」拆开：一个汉字、一个表情（哪怕由几个码点组成）都算一个。 */
+function graphemes(s: string): string[] {
+  if (typeof Intl.Segmenter === "function") {
+    return [...new Intl.Segmenter("zh", { granularity: "grapheme" }).segment(s)].map((g) => g.segment);
+  }
+  return Array.from(s);
+}
+
+/** 一句话本身：带上特效的类名和字号；逐字的特效把每个字包起来，按顺序错开出场。 */
+function line(t: TextSpawn, cls: string): HTMLDivElement {
+  const body = div(`${cls} fx-${t.effect}`);
+  body.style.setProperty("--size", `${t.size}px`);
+  const step = CHAR_STEP_MS[t.effect];
+  if (step === undefined) {
+    body.textContent = t.text;
+    return body;
+  }
+  const chars = graphemes(t.text);
+  const gap = Math.min(step, REVEAL_MAX_MS / Math.max(1, chars.length));
+  chars.forEach((c, i) => {
+    const s = document.createElement("span");
+    s.className = "ch";
+    s.textContent = c;
+    s.style.animationDelay = `${Math.round(i * gap)}ms`;
+    body.append(s);
+  });
+  return body;
+}
 
 export class TextStage {
   /** 每人还在屏幕上的气泡，旧的在前。 */
@@ -48,10 +86,11 @@ export class TextStage {
     pop.style.left = `${t.x}px`;
     pop.style.top = `${t.y}px`;
     pop.style.setProperty("--tag", t.color);
+    pop.style.setProperty("--size", `${t.size}px`);
     pop.style.setProperty("--dur", `${SPOT_MS / 1000}s`);
-    pop.append(div("text-name", t.name), div("text-body", t.text));
+    pop.append(div("text-name", t.name), line(t, "text-body"));
     const mine = this.spots.get(t.owner) ?? [];
-    // 同一个人的旧气泡往上让，最多留 3 句
+    // 同一个人的旧句子往上让，最多留 3 句
     for (const old of mine) old.style.setProperty("--lift", String(Number(old.style.getPropertyValue("--lift") || 0) + 1));
     while (mine.length >= SPOT_PER_OWNER) mine.shift()?.remove();
     mine.push(pop);
@@ -69,22 +108,23 @@ export class TextStage {
   }
 
   private danmaku(t: TextSpawn): void {
-    const line = div("danmaku");
-    line.style.setProperty("--tag", t.color);
-    line.append(div("dm-name", t.name), div("dm-text", t.text));
-    line.style.visibility = "hidden";
-    this.layer.append(line);
-    const width = line.offsetWidth;
+    const row = div("danmaku");
+    row.style.setProperty("--tag", t.color);
+    row.style.setProperty("--size", `${t.size}px`);
+    row.append(div("dm-name", t.name), line(t, "dm-text"));
+    row.style.visibility = "hidden";
+    this.layer.append(row);
+    const width = row.offsetWidth;
     const now = performance.now();
     let lane = this.laneFree.findIndex((free) => free <= now);
     if (lane < 0) lane = this.laneFree.indexOf(Math.min(...this.laneFree));
     const travel = window.innerWidth + width;
     const durS = travel / DANMAKU_SPEED;
     this.laneFree[lane] = Math.max(now, this.laneFree[lane]) + ((width + LANE_GAP_PX) / DANMAKU_SPEED) * 1000;
-    line.style.top = `${Math.round(window.innerHeight * 0.08) + lane * LANE_PX}px`;
-    line.style.setProperty("--travel", `${-travel}px`);
-    line.style.setProperty("--dur", `${durS}s`);
-    line.style.visibility = "";
-    line.addEventListener("animationend", () => line.remove(), { once: true });
+    row.style.top = `${Math.round(window.innerHeight * 0.08) + lane * Math.round(t.size * 1.55)}px`;
+    row.style.setProperty("--travel", `${-travel}px`);
+    row.style.setProperty("--dur", `${durS}s`);
+    row.style.visibility = "";
+    row.addEventListener("animationend", (e) => e.target === row && row.remove());
   }
 }

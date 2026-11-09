@@ -1,7 +1,18 @@
-// 「功能」页：开机启动、主题（原来的「外观」页），以及队伍里的三个功能（面板、文字、投票）的开关。
+// 「功能」页：开机启动、主题（原来的「外观」页），队伍里的三个功能（面板、文字、投票）的开关，
+// 以及屏幕上的字的样子（冒出还是弹幕、字号、字幕特效，能在屏幕中间预览）。
 // 这些功能的按键在「快捷键」页。改动交给 App 统一保存。
-import type { Settings, Theme } from "../api";
-import { Row, Switch } from "./controls";
+import { textPreview, type Settings, type TextEffect, type Theme } from "../api";
+import { Icon } from "./Icon";
+import { Row, Slider, Switch } from "./controls";
+
+const EFFECTS: { value: TextEffect; label: string }[] = [
+  { value: "outline", label: "描边大字" },
+  { value: "gold", label: "金色渐变" },
+  { value: "neon", label: "霓虹发光" },
+  { value: "bounce", label: "逐字弹跳" },
+  { value: "typewriter", label: "打字机" },
+  { value: "shake", label: "抖动强调" },
+];
 
 const THEMES: { value: Theme; label: string }[] = [
   { value: "system", label: "跟随系统" },
@@ -45,12 +56,28 @@ export function FeaturesPage({ settings: s, onChange }: Props) {
           <Switch label="打字给队友" checked={s.teamText} onChange={(teamText) => onChange({ teamText })} />
         </Row>
         {s.teamText && (
-          <Row label="队友的话怎么显示">
-            <select aria-label="队友的话怎么显示" value={s.textStyle} onChange={(e) => onChange({ textStyle: e.target.value as Settings["textStyle"] })}>
-              <option value="spot">在说话的位置冒出来</option>
-              <option value="danmaku">弹幕从屏幕上方飘过</option>
-            </select>
-          </Row>
+          <>
+            <Row label="队友的话怎么显示">
+              <select aria-label="队友的话怎么显示" value={s.textStyle} onChange={(e) => onChange({ textStyle: e.target.value as Settings["textStyle"] })}>
+                <option value="spot">在说话的位置冒出来</option>
+                <option value="danmaku">弹幕从屏幕上方飘过</option>
+              </select>
+            </Row>
+            <Slider label="字号" value={s.textSizePx} min={16} max={56} step={1} unit=" 像素" onChange={(v) => onChange({ textSizePx: v })} />
+            <Row label="字幕特效" tip="屏幕上的字的样子，只影响你自己看到的">
+              <select aria-label="字幕特效" value={s.textEffect} onChange={(e) => onChange({ textEffect: e.target.value as TextEffect })}>
+                {EFFECTS.map((f) => (
+                  <option key={f.value} value={f.value}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+              <button className="soft small" onClick={() => void textPreview(s.textStyle, s.textSizePx, s.textEffect)}>
+                <Icon name="play" size={14} />
+                预览
+              </button>
+            </Row>
+          </>
         )}
         <Row label="投票" tip="投降要 70% 同意，准备确认要所有人接受，踢人要过半。被踢的人的程序会自己退出队伍。关掉后你不算投票人">
           <Switch label="投票" checked={s.teamVotes} onChange={(teamVotes) => onChange({ teamVotes })} />

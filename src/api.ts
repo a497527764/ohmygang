@@ -10,6 +10,7 @@ import type { PingId } from "./shared/pings";
 export type NamedTrigger = "alt" | "ctrl" | "shift" | "win" | "capslock" | "mouse4" | "mouse5";
 export type TriggerKey = NamedTrigger | { vk: number };
 export type Theme = "system" | "light" | "dark";
+export type TextEffect = "outline" | "gold" | "neon" | "bounce" | "typewriter" | "shake";
 
 /** 和 Rust 的 settings2::Settings 对应。 */
 export interface Settings {
@@ -47,6 +48,10 @@ export interface Settings {
   textHotkey: Hotkey;
   /** 队友的话：在原处冒出来，或者弹幕。 */
   textStyle: "spot" | "danmaku";
+  /** 屏幕上的字多大（CSS 像素）。 */
+  textSizePx: number;
+  /** 字幕特效。 */
+  textEffect: TextEffect;
   teamVotes: boolean;
   /** 按住面板键显示队伍面板。 */
   teamPanel: boolean;
@@ -153,6 +158,10 @@ export const onTeamChanged = (cb: () => void): Promise<UnlistenFn> => listen("te
 /** 队友用的是别的协议版本（多半是 1.x）。 */
 export const onProtocolMismatch = (cb: (remote: number) => void): Promise<UnlistenFn> =>
   listen<number>("team://mismatch", (e) => cb(e.payload));
+
+/** 在主显示器中间按给的样子放一句字（功能页的预览，还没存的选择也能看）。 */
+export const textPreview = (style: Settings["textStyle"], size: number, effect: TextEffect): Promise<void> =>
+  invoke("text_preview", { style, size, effect });
 
 // ---- 语音（和 Rust 的 voice/ 对应） ----
 

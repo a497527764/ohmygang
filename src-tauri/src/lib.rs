@@ -125,6 +125,7 @@ pub fn run() {
             api::history_list,
             api::history_play,
             api::history_stop,
+            api::text_preview,
             panel::vote_view,
             panel::vote_start,
             panel::vote_answer,

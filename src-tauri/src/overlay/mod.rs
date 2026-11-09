@@ -73,6 +73,12 @@ pub enum Msg {
     },
     /// 设置页的预览：在主显示器中间放一个表情。
     EmotePreview(String),
+    /// 功能页的预览：在主显示器中间按给的样子放一句字。
+    TextPreview {
+        style: String,
+        size: u32,
+        effect: String,
+    },
     /// 一句话：自己的（from 为 None）或队友的，第几号显示器、比例位置，已经清理过。
     Text {
         from: Option<MemberId>,
@@ -210,6 +216,24 @@ impl Actor {
                             &d.key,
                             "toast:show",
                             json!({ "title": title, "body": body }),
+                        );
+                    }
+                }
+                Msg::TextPreview {
+                    style,
+                    size,
+                    effect,
+                } => {
+                    self.refresh();
+                    if let Some(d) = self.displays.first().cloned() {
+                        let (w, h) = css_size(&d);
+                        self.show(
+                            &d.key,
+                            "text:spawn",
+                            json!({
+                                "owner": "preview", "text": "大龙刷了，集合打团！", "name": "我", "color": "#c8aa6e",
+                                "style": style, "size": size, "effect": effect, "x": w / 2.0, "y": h / 2.0,
+                            }),
                         );
                     }
                 }
@@ -465,6 +489,7 @@ impl Actor {
             "text:spawn",
             json!({
                 "owner": owner, "text": text, "name": name, "color": color, "style": self.settings.text_style,
+                "size": self.settings.text_size_px, "effect": self.settings.text_effect,
                 "x": from_ratio(x, w), "y": from_ratio(y, h),
             }),
         );

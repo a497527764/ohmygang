@@ -88,6 +88,8 @@ fn a_saved_file_reads_back_the_same() {
             vk: 0x4D,
         },
         text_style: "danmaku".into(),
+        text_size_px: 36,
+        text_effect: "gold".into(),
         team_votes: false,
         team_panel: false,
         panel_key: 0xC0,
@@ -471,4 +473,21 @@ fn talk_key_reaches_the_gesture_only_in_a_team_with_voice_on() {
         ..Settings::default()
     };
     assert_eq!(off.gesture_config(true, true).talk_vk, 0, "关了语音不拦");
+}
+
+#[test]
+fn overlay_text_is_bigger_by_default_with_a_known_effect() {
+    let d = Settings::default();
+    assert_eq!((d.text_size_px, d.text_effect.as_str()), (28, "outline"));
+    for e in TEXT_EFFECTS {
+        assert_eq!(normalize(&json!({ "textEffect": e })).text_effect, e);
+    }
+    assert_eq!(
+        normalize(&json!({ "textEffect": "rainbow" })).text_effect,
+        "outline"
+    );
+    assert_eq!(normalize(&json!({ "textSizePx": 200 })).text_size_px, 56);
+    assert_eq!(normalize(&json!({ "textSizePx": 3 })).text_size_px, 16);
+    let o = normalize(&json!({ "textSizePx": 40, "textEffect": "neon" })).overlay();
+    assert_eq!((o.text_size_px, o.text_effect.as_str()), (40, "neon"));
 }
