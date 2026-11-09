@@ -1059,7 +1059,7 @@ p .tip {
   grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
   gap: 6px;
 }
-.preset {
+.preset-grid .preset {
   height: 38px;
   border-radius: 50%;
   font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
