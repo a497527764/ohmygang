@@ -1,6 +1,7 @@
 // 队伍面板和投票窗口共用：投票的数据形状、建元素、投票卡片。数据来自 Rust 的 panel.rs，这里只画。
 // 投票卡片的样子参考 lolPing src/renderer/panel/vote.ts（MIT，© 2026 Danrui Meng）。
 import { invoke } from "@tauri-apps/api/core";
+import { el } from "../shared/dom";
 
 /** 和 Rust 的 panel::VoteDto 对应。 */
 export interface VoteDto {
@@ -12,13 +13,6 @@ export interface VoteDto {
   canAnswer: boolean;
   mine: boolean | null;
   result: string | null;
-}
-
-export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
-  const e = document.createElement(tag);
-  e.className = className;
-  if (text !== undefined) e.textContent = text;
-  return e;
 }
 
 /** 剩下的时间占总时长的比例，1 是刚开始，0 是到点。 */

@@ -138,10 +138,7 @@ pub fn next_ts(now_ms: u64, last_ts: Option<u64>) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn hex(b: &[u8]) -> String {
-        b.iter().map(|x| format!("{x:02x}")).collect()
-    }
+    use crate::crypto::hex;
 
     fn golden_event() -> SignedEvent {
         let me = Identity::from_secret(&[7u8; 32]);

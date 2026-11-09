@@ -15,14 +15,10 @@ use k256::schnorr::{Signature, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::crypto::{self, CryptoError, RoomId};
+use crate::crypto::{self, CryptoError, RoomId, hex};
 
 pub const KIND: u16 = 24810;
 const MAX_PACKET_LEN: usize = 1200;
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {

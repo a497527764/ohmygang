@@ -1,11 +1,6 @@
 // 导入表情的出场效果和问号占位，透明窗口和设置页的效果预览共用。移植自 lolPing src/renderer/shared/emoteFx.ts
 // （MIT，© 2026 Danrui Meng）。
-
-const div = (cls: string): HTMLDivElement => {
-  const d = document.createElement("div");
-  d.className = cls;
-  return d;
-};
+import { div } from "../shared/dom";
 
 /** 文件取不到的表情（队友的图还没传过来、或关了「显示队友的表情」）显示成这个。 */
 export function bubble(): HTMLDivElement {

@@ -333,86 +333,106 @@ fn bool_or(raw: Option<&Value>, default: bool) -> bool {
     raw.and_then(Value::as_bool).unwrap_or(default)
 }
 
-fn trigger(raw: Option<&Value>) -> TriggerKey {
-    trigger_or(raw, Settings::default().trigger)
+/// 快捷键页的一行要的键被换掉了：哪一行（trigger、emote、toggle、text、talk、panel），和哪一行撞了；
+/// `with` 为 None 是这个键本身不能用。设置里没给这一行（用默认值）时不算。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct KeyClash {
+    pub key: &'static str,
+    pub with: Option<&'static str>,
 }
 
-fn trigger_or(raw: Option<&Value>, default: TriggerKey) -> TriggerKey {
-    let Some(t) = raw.and_then(|v| serde_json::from_value::<TriggerKey>(v.clone()).ok()) else {
-        return default;
-    };
-    match t {
+/// 要的键被换掉的原因：和哪一行撞了；None 是这个键本身不能用。
+type Why = Option<&'static str>;
+
+/// 合法就用，否则用 `default`；设置里给了这一行却不合法时，原因是「不能用」。
+fn valid_or<T>(valid: Option<T>, raw: Option<&Value>, default: T) -> (T, Option<Why>) {
+    match valid {
+        Some(v) => (v, None),
+        None => (default, raw.map(|_| None)),
+    }
+}
+
+/// 合法的触发键；不合法的是 None。
+fn valid_trigger(raw: Option<&Value>) -> Option<TriggerKey> {
+    match raw.and_then(|v| serde_json::from_value::<TriggerKey>(v.clone()).ok())? {
         // macOS 拦不住 Caps Lock 的切换，只有 Windows 提供（同 lolPing）。
-        TriggerKey::Named(NamedTrigger::CapsLock) if !cfg!(windows) => default,
+        TriggerKey::Named(NamedTrigger::CapsLock) if !cfg!(windows) => None,
         TriggerKey::Custom { vk }
             if !is_vk(vk) || UNSAFE_TRIGGER_VKS.contains(&vk) || MODIFIER_VKS.contains(&vk) =>
         {
-            default
+            None
         }
-        t => t,
+        t => Some(t),
     }
 }
 
 /// 表情触发键：`"off"` 是关，其余按触发键的规矩（不合法的换成 Ctrl）。和信号触发键相同、
-/// 或者是自定义键、Caps Lock 而键码撞上快捷键的键时关掉：同一个键不能两用。
-fn emote_trigger(raw: Option<&Value>, ping: TriggerKey, hotkeys: &[Hotkey]) -> Option<TriggerKey> {
+/// 或者是自定义键、Caps Lock 而键码撞上暂停快捷键的键时关掉：同一个键不能两用。
+fn emote_trigger(
+    raw: Option<&Value>,
+    ping: TriggerKey,
+    toggle: Hotkey,
+) -> (Option<TriggerKey>, Option<Why>) {
     if raw.and_then(Value::as_str) == Some("off") {
-        return None;
+        return (None, None);
     }
-    let t = trigger_or(raw, TriggerKey::Named(NamedTrigger::Ctrl));
-    let clash = t == ping || trigger_vk(t).is_some_and(|vk| hotkeys.iter().any(|h| h.vk == vk));
-    (!clash).then_some(t)
+    let (t, why) = valid_or(
+        valid_trigger(raw),
+        raw,
+        TriggerKey::Named(NamedTrigger::Ctrl),
+    );
+    let clash = if t == ping {
+        Some("trigger")
+    } else if trigger_vk(t) == Some(toggle.vk) {
+        Some("toggle")
+    } else {
+        None
+    };
+    match clash {
+        None => (Some(t), why),
+        // 要的键不合法时说它不能用（换上的 Ctrl 又撞了，只好关掉）
+        Some(with) => (None, why.or(raw.map(|_| Some(with)))),
+    }
 }
 
 /// 文字快捷键：撞上暂停快捷键时换成候选里第一个不撞的。
-fn text_hotkey(raw: Option<&Value>, taken: &[Hotkey]) -> Hotkey {
-    let want = hotkey(raw, TEXT_HOTKEYS[0]);
-    if !taken.contains(&want) {
-        return want;
+fn text_hotkey(raw: Option<&Value>, toggle: Hotkey) -> (Hotkey, Option<Why>) {
+    let (want, why) = valid_or(valid_hotkey(raw), raw, TEXT_HOTKEYS[0]);
+    if want != toggle {
+        return (want, why);
     }
-    TEXT_HOTKEYS
+    let other = TEXT_HOTKEYS
         .into_iter()
-        .find(|h| !taken.contains(h))
-        .unwrap_or(TEXT_HOTKEYS[0])
+        .find(|h| *h != toggle)
+        .unwrap_or(TEXT_HOTKEYS[0]);
+    (other, why.or(raw.map(|_| Some("toggle"))))
 }
 
-/// 面板键：普通键，不是 Esc、修饰键，也不是别的快捷键或自定义触发键的键；否则换候选里第一个没被占的。
-fn panel_key(raw: Option<&Value>, taken: &[u32]) -> u32 {
-    match raw
+/// 面板键、说话键（3.1.1 合成一个）：普通键——合法的键码、不是修饰键、不在 `forbidden` 里，
+/// 也不是别的键占着的（`taken`：键码和占着它的那一行）；否则换 `candidates` 里第一个没被占的。
+fn plain_key(
+    raw: Option<&Value>,
+    forbidden: &[u32],
+    candidates: [u32; 6],
+    taken: &[(u32, &'static str)],
+) -> (u32, Option<Why>) {
+    let owner = |vk: u32| taken.iter().find(|(k, _)| *k == vk).map(|(_, row)| *row);
+    let asked = raw
         .and_then(Value::as_u64)
         .and_then(|v| u32::try_from(v).ok())
-    {
-        Some(vk)
-            if is_vk(vk) && vk != 0x1B && !MODIFIER_VKS.contains(&vk) && !taken.contains(&vk) =>
-        {
-            vk
-        }
-        _ => PANEL_KEYS
-            .into_iter()
-            .find(|k| !taken.contains(k))
-            .unwrap_or(PANEL_KEYS[0]),
-    }
-}
-
-/// 说话键：普通键（不是修饰键，也不是空格、回车这些会弄坏打字的键），不和别的键撞；否则换候选里第一个没被占的。
-fn talk_key(raw: Option<&Value>, taken: &[u32]) -> u32 {
-    match raw
-        .and_then(Value::as_u64)
-        .and_then(|v| u32::try_from(v).ok())
-    {
-        Some(vk)
-            if is_vk(vk)
-                && !UNSAFE_TRIGGER_VKS.contains(&vk)
-                && !MODIFIER_VKS.contains(&vk)
-                && !taken.contains(&vk) =>
-        {
-            vk
-        }
-        _ => TALK_KEYS
-            .into_iter()
-            .find(|k| !taken.contains(k))
-            .unwrap_or(TALK_KEYS[0]),
-    }
+        .filter(|&vk| is_vk(vk) && !forbidden.contains(&vk) && !MODIFIER_VKS.contains(&vk));
+    let why = match asked {
+        Some(vk) => match owner(vk) {
+            None => return (vk, None),
+            Some(row) => Some(Some(row)),
+        },
+        None => raw.map(|_| None),
+    };
+    let free = candidates
+        .into_iter()
+        .find(|&k| owner(k).is_none())
+        .unwrap_or(candidates[0]);
+    (free, why)
 }
 
 /// 自定义触发键和 Caps Lock 的键码；其他触发方式没有。
@@ -424,18 +444,14 @@ fn trigger_vk(t: TriggerKey) -> Option<u32> {
     }
 }
 
-fn hotkey(raw: Option<&Value>, default: Hotkey) -> Hotkey {
-    match raw.and_then(|v| serde_json::from_value::<Hotkey>(v.clone()).ok()) {
-        // 必须带 Ctrl、Alt 或 Win：只有 Shift 的快捷键会把全系统的大写字母吞掉。
-        Some(h)
-            if (1..=15).contains(&h.mods)
+/// 合法的快捷键；不合法的是 None。必须带 Ctrl、Alt 或 Win：只有 Shift 的快捷键会把全系统的大写字母吞掉。
+fn valid_hotkey(raw: Option<&Value>) -> Option<Hotkey> {
+    raw.and_then(|v| serde_json::from_value::<Hotkey>(v.clone()).ok())
+        .filter(|h| {
+            (1..=15).contains(&h.mods)
                 && h.mods & (MOD_CTRL | MOD_ALT | MOD_WIN) != 0
-                && is_vk(h.vk) =>
-        {
-            h
-        }
-        _ => default,
-    }
+                && is_vk(h.vk)
+        })
 }
 
 fn is_ping_id(s: &str) -> bool {
@@ -485,26 +501,54 @@ fn one_of(raw: Option<&Value>, ok: impl Fn(&str) -> bool, default: &str) -> Stri
 
 /// 任何 JSON → 合法设置。
 pub fn normalize(raw: &Value) -> Settings {
+    normalize_keys(raw).0
+}
+
+/// 和 `normalize` 一样，另外说出哪些按键被换掉了、和谁撞了（快捷键页在那一行下面说明；
+/// 3.1.1 以前前端自己又算了一遍撞键规则）。同一个键不能两用，排在前面的留下：
+/// 信号触发键、暂停快捷键、表情触发键、文字快捷键、说话键、面板键。
+pub fn normalize_keys(raw: &Value) -> (Settings, Vec<KeyClash>) {
     let d = Settings::default();
     let get = |k: &str| raw.get(k);
-    let trigger = trigger(get("trigger"));
-    let toggle_hotkey = hotkey(get("toggleHotkey"), d.toggle_hotkey);
+    let (trigger, trigger_why) = valid_or(valid_trigger(get("trigger")), get("trigger"), d.trigger);
+    let (toggle_hotkey, toggle_why) = valid_or(
+        valid_hotkey(get("toggleHotkey")),
+        get("toggleHotkey"),
+        d.toggle_hotkey,
+    );
     let custom = emotes::normalize_custom(get("customEmotes"));
-    let emote_trigger = emote_trigger(get("emoteTrigger"), trigger, &[toggle_hotkey]);
-    let text_hotkey = text_hotkey(get("textHotkey"), &[toggle_hotkey]);
-    let mut taken: Vec<u32> = [trigger_vk(trigger), emote_trigger.and_then(trigger_vk)]
-        .into_iter()
-        .flatten()
-        .chain([toggle_hotkey.vk, text_hotkey.vk])
-        .collect();
-    let talk_key = talk_key(get("talkKey"), &taken);
-    taken.push(talk_key);
+    let (emote_trigger, emote_why) = emote_trigger(get("emoteTrigger"), trigger, toggle_hotkey);
+    let (text_hotkey, text_why) = text_hotkey(get("textHotkey"), toggle_hotkey);
+    let mut taken: Vec<(u32, &'static str)> = [
+        trigger_vk(trigger).map(|vk| (vk, "trigger")),
+        emote_trigger.and_then(trigger_vk).map(|vk| (vk, "emote")),
+    ]
+    .into_iter()
+    .flatten()
+    .chain([(toggle_hotkey.vk, "toggle"), (text_hotkey.vk, "text")])
+    .collect();
+    // 说话键：不能是空格、回车这些会弄坏打字的键
+    let (talk_key, talk_why) = plain_key(get("talkKey"), &UNSAFE_TRIGGER_VKS, TALK_KEYS, &taken);
+    taken.push((talk_key, "talk"));
+    // 面板键：不能是 Esc
+    let (panel_key, panel_why) = plain_key(get("panelKey"), &[0x1B], PANEL_KEYS, &taken);
+    let clashes = [
+        ("trigger", trigger_why),
+        ("emote", emote_why),
+        ("toggle", toggle_why),
+        ("text", text_why),
+        ("talk", talk_why),
+        ("panel", panel_why),
+    ]
+    .into_iter()
+    .filter_map(|(key, why)| why.map(|with| KeyClash { key, with }))
+    .collect();
     let mic = get("mic")
         .and_then(Value::as_str)
         .filter(|m| m.len() <= MIC_ID_MAX)
         .unwrap_or_default()
         .to_string();
-    Settings {
+    let settings = Settings {
         trigger,
         drag_threshold_px: num(
             get("dragThresholdPx"),
@@ -548,14 +592,15 @@ pub fn normalize(raw: &Value) -> Settings {
         ),
         team_votes: bool_or(get("teamVotes"), d.team_votes),
         team_panel: bool_or(get("teamPanel"), d.team_panel),
-        panel_key: panel_key(get("panelKey"), &taken),
+        panel_key,
         voice: bool_or(get("voice"), d.voice),
         talk_key,
         voice_volume: num(get("voiceVolume"), &VOLUME, f64::from(d.voice_volume)) as u32,
         mic,
         launch_at_startup: bool_or(get("launchAtStartup"), d.launch_at_startup),
         auto_update_check: bool_or(get("autoUpdateCheck"), d.auto_update_check),
-    }
+    };
+    (settings, clashes)
 }
 
 impl Settings {

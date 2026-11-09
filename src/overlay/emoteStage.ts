@@ -1,5 +1,6 @@
 // 透明窗口上的表情：每个人（自己、预览、每位队友）同时最多一个，3 秒后消失。
 // 移植自 lolPing src/renderer/overlay/emoteStage.ts（MIT，© 2026 Danrui Meng），去掉了 AI 队友的「一直留着」。
+import { div } from "../shared/dom";
 import { EMOTE_DURATION_S, bundledAnimUrl } from "../shared/emotes";
 import { bubble, emoteFxContent, envelope } from "./emoteFx";
 import type { PingTag } from "./pingFx";
@@ -14,12 +15,6 @@ interface Live {
   url: string | null;
   gone: boolean;
 }
-
-const div = (cls: string): HTMLDivElement => {
-  const d = document.createElement("div");
-  d.className = cls;
-  return d;
-};
 
 export class EmoteStage {
   private readonly live = new Map<string, Live>();

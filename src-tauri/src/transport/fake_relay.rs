@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::crypto::RoomId;
+use crate::crypto::{RoomId, hex};
 
 #[derive(Clone, Debug, Default)]
 pub struct Behavior {
@@ -58,10 +58,6 @@ impl Drop for FakeRelay {
     fn drop(&mut self) {
         self.task.abort();
     }
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 impl FakeRelay {

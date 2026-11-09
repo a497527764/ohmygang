@@ -23,7 +23,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::api::AppState;
 use crate::app_core::{AppError, Core, MemberView, RoomStatus, RoomSummary};
-use crate::crypto::{MemberId, RoomId};
+use crate::crypto::{MemberId, RoomId, hex};
 use crate::emotes::{self, net::NetMsg};
 use crate::history::{Kind, NewEntry};
 use crate::identity::IdentityView;
@@ -79,10 +79,6 @@ pub fn voters(app: &AppHandle, me: MemberId) -> Vec<MemberId> {
         );
     }
     out
-}
-
-pub fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 fn base64(b: &[u8]) -> String {

@@ -79,8 +79,16 @@ export interface Status {
 }
 
 export const readSettings = (): Promise<Settings> => invoke("settings_read");
-/** 存整份设置，返回 Rust 修正后的结果。 */
-export const writeSettings = (settings: Settings): Promise<Settings> => invoke("settings_write", { settings });
+/** 快捷键页的一行。 */
+export type ShortcutRow = "trigger" | "emote" | "toggle" | "text" | "talk" | "panel";
+/** 要的键被 Rust 换掉了：哪一行、和哪一行撞了（null：这个键本身不能用）。和 Rust 的 settings2::KeyClash 对应。 */
+export interface KeyClash {
+  key: ShortcutRow;
+  with: ShortcutRow | null;
+}
+/** 存整份设置，返回 Rust 修正后的结果和这次被换掉的按键。 */
+export const writeSettings = (settings: Settings): Promise<{ settings: Settings; clashes: KeyClash[] }> =>
+  invoke("settings_write", { settings });
 export const getStatus = (): Promise<Status> => invoke("status_get");
 export const setEnabled = (on: boolean): Promise<void> => invoke("pings_set_enabled", { on });
 /** 录按键期间挂起拦截，键都交给控制面板。 */

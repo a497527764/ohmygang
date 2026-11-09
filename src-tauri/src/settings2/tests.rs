@@ -491,3 +491,50 @@ fn overlay_text_is_bigger_by_default_with_a_known_effect() {
     let o = normalize(&json!({ "textSizePx": 40, "textEffect": "neon" })).overlay();
     assert_eq!((o.text_size_px, o.text_effect.as_str()), (40, "neon"));
 }
+
+#[test]
+fn replaced_keys_say_what_they_clashed_with() {
+    let clashes = |v: serde_json::Value| normalize_keys(&v).1;
+    let clash = |key, with| KeyClash { key, with };
+    // 没给的行用默认值，不算换掉；存好的设置原样读回来也不算
+    assert!(clashes(json!({})).is_empty());
+    assert!(clashes(serde_json::to_value(Settings::default()).unwrap()).is_empty());
+    assert_eq!(
+        clashes(json!({ "trigger": { "vk": 0x56 }, "talkKey": 0x56 })),
+        vec![clash("talk", Some("trigger"))],
+        "V 被自定义信号触发键占了"
+    );
+    assert_eq!(
+        clashes(json!({ "talkKey": 0x20 })),
+        vec![clash("talk", None)],
+        "空格本身不能当说话键"
+    );
+    assert_eq!(
+        clashes(json!({ "toggleHotkey": { "mods": MOD_CTRL, "vk": 0x09 }, "panelKey": 0x09 })),
+        vec![clash("panel", Some("toggle"))]
+    );
+    assert_eq!(
+        clashes(json!({ "talkKey": 0x42, "panelKey": 0x42 })),
+        vec![clash("panel", Some("talk"))],
+        "说话键排在面板键前面"
+    );
+    assert_eq!(
+        clashes(json!({ "trigger": "ctrl", "emoteTrigger": "ctrl" })),
+        vec![clash("emote", Some("trigger"))]
+    );
+    let s = json!({ "emoteTrigger": "capslock", "toggleHotkey": { "mods": MOD_ALT, "vk": 0x14 } });
+    let (settings, c) = normalize_keys(&s);
+    if cfg!(windows) {
+        assert_eq!(c, vec![clash("emote", Some("toggle"))]);
+        assert_eq!(settings.emote_trigger, None, "撞了就关掉表情轮盘");
+    }
+    let toggle = Settings::default().toggle_hotkey;
+    assert_eq!(
+        clashes(json!({ "textHotkey": toggle })),
+        vec![clash("text", Some("toggle"))]
+    );
+    assert_eq!(
+        clashes(json!({ "trigger": { "vk": 0x0D } })),
+        vec![clash("trigger", None)]
+    );
+}

@@ -1,5 +1,6 @@
 // 信号动画：落点一个光圈、几道扩散的环、弹出的图标，到时自己删掉。
 // 移植自 lolPing src/renderer/overlay/pingFx.ts（MIT，© 2026 Danrui Meng），去掉了 AI 队友用的文字。
+import { div } from "../shared/dom";
 import { FALLBACK_TEXTURE, textureUrl, type PingDef } from "../shared/pings";
 
 /** 屏幕上的信号超过这么多就先删最早的，免得一阵刷屏拖慢透明窗口。 */
@@ -27,12 +28,6 @@ function img(name: string, cls = ""): HTMLImageElement {
   };
   return el;
 }
-
-const div = (cls: string): HTMLDivElement => {
-  const d = document.createElement("div");
-  d.className = cls;
-  return d;
-};
 
 /** 在 (x, y) 放一个信号动画，播完自动删掉。 */
 export function spawnPing(layer: HTMLElement, def: PingDef, x: number, y: number, opts: PingFxOptions): HTMLElement {

@@ -279,7 +279,7 @@ impl Runner {
     fn dto(&self, r: &Row) -> EntryDto {
         EntryDto {
             id: r.id,
-            member_id: crate::team::hex(&r.member_id),
+            member_id: crate::crypto::hex(&r.member_id),
             me: r.member_id == self.me,
             color: crate::overlay::tag_color(&r.member_id),
             ts: r.ts_ms,

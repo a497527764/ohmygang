@@ -54,7 +54,7 @@ pub fn parse_name(name: &str) -> Option<(&str, Part)> {
 
 /// 静态图的哈希：SHA-256 的前 16 字节，十六进制。
 pub fn hash_of(still: &[u8]) -> String {
-    crate::team::hex(&crypto::sha256(&[still])[..16])
+    crate::crypto::hex(&crypto::sha256(&[still])[..16])
 }
 
 fn u16_le(b: &[u8], at: usize) -> Option<u32> {

@@ -188,7 +188,7 @@ pub fn split_announced(b: &[u8]) -> Vec<String> {
         .0
         .iter()
         .take(ANNOUNCED_MAX)
-        .map(|h| crate::team::hex(h))
+        .map(|h| crate::crypto::hex(h))
         .collect()
 }
 
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(wire.len(), 16 * 8);
         assert_eq!(split_announced(&wire), list);
         assert_eq!(
-            hash_bytes(H).map(|b| crate::team::hex(&b)),
+            hash_bytes(H).map(|b| crate::crypto::hex(&b)),
             Some(H.to_string())
         );
         assert_eq!(hash_bytes("xyz"), None);

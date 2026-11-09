@@ -4,7 +4,7 @@
 //! 实现流程：
 //! 1. 一个专门的线程拥有全部状态，别处只往它的通道里发消息（`Msg`），所以不需要锁，也不会和主线程互相等。
 //!    窗口操作和查显示器都由 Tauri 转到主线程执行，这个线程等结果；主线程从不等这个线程。
-//! 2. 显示器：每次要画新东西（开轮盘、单击信号、预览、提示）前先查一遍，另外每 3 秒查一遍；
+//! 2. 显示器：要按位置画新东西（开轮盘、单击信号、队友的信号表情和字）前先查一遍，另外每 3 秒查一遍；
 //!    和上次不一样（插拔、改分辨率、改缩放、游戏切了显示模式）就重建：多的窗口关掉、少的补上、其余挪到新位置。
 //! 3. 手势事件进来是物理像素：开轮盘时记下中心和所在的显示器，之后每次移动都按那块屏幕的缩放算出偏移、选出高亮的格子，
 //!    只在格子变了时通知页面；松开时按同样的算法定格，在中心放那一格的信号或表情。页面只管画，不算规则。
@@ -25,7 +25,7 @@ use tauri::{
     WebviewWindowBuilder,
 };
 
-use crate::crypto::MemberId;
+use crate::crypto::{MemberId, hex};
 use crate::input::{Emit, TalkPhase, WheelKind};
 use crate::protocol::live::{LiveBody, from_ratio, to_ratio};
 use crate::settings2::OverlaySettings;
@@ -411,11 +411,7 @@ impl Actor {
         fx: u8,
     ) {
         self.refresh();
-        let target = usize::from(display)
-            .checked_sub(1)
-            .and_then(|i| self.displays.get(i))
-            .or(self.displays.first());
-        let Some(d) = target.cloned() else {
+        let Some(d) = self.numbered(display) else {
             return;
         };
         let (w, h) = css_size(&d);
@@ -424,7 +420,7 @@ impl Actor {
             .get(&from)
             .cloned()
             .unwrap_or_else(|| "队友".into());
-        let owner: String = from[..6].iter().map(|b| format!("{b:02x}")).collect();
+        let owner = hex(&from[..6]);
         self.show(
             &d.key,
             "emote:spawn",
@@ -439,11 +435,7 @@ impl Actor {
     /// 队友的信号：落到本机同号显示器（没有这一号就落到 1 号）的同一比例处，下面带他的名字。
     fn remote_ping(&mut self, from: MemberId, display: u8, x: u16, y: u16, id: String) {
         self.refresh();
-        let target = usize::from(display)
-            .checked_sub(1)
-            .and_then(|i| self.displays.get(i))
-            .or(self.displays.first());
-        let Some(d) = target.cloned() else {
+        let Some(d) = self.numbered(display) else {
             return;
         };
         let (w, h) = css_size(&d);
@@ -463,20 +455,13 @@ impl Actor {
     /// 一句话：落到同号显示器的同一比例处，带说话人的名字；按设置在原处冒出来或者当弹幕飘过。
     fn text(&mut self, from: Option<MemberId>, display: u8, (x, y): (u16, u16), text: String) {
         self.refresh();
-        let target = usize::from(display)
-            .checked_sub(1)
-            .and_then(|i| self.displays.get(i))
-            .or(self.displays.first());
-        let Some(d) = target.cloned() else {
+        let Some(d) = self.numbered(display) else {
             return;
         };
         let (w, h) = css_size(&d);
         let (owner, name, color) = match from {
             Some(m) => (
-                m[..6]
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>(),
+                hex(&m[..6]),
                 self.names.get(&m).cloned().unwrap_or_else(|| "队友".into()),
                 tag_color(&m),
             ),
@@ -491,6 +476,15 @@ impl Actor {
                 "x": from_ratio(x, w), "y": from_ratio(y, h),
             }),
         );
+    }
+
+    /// 第 `display` 号显示器（从 1 数）；本机没有这一号就用 1 号。
+    fn numbered(&self, display: u8) -> Option<Display> {
+        usize::from(display)
+            .checked_sub(1)
+            .and_then(|i| self.displays.get(i))
+            .or(self.displays.first())
+            .cloned()
     }
 
     /// 开着的轮盘里，物理像素的点对应哪格。外层 None 表示没有开着的轮盘，内层 None 表示在中心的死区里。
@@ -626,8 +620,22 @@ pub fn tag_color(m: &MemberId) -> &'static str {
 }
 
 fn create_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
-    let w = WebviewWindowBuilder::new(app, label, WebviewUrl::App("overlay.html".into()))
-        .title("lolGang overlay")
+    let w = floating_window(app, label, "overlay.html", "lolGang overlay", false)?;
+    w.set_ignore_cursor_events(true)?;
+    Ok(w)
+}
+
+/// 透明窗口和三个小窗口（队伍面板、投票、聊天框，`panel.rs`）共用的建法：透明、无边框、没有阴影、不能拉大小、
+/// 不进任务栏、置顶、先藏着、同一串浏览器参数，不拿焦点。`focusable`：要打字的聊天框才能拿焦点。
+pub fn floating_window(
+    app: &AppHandle,
+    label: &str,
+    page: &str,
+    title: &str,
+    focusable: bool,
+) -> tauri::Result<WebviewWindow> {
+    WebviewWindowBuilder::new(app, label, WebviewUrl::App(page.into()))
+        .title(title)
         .transparent(true)
         .decorations(false)
         .shadow(false)
@@ -636,13 +644,11 @@ fn create_window(app: &AppHandle, label: &str) -> tauri::Result<WebviewWindow> {
         .always_on_top(true)
         // macOS：切换桌面（Spaces）时跟着走；Windows 上不起作用
         .visible_on_all_workspaces(true)
-        .focusable(false)
+        .focusable(focusable)
         .focused(false)
         .visible(false)
         .additional_browser_args(BROWSER_ARGS)
-        .build()?;
-    w.set_ignore_cursor_events(true)?;
-    Ok(w)
+        .build()
 }
 
 /// 把窗口放到它该在的位置：有东西画时盖住显示器，空闲时挪开（没地方挪就隐藏）。

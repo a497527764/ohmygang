@@ -1,8 +1,9 @@
 // 「快捷键」页：所有按键集中在这一页，每一行都能当场录。改动交给 App 统一保存。
-// 同一个键不能两用，由 Rust 的 settings2::normalize 把关：撞了它会换掉（文字快捷键换备用、面板键换备用、表情轮盘关掉）。
-// 这里记下每一行「刚才要的是什么」，存好后发现被换了，就在那一行下面说换成了什么、和谁撞了。
-import { useState } from "react";
-import type { NamedTrigger, Settings, TriggerKey } from "../api";
+// 同一个键不能两用，由 Rust 的 settings2::normalize 把关：撞了它会换掉（文字快捷键换备用、面板键换备用、表情轮盘关掉），
+// 保存时一并说出换掉了哪一行、和谁撞了（3.1.1 以前这里又算了一遍撞键规则）。
+// 这里记下每一行「刚才要的是什么」，存好后那一行被换了，就在下面说换成了什么、和谁撞了。
+import { useEffect, useRef, useState } from "react";
+import type { KeyClash, NamedTrigger, Settings, ShortcutRow, TriggerKey } from "../api";
 import { hotkeyParts, vkLabel, type Hotkey } from "../shared/keys";
 import { Row } from "./controls";
 import { KeyCapture } from "./KeyCapture";
@@ -24,7 +25,7 @@ export function triggerLabel(t: TriggerKey): string {
   return typeof t === "object" ? vkLabel(t.vk) : (TRIGGERS.find((x) => x.value === t)?.label ?? t);
 }
 
-type RowId = "trigger" | "emote" | "toggle" | "text" | "talk" | "panel";
+type RowId = ShortcutRow;
 type Value = TriggerKey | "off" | Hotkey | number;
 
 const NAMES: Record<RowId, string> = {
@@ -46,28 +47,11 @@ function label(id: RowId, v: Value): string {
   return triggerLabel(v as TriggerKey);
 }
 
-/** 一个按键「占着」哪些东西：触发键按名字，自定义键和 Caps Lock 还占着那个键码，快捷键占着组合和它的键码。 */
-function marks(id: RowId, v: Value): string[] {
-  if (v === OFF) return [];
-  if (id === "toggle" || id === "text") {
-    const h = v as Hotkey;
-    return [`hk:${h.mods}:${h.vk}`, `vk:${h.vk}`];
-  }
-  if (id === "panel" || id === "talk") return [`vk:${v as number}`];
-  const t = v as TriggerKey;
-  if (typeof t === "object") return [`t:vk${t.vk}`, `vk:${t.vk}`];
-  return t === "capslock" ? [`t:${t}`, "vk:20"] : [`t:${t}`];
-}
-
-/** 要的键被 Rust 换掉了：说换成了什么、和谁撞了（找不到撞的就说这个键不能用）。 */
-function adjustment(id: RowId, asked: Value, s: Settings): string | null {
+/** 要的键被 Rust 换掉了：说换成了什么、和谁撞了（Rust 没说和谁撞，就是这个键本身不能用）。 */
+function adjustment(id: RowId, asked: Value, clash: KeyClash, s: Settings): string | null {
   const now = valueOf(s, id);
   if (JSON.stringify(now) === JSON.stringify(asked)) return null;
-  const want = marks(id, asked);
-  const other = (Object.keys(NAMES) as RowId[]).find(
-    (o) => o !== id && marks(o, valueOf(s, o)).some((m) => want.includes(m)),
-  );
-  const why = other ? `和「${NAMES[other]}」撞了` : `${label(id, asked)} 不能用`;
+  const why = clash.with ? `和「${NAMES[clash.with]}」撞了` : `${label(id, asked)} 不能用`;
   return now === OFF ? `${why}，表情轮盘先关了` : `${why}，换成了 ${label(id, now)}`;
 }
 
@@ -102,18 +86,41 @@ function TriggerPick(props: { value: TriggerKey | "off"; allowOff: boolean; take
 
 interface Props {
   settings: Settings;
+  /** 最近一次保存时被换掉的按键。 */
+  clashes: KeyClash[];
   onChange: (patch: Partial<Settings>) => void;
 }
 
-export function ShortcutsPage({ settings: s, onChange }: Props) {
+export function ShortcutsPage({ settings: s, clashes, onChange }: Props) {
   const [asked, setAsked] = useState<Partial<Record<RowId, Value>>>({});
+  /** 每一行最近一次要的键为什么被换掉；没被换掉的不在里面。 */
+  const [why, setWhy] = useState<Partial<Record<RowId, KeyClash>>>({});
+  /** 选了、还没等到保存结果的行。 */
+  const waiting = useRef(new Set<RowId>());
   const pick = (id: RowId, value: Value, patch: Partial<Settings>) => {
     setAsked((a) => ({ ...a, [id]: value }));
+    waiting.current.add(id);
     onChange(patch);
   };
+  // 保存结果回来了：刚选过的那几行按 Rust 说的更新；别的行保留上次的说明
+  useEffect(() => {
+    if (waiting.current.size === 0) return;
+    const rows = [...waiting.current];
+    waiting.current.clear();
+    setWhy((w) => {
+      const next = { ...w };
+      for (const id of rows) {
+        const c = clashes.find((x) => x.key === id);
+        if (c) next[id] = c;
+        else delete next[id];
+      }
+      return next;
+    });
+  }, [clashes]);
   const note = (id: RowId) => {
     const a = asked[id];
-    const text = a === undefined ? null : adjustment(id, a, s);
+    const c = why[id];
+    const text = a === undefined || !c ? null : adjustment(id, a, c, s);
     return text && <span className="adjusted">{text}</span>;
   };
 

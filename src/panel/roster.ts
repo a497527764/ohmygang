@@ -5,7 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Member, TeamView } from "../api";
 import { hueOf, initialOf, PRESET_COLORS, PRESET_ICONS } from "../avatars";
-import { el, runCountdown, voteCard, type VoteDto } from "./shared";
+import { el } from "../shared/dom";
+import { runCountdown, voteCard, type VoteDto } from "./shared";
 import "./panel.css";
 
 const root = document.getElementById("root") as HTMLElement;

@@ -7,6 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Settings, TeamView } from "../api";
+import { el } from "../shared/dom";
 import { emoteIcon, emoteName, type CustomEmote } from "../shared/emotes";
 import { pingById, textureUrl } from "../shared/pings";
 import "./text.css";
@@ -53,13 +54,6 @@ function time(ts: number): string {
   const d = new Date(ts);
   const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   return d.toDateString() === new Date().toDateString() ? hm : `${d.getMonth() + 1}-${d.getDate()} ${hm}`;
-}
-
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string): HTMLElementTagNameMap[K] {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
-  return e;
 }
 
 /** 信号、表情那一行：小图加一句「发了……」。 */

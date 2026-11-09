@@ -128,6 +128,11 @@ pub fn verify_event_sig(member_id: &MemberId, event_id: &EventId, sig: &[u8; 64]
         .is_ok()
 }
 
+/// 字节 → 小写十六进制：公钥、表情图的哈希、透明窗口里队友的短编号都这样写（3.1.1 起只有这一份）。
+pub fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 /// 指纹摘要：SHA-256(公钥) 前 8 字节的 Base32，共 13 个字符。
 pub fn fingerprint(member_id: &MemberId) -> String {
     crate::base32::encode(&sha256(&[member_id])[..8], 64)
@@ -136,10 +141,6 @@ pub fn fingerprint(member_id: &MemberId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn hex(b: &[u8]) -> String {
-        b.iter().map(|x| format!("{x:02x}")).collect()
-    }
 
     #[test]
     fn sha256_known_answer() {

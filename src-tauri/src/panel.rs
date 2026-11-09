@@ -19,17 +19,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow};
 use tokio::sync::oneshot;
 
 use crate::api::AppState;
 use crate::crypto::{self, MemberId};
 use crate::node::now_ms;
+use crate::overlay::Msg;
 use crate::overlay::displays::{self, Display};
-use crate::overlay::{BROWSER_ARGS, Msg};
 use crate::protocol::live::{LiveBody, to_ratio};
 use crate::team_text::{self, Input};
 use crate::votes::{Open, Outcome, Tally, VoteKind};
@@ -263,7 +260,7 @@ impl Runner {
                 self.push();
             }
             PanelMsg::Speaking(list) => {
-                self.speaking = list.iter().map(|m| crate::team::hex(m)).collect();
+                self.speaking = list.iter().map(|m| crypto::hex(m)).collect();
                 if let Some(w) = &self.roster {
                     let _ = w.emit_to(w.label(), "roster:speaking", &self.speaking);
                 }
@@ -521,21 +518,14 @@ impl Runner {
             Which::Vote => ("vote", "vote.html"),
             Which::Text => ("text", "text.html"),
         };
-        let built = WebviewWindowBuilder::new(&self.app, label, WebviewUrl::App(page.into()))
-            .title("lolGang")
-            .transparent(true)
-            .decorations(false)
-            .shadow(false)
-            .resizable(false)
-            .skip_taskbar(true)
-            .always_on_top(true)
-            .visible_on_all_workspaces(true)
-            // 面板和投票：能点、不拿焦点；输入框要打字，得拿焦点。
-            .focusable(which == Which::Text)
-            .focused(false)
-            .visible(false)
-            .additional_browser_args(BROWSER_ARGS)
-            .build();
+        // 面板和投票：能点、不拿焦点；输入框要打字，得拿焦点。
+        let built = crate::overlay::floating_window(
+            &self.app,
+            label,
+            page,
+            "lolGang",
+            which == Which::Text,
+        );
         match built {
             Ok(w) => {
                 *slot = Some(w.clone());
@@ -818,7 +808,7 @@ mod tests {
     #[test]
     fn member_ids_parse_from_hex() {
         let id = [0xabu8; 32];
-        assert_eq!(parse_member(&crate::team::hex(&id)), Some(id));
+        assert_eq!(parse_member(&crypto::hex(&id)), Some(id));
         assert_eq!(parse_member("ab"), None);
         assert_eq!(parse_member(&"zz".repeat(32)), None);
     }

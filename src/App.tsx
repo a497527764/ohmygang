@@ -4,7 +4,7 @@
 // 信号开关在托盘或暂停快捷键那边变了，Rust 推送过来，这里跟着变。
 // 关掉控制面板时网页会被销毁，下次打开重新加载：从托盘「检查更新」打开时地址带 #about，直接到那一页。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getStatus, onEnabled, onNavigate, readSettings, setEnabled, writeSettings, type Settings, type Status } from "./api";
+import { getStatus, onEnabled, onNavigate, readSettings, setEnabled, writeSettings, type KeyClash, type Settings, type Status } from "./api";
 import { AboutPage } from "./components/AboutPage";
 import { EmotesPage } from "./components/EmotesPage";
 import { FeaturesPage } from "./components/FeaturesPage";
@@ -33,6 +33,8 @@ const SAVE_DELAY_MS = 300;
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
+  /** 最近一次保存时被 Rust 换掉的按键，交给快捷键页说明。 */
+  const [clashes, setClashes] = useState<KeyClash[]>([]);
   const [page, setPage] = useState<Page>(() => {
     const hash = window.location.hash.slice(1);
     return PAGES.some((p) => p.id === hash) ? (hash as Page) : "team";
@@ -79,8 +81,9 @@ export default function App() {
       writeSettings(latest.current).then(
         (saved) => {
           if (saveTimer.current) return; // 又改了，等下一次保存的结果
-          latest.current = saved;
-          setSettings(saved);
+          latest.current = saved.settings;
+          setSettings(saved.settings);
+          setClashes(saved.clashes);
           setError(null);
         },
         (e) => setError(`设置没存上：${String(e)}`),
@@ -139,7 +142,7 @@ export default function App() {
               <EmotesPage settings={settings} onChange={change} onSaved={saved} onShortcuts={() => setPage("shortcuts")} />
             )}
             {page === "voice" && <VoicePage settings={settings} onChange={change} onShortcuts={() => setPage("shortcuts")} />}
-            {page === "shortcuts" && <ShortcutsPage settings={settings} onChange={change} />}
+            {page === "shortcuts" && <ShortcutsPage settings={settings} clashes={clashes} onChange={change} />}
             {page === "features" && <FeaturesPage settings={settings} onChange={change} />}
             {page === "about" && <AboutPage settings={settings} onChange={change} />}
           </>

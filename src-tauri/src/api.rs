@@ -150,19 +150,31 @@ pub fn settings_read(state: State<'_, AppState>) -> Settings {
     state.settings()
 }
 
+/// 存好的设置，和这次被换掉的按键（快捷键页在那一行下面说换成了什么、和谁撞了）。
+#[derive(Serialize)]
+pub struct Saved {
+    settings: Settings,
+    clashes: Vec<settings2::KeyClash>,
+}
+
 /// 存一份新设置，返回修正后的设置（控制面板以它为准）。
 #[tauri::command]
 pub fn settings_write(
     app: AppHandle,
     state: State<'_, AppState>,
     settings: Value,
-) -> Result<Settings, String> {
-    apply_settings(&app, &state, &settings)
+) -> Result<Saved, String> {
+    let (s, clashes) = settings2::normalize_keys(&settings);
+    let settings = apply_normalized(&app, &state, s)?;
+    Ok(Saved { settings, clashes })
 }
 
 /// 整份设置过 `normalize` → 存库 → 交给各线程（见文件头第 2 条）。
 fn apply_settings(app: &AppHandle, state: &AppState, settings: &Value) -> Result<Settings, String> {
-    let s = settings2::normalize(settings);
+    apply_normalized(app, state, settings2::normalize(settings))
+}
+
+fn apply_normalized(app: &AppHandle, state: &AppState, s: Settings) -> Result<Settings, String> {
     let old = state.settings();
     if s.launch_at_startup != old.launch_at_startup {
         set_autostart(app, s.launch_at_startup)?;

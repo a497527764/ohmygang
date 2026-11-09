@@ -2,6 +2,7 @@
 // 或者当弹幕从右往左飘过屏幕上方。冒出和弹幕的做法参考 lolPing 的 text-pop 和 danmaku（MIT，© 2026 Danrui Meng）。
 // 3.0 加了字号和字幕特效（像剪映的字幕模板）：描边大字、金色渐变、霓虹发光、逐字弹跳、打字机、抖动强调。
 // 字号、特效、冒出还是弹幕都由 Rust 随每一句交过来（看的人自己在功能页选的），这里只管画。
+import { div } from "../shared/dom";
 
 export type TextEffect = "outline" | "gold" | "neon" | "bounce" | "typewriter" | "shake";
 
@@ -27,13 +28,6 @@ const LANE_GAP_PX = 48;
 /** 逐字出现的特效：一个字最多隔多久，整句最多用多久出完（120 个字也不拖太久）。 */
 const CHAR_STEP_MS: Partial<Record<TextEffect, number>> = { bounce: 45, typewriter: 70 };
 const REVEAL_MAX_MS = 1600;
-
-const div = (cls: string, text?: string): HTMLDivElement => {
-  const d = document.createElement("div");
-  d.className = cls;
-  if (text !== undefined) d.textContent = text; // 只当文字：内容来自别人的电脑
-  return d;
-};
 
 /** 按「字」拆开：一个汉字、一个表情（哪怕由几个码点组成）都算一个。 */
 function graphemes(s: string): string[] {
