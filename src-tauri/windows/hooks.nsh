@@ -8,6 +8,9 @@
 ;    改成装在旧目录旁边（比如 D:\Program Files\钢一下 → D:\Program Files\lolGang）。手动安装时用户自己选目录，不改。
 ; 3. 装好后静默卸掉旧的（数据目录按 com.lijia.lolgang 存，两者共用；静默卸载不勾「删除数据」，数据留着），
 ;    再补上开始菜单快捷方式（/UPDATE 模式下安装包本身不建快捷方式，旧的又随卸载删了）；旧的有桌面快捷方式时，桌面也补一个。
+;
+; 每次装完（包括自动更新）都告诉 Windows 图标可能变了（3.1.1）：快捷方式指向的一直是同一个 lolgang.exe，
+; Windows 按路径缓存了它的图标；Tauri 的模板装完不通知、自动更新时也不重建快捷方式，换了图标后桌面上会一直是旧图。
 
 !define /ifndef MAX_PATH 260
 !define /ifndef SLGP_RAWPATH 0x4
@@ -91,4 +94,6 @@
       CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
     ${EndIf}
   ${EndIf}
+  ; SHCNE_ASSOCCHANGED（0x08000000）、SHCNF_IDLIST（0）：资源管理器丢掉图标缓存，桌面和开始菜单的快捷方式重新取图标
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend
