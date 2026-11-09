@@ -4,7 +4,7 @@
 //! 1. 命令都是异步的：在节点任务里执行（`NodeHandle::call`），完了返回整份 `TeamView`，控制面板直接换上。
 //!    退出队伍时先发一帧 Bye 再写 Leave，队友马上就能看到人走了。
 //! 2. 节点的通知（`on_node_event`）在节点任务里调用，不能等节点：
-//!    队友的信号、表情、文字交给透明窗口，导入表情的传输帧交给 `emotes::net`，投票交给 `panel`；在线状态记进 `TeamState`；队伍有变化（进队、退出、改名、资料、解散）就
+//!    队友的信号、表情、文字交给透明窗口，导入表情的传输帧交给 `emotes::net`，投票交给 `panel`，语音交给 `voice`；在线状态记进 `TeamState`；队伍有变化（进队、退出、改名、资料、解散）就
 //!    另开一个异步任务把队员名字交给透明窗口、通知控制面板刷新。
 //! 3. 本人的在线状态（`refresh_presence`）：信号关着是「暂停」，5 分钟没碰键鼠是「离开」，否则「在线」。
 //!    变了才交给节点，节点自己按周期重复发。
@@ -31,6 +31,7 @@ use crate::protocol::body::{Avatar, image_mime};
 use crate::protocol::live::{LiveBody, OFF_VOTES, Status};
 use crate::sync::path::PathKind;
 use crate::transport::relay::RelayState;
+use crate::voice::VoiceMsg;
 use crate::votes::VoteKind;
 
 /// 多久没碰键鼠算离开电脑。
@@ -584,6 +585,21 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                     let _ = app.emit_to("main", "team://changed", ());
                 }
             }
+            LiveBody::Voice {
+                stream,
+                first,
+                frames,
+                end,
+            } => state.voice.send(VoiceMsg::Remote {
+                from,
+                stream,
+                first,
+                frames: frames
+                    .into_iter()
+                    .map(serde_bytes::ByteBuf::into_vec)
+                    .collect(),
+                end,
+            }),
             LiveBody::Bye => {
                 state
                     .team
@@ -593,6 +609,7 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                     .remove(&from);
                 state.emote_net.send(NetMsg::Gone(from));
                 state.panel.send(PanelMsg::Gone(from));
+                state.voice.send(VoiceMsg::Gone(from));
                 let _ = app.emit_to("main", "team://changed", ());
             }
         },

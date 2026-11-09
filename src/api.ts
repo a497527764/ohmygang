@@ -52,6 +52,14 @@ export interface Settings {
   teamPanel: boolean;
   /** 面板键的虚拟键码。 */
   panelKey: number;
+  /** 语音：按住说话键说话，队友的话直接播放。 */
+  voice: boolean;
+  /** 说话键（按住）的虚拟键码，不带修饰键。 */
+  talkKey: number;
+  /** 队友语音的音量 0–100。 */
+  voiceVolume: number;
+  /** 麦克风的设备 id；空表示跟随系统。 */
+  mic: string;
   launchAtStartup: boolean;
   /** 启动后和每 6 小时查一次新版本。 */
   autoUpdateCheck: boolean;
@@ -145,6 +153,26 @@ export const onTeamChanged = (cb: () => void): Promise<UnlistenFn> => listen("te
 /** 队友用的是别的协议版本（多半是 1.x）。 */
 export const onProtocolMismatch = (cb: (remote: number) => void): Promise<UnlistenFn> =>
   listen<number>("team://mismatch", (e) => cb(e.payload));
+
+// ---- 语音（和 Rust 的 voice/ 对应） ----
+
+export interface Mic {
+  id: string;
+  name: string;
+}
+
+export interface VoiceStatus {
+  /** 麦克风或扬声器打不开的原因。 */
+  error: string | null;
+  /** 试音进行到哪。 */
+  test: "recording" | "playing" | null;
+}
+
+export const voiceView = (): Promise<{ mics: Mic[]; status: VoiceStatus }> => invoke("voice_view");
+/** 录 3 秒放给自己听。 */
+export const voiceTest = (): Promise<void> => invoke("voice_test");
+export const onVoice = (cb: (s: VoiceStatus) => void): Promise<UnlistenFn> =>
+  listen<VoiceStatus>("voice://changed", (e) => cb(e.payload));
 
 // ---- 自动更新（和 Rust 的 update.rs 对应） ----
 

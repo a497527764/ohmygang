@@ -91,6 +91,10 @@ fn a_saved_file_reads_back_the_same() {
         team_votes: false,
         team_panel: false,
         panel_key: 0xC0,
+        voice: false,
+        talk_key: 0x42,
+        voice_volume: 35,
+        mic: "wasapi:{abc}".into(),
         launch_at_startup: true,
         auto_update_check: false,
     };
@@ -411,4 +415,60 @@ fn team_keys_never_share_a_key() {
         normalize(&json!({ "textStyle": "marquee" })).text_style,
         "spot"
     );
+}
+
+#[test]
+fn voice_defaults_to_on_with_v_as_the_talk_key() {
+    let d = Settings::default();
+    assert!(d.voice);
+    assert_eq!((d.talk_key, d.voice_volume, d.mic.as_str()), (0x56, 80, ""));
+    let s = normalize(
+        &json!({ "voiceVolume": 150, "mic": "wasapi:{0.0.1.00000000}.{abc}", "voice": false }),
+    );
+    assert_eq!(
+        (s.voice_volume, s.mic.as_str(), s.voice),
+        (100, "wasapi:{0.0.1.00000000}.{abc}", false)
+    );
+    assert_eq!(
+        normalize(&json!({ "mic": "x".repeat(600) })).mic,
+        "",
+        "太长的设备名不要"
+    );
+}
+
+#[test]
+fn talk_key_is_a_plain_safe_key_that_clashes_with_nothing() {
+    assert_eq!(normalize(&json!({ "talkKey": 0x42 })).talk_key, 0x42);
+    // 修饰键、空格、回车、Esc、方向键这些会弄坏打字的不要
+    for bad in [0x10, 0xA2, 0x20, 0x0D, 0x1B, 0x25, 0, 300] {
+        assert_eq!(
+            normalize(&json!({ "talkKey": bad })).talk_key,
+            0x56,
+            "键 {bad:#x}"
+        );
+    }
+    // 撞上触发键、表情键、暂停和文字快捷键的键：换成候选里第一个没被占的
+    let s = normalize(&json!({ "trigger": { "vk": 0x56 } }));
+    assert_eq!(s.talk_key, 0x47, "V 被自定义信号触发键占了，换成 G");
+    let s = normalize(
+        &json!({ "emoteTrigger": { "vk": 0x56 }, "toggleHotkey": { "mods": 3, "vk": 0x47 } }),
+    );
+    assert_eq!(s.talk_key, 0x5A);
+    let s = normalize(&json!({ "talkKey": 0x54 }));
+    assert_eq!(s.talk_key, 0x56, "T 是文字快捷键的键");
+    // 面板键排在说话键后面：面板键选了说话键的键，换的是面板键
+    let s = normalize(&json!({ "panelKey": 0x56 }));
+    assert_eq!((s.talk_key, s.panel_key), (0x56, 0x09));
+}
+
+#[test]
+fn talk_key_reaches_the_gesture_only_in_a_team_with_voice_on() {
+    let s = Settings::default();
+    assert_eq!(s.gesture_config(true, true).talk_vk, 0x56);
+    assert_eq!(s.gesture_config(true, false).talk_vk, 0, "不在队伍里不拦");
+    let off = Settings {
+        voice: false,
+        ..Settings::default()
+    };
+    assert_eq!(off.gesture_config(true, true).talk_vk, 0, "关了语音不拦");
 }

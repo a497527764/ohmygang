@@ -1,4 +1,4 @@
-// 透明窗口的页面：只画，不算规则。Rust 告诉它开哪个轮盘、高亮哪格、关轮盘、在哪放什么信号或表情、弹什么提示；
+// 透明窗口的页面：只画，不算规则。Rust 告诉它开哪个轮盘、高亮哪格、关轮盘、在哪放什么信号或表情、弹什么提示、谁在说话；
 // 它在空闲时报告一声，让 Rust 把窗口挪开。
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -46,6 +46,7 @@ const pingLayer = document.getElementById("pings") as HTMLElement;
 const emoteLayer = document.getElementById("emotes") as HTMLElement;
 const textLayer = document.getElementById("texts") as HTMLElement;
 const toastLayer = document.getElementById("toasts") as HTMLElement;
+const voiceLayer = document.getElementById("voice") as HTMLElement;
 const wheelSvg = document.getElementById("wheel") as unknown as SVGSVGElement;
 const emoteSvg = document.getElementById("emoteWheel") as unknown as SVGSVGElement;
 const stage = new EmoteStage(emoteLayer);
@@ -136,6 +137,27 @@ void listen<EmoteSpawn>("emote:spawn", ({ payload: p }) => {
 void listen<TextSpawn>("text:spawn", (e) => texts.spawn(e.payload));
 void listen<{ title: string; body: string }>("toast:show", (e) => showToast(e.payload.title, e.payload.body));
 
+/** 语音：自己在录（还剩几秒）、哪些队友在说（名字的颜色和信号标签一样）。 */
+interface VoiceState {
+  me: number | null;
+  others: { name: string; color: string }[];
+}
+function voicePill(text: string, cls: string, color?: string): HTMLElement {
+  const p = document.createElement("div");
+  p.className = `voice-pill ${cls}`;
+  if (color) p.style.setProperty("--tag", color);
+  const dot = document.createElement("i");
+  const label = document.createElement("span");
+  label.textContent = text;
+  p.append(dot, label);
+  return p;
+}
+void listen<VoiceState>("voice:state", ({ payload: v }) => {
+  const pills = v.others.map((o) => voicePill(o.name, "other", o.color));
+  if (v.me !== null) pills.push(voicePill(`正在录音 ${v.me} 秒`, "me"));
+  voiceLayer.replaceChildren(...pills);
+});
+
 // 信号、表情、文字、提示在各自的层里，轮盘开着时它的 class 有 open。
 const idle = new IdleWatch(
   () =>
@@ -144,11 +166,12 @@ const idle = new IdleWatch(
     pingLayer.childElementCount === 0 &&
     stage.isEmpty &&
     texts.isEmpty &&
-    toastLayer.childElementCount === 0,
+    toastLayer.childElementCount === 0 &&
+    voiceLayer.childElementCount === 0,
   (v) => void invoke("overlay_idle", { idle: v }),
 );
 const changes = new MutationObserver(() => idle.check());
-for (const l of [pingLayer, emoteLayer, textLayer, toastLayer]) changes.observe(l, { childList: true });
+for (const l of [pingLayer, emoteLayer, textLayer, toastLayer, voiceLayer]) changes.observe(l, { childList: true });
 for (const w of [wheelSvg, emoteSvg]) changes.observe(w, { attributes: true, attributeFilter: ["class"] });
 
 void invoke<OverlaySettings>("overlay_hello").then((s) => {

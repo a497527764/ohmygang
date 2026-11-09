@@ -15,6 +15,10 @@
 //! 6. 自定义按键当触发键时先扣住：单独按一下就在松开时补打这个键；拖动用掉了就不补；按住时又按了别的键说明在打字，
 //!    先把它补发出去。Caps Lock 当触发键时不补（补了会切换大小写）。
 //! 7. 看门狗：手势 10 秒没有鼠标事件就取消；平台层每秒用系统的按键状态同步一次，忘掉抬起没收到的键。
+//! 8. 说话键（3.0 语音，不带修饰键，只在队伍里、开着语音时）：按下就拦下并开始录（不吃掉第一个字）。
+//!    按住不到 0.3 秒就松开算「点了一下」：丢掉录音，补打这个键。0.3 秒内又按了别的键说明在打字：丢掉录音，
+//!    先补发说话键、再回放那个键（同第 6 条）。说了 0.3 秒以后按别的键照常放行（比如边说话边放技能）。
+//!    抬起丢了的话，和面板键一样靠连发停了来发现。
 
 /// 鼠标按钮。X1、X2 是侧键（常见的「后退」「前进」）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +131,8 @@ pub struct Config {
     pub text_vk: u32,
     /// 按住显示队伍面板的键（默认 Tab，不带修饰键）；0 表示关。
     pub panel_vk: u32,
+    /// 按住说话的键（默认 V，不带修饰键）；0 表示关（不在队伍里、关了语音）。
+    pub talk_vk: u32,
     pub enabled: bool,
 }
 
@@ -144,6 +150,7 @@ impl Default for Config {
             text_mods: MOD_ALT,
             text_vk: 0,
             panel_vk: 0,
+            talk_vk: 0,
             enabled: true,
         }
     }
@@ -183,10 +190,23 @@ pub enum Emit {
     },
     /// 按了队伍文字快捷键：打开输入框。
     TextRequested,
+    /// 说话键：开始录、说完了（发出去）、点了一下或在打字（丢掉）。
+    Talk(TalkPhase),
     /// 面板键按下（show）或松开；连发停了太久（抬起丢了）也会收起。
     Panel {
         show: bool,
     },
+}
+
+/// 说话键的三种事。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TalkPhase {
+    /// 按下了：开始录。
+    Start,
+    /// 按住 0.3 秒以上松开了（或者暂停、退出队伍、抬起丢了）：说完了，发出去。
+    End,
+    /// 点了一下，或者按下后马上又按了别的键（在打字）：丢掉录音。
+    Cancel,
 }
 
 /// 要回放给系统的输入，平台层带上自己的标记发出去。
@@ -213,6 +233,8 @@ pub const MASK_VK: u32 = 0xFC;
 pub const WATCHDOG_MS: u64 = 10_000;
 /// 按住的键连发间隔远小于这个；拦下的面板键这么久没连发，说明抬起丢了，收起面板。
 pub const PANEL_REPEAT_GAP_MS: u64 = 1_500;
+/// 说话键按住不到这么久算点了一下（或者在打字）。
+pub const TALK_MIN_MS: u64 = 300;
 
 const VK_SHIFT: u32 = 0x10;
 const VK_CTRL: u32 = 0x11;
@@ -280,6 +302,13 @@ pub struct Gesture {
     /// 拦下了、还没见到抬起的面板键（0 表示没有），和它最近一次连发的时间。
     panel_down: u32,
     last_panel_ms: u64,
+    /// 拦下了、还没见到抬起的说话键（0 表示没有）：它的连发和抬起都拦下。
+    talk_down: u32,
+    /// 正在录（说话键按着、还没说完）。暂停或退出队伍时先结束录音，键的抬起照样拦下。
+    talk_on: bool,
+    talk_since_ms: u64,
+    /// 说话键最近一次连发（或按别的键）的时间：连发停了太久说明抬起丢了。
+    last_talk_ms: u64,
 }
 
 impl Default for Gesture {
@@ -314,6 +343,10 @@ impl Gesture {
             my: 0,
             panel_down: 0,
             last_panel_ms: 0,
+            talk_down: 0,
+            talk_on: false,
+            talk_since_ms: 0,
+            last_talk_ms: 0,
         }
     }
 
@@ -347,6 +380,7 @@ impl Gesture {
     pub fn set_config(&mut self, c: Config) -> Outcome {
         let mut r = Outcome::default();
         self.cancel_gesture(&mut r);
+        self.end_talk(&mut r);
         self.cfg = c;
         self.enabled = c.enabled;
         r
@@ -356,6 +390,7 @@ impl Gesture {
         let mut r = Outcome::default();
         if !on {
             self.cancel_gesture(&mut r);
+            self.end_talk(&mut r);
         }
         self.enabled = on;
         r
@@ -366,6 +401,7 @@ impl Gesture {
         let mut r = Outcome::default();
         if on {
             self.cancel_gesture(&mut r);
+            self.end_talk(&mut r);
         }
         self.suspended = on;
         r
@@ -392,6 +428,16 @@ impl Gesture {
             && now_ms - self.last_panel_ms > self.panel_repeat_gap_ms
         {
             r = self.release_panel();
+        }
+        // 说话键的连发停了：抬起丢了，说完了。真正的抬起要是还来，靠 swallow_key_ups 拦下。
+        if self.talk_down != 0
+            && self.panel_repeat_gap_ms != 0
+            && now_ms > self.last_talk_ms
+            && now_ms - self.last_talk_ms > self.panel_repeat_gap_ms
+        {
+            self.end_talk(&mut r);
+            self.key_down[self.talk_down as usize] = false;
+            self.talk_down = 0;
         }
         let busy = matches!(self.state, State::Pending | State::Wheel);
         if busy && now_ms > self.last_mouse_ms && now_ms - self.last_mouse_ms > WATCHDOG_MS {
@@ -425,7 +471,8 @@ impl Gesture {
             EvKind::KeyDown => {
                 // 自定义触发键扣着时来了别的键：说明在打字。先把扣着的键补发；这个键要是放行，
                 // 就会抢在排队的补发前面，所以也拦下、排在后面回放，保持打字顺序。
-                let flushed = self.flush_held_back(e.vk & 0xFF, &mut r);
+                let flushed =
+                    self.flush_held_back(e.vk & 0xFF, &mut r) | self.flush_talk(e, &mut r);
                 self.on_key_down(e, &mut r);
                 if flushed && !r.swallow {
                     r.swallow = true;
@@ -572,6 +619,35 @@ impl Gesture {
         true
     }
 
+    /// 说话键按下后来了别的键。说了不到 0.3 秒：在打字，丢掉录音，把说话键补发出去，之后它的连发和抬起交给系统。
+    /// 说了 0.3 秒以上：别的键照常（边说话边放技能），只记下时间（按别的键会停掉说话键的连发，别让看门狗误判）。
+    fn flush_talk(&mut self, e: &InputEvent, r: &mut Outcome) -> bool {
+        let vk = e.vk & 0xFF;
+        if self.talk_down == 0 || vk == self.talk_down {
+            return false;
+        }
+        self.last_talk_ms = e.time_ms;
+        if !self.talk_on || e.time_ms.saturating_sub(self.talk_since_ms) >= TALK_MIN_MS {
+            return false;
+        }
+        let held = self.talk_down;
+        self.talk_down = 0;
+        self.talk_on = false;
+        self.typed_vk = held;
+        self.swallow_key_ups[held as usize] = false; // 系统现在看到它按下了，就得让它看到抬起
+        r.injects.push(Inject::KeyDown(held));
+        r.emits.push(Emit::Talk(TalkPhase::Cancel));
+        true
+    }
+
+    /// 结束录音（暂停、退出队伍、抬起丢了）：说了的照样发出去。说话键还按着的话，连发和抬起照样拦下。
+    fn end_talk(&mut self, r: &mut Outcome) {
+        if self.talk_on {
+            self.talk_on = false;
+            r.emits.push(Emit::Talk(TalkPhase::End));
+        }
+    }
+
     fn on_key_down(&mut self, e: &InputEvent, r: &mut Outcome) {
         let vk = e.vk & 0xFF;
         let i = vk as usize;
@@ -643,6 +719,28 @@ impl Gesture {
             r.emits.push(Emit::Panel { show: true });
             return;
         }
+        // 说话键：拦下的那一次按下之后，连发都拦（系统没见过按下）。
+        if self.talk_down != 0 && vk == self.talk_down {
+            r.swallow = true;
+            self.last_talk_ms = e.time_ms;
+            return;
+        }
+        if self.active()
+            && !repeat
+            && self.cfg.talk_vk != 0
+            && vk == self.cfg.talk_vk
+            && self.mods() == 0
+            && !self.is_any_trigger_vk(vk)
+        {
+            r.swallow = true;
+            self.swallow_key_ups[i] = true;
+            self.talk_down = vk;
+            self.talk_on = true;
+            self.talk_since_ms = e.time_ms;
+            self.last_talk_ms = e.time_ms;
+            r.emits.push(Emit::Talk(TalkPhase::Start));
+            return;
+        }
         if self.active() {
             if vk == VK_ESC && matches!(self.state, State::Pending | State::Wheel) {
                 r.swallow = true;
@@ -692,6 +790,20 @@ impl Gesture {
         if vk == self.panel_down {
             self.panel_down = 0;
             r.emits.push(Emit::Panel { show: false });
+        }
+        // 说话键松开：按住不到 0.3 秒算点了一下，丢掉录音、补打这个键；否则说完了。真正的抬起照样拦下。
+        if vk == self.talk_down {
+            self.talk_down = 0;
+            if self.talk_on {
+                self.talk_on = false;
+                if e.time_ms.saturating_sub(self.talk_since_ms) < TALK_MIN_MS {
+                    r.injects.push(Inject::KeyDown(vk));
+                    r.injects.push(Inject::KeyUp(vk));
+                    r.emits.push(Emit::Talk(TalkPhase::Cancel));
+                } else {
+                    r.emits.push(Emit::Talk(TalkPhase::End));
+                }
+            }
         }
         // 补发过的键，它真正的抬起放行（拦截在补发时已经撤掉），打字结束。
         if vk == self.typed_vk {

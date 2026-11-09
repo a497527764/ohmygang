@@ -73,6 +73,8 @@ pub enum PanelMsg {
     Gone(MemberId),
     /// 进了队伍或不在队伍里了。
     InTeam(bool),
+    /// 正在说话的队员（队伍面板里亮起）。
+    Speaking(Vec<MemberId>),
 }
 
 /// 一个投票人在窗口上的样子。
@@ -123,6 +125,7 @@ impl Panel {
             last_ballot: Instant::now(),
             text_at: None,
             roster: None,
+            speaking: Vec::new(),
             vote: None,
             text: None,
         };
@@ -151,6 +154,8 @@ struct Runner {
     /// 按文字快捷键时鼠标在第几号显示器、0–65535 的比例位置。
     text_at: Option<(u8, u16, u16)>,
     roster: Option<WebviewWindow>,
+    /// 正在说话的队员（公钥的十六进制），队伍面板里亮起。
+    speaking: Vec<String>,
     vote: Option<WebviewWindow>,
     text: Option<WebviewWindow>,
 }
@@ -247,6 +252,12 @@ impl Runner {
                 self.tally.left(&m);
                 self.settle();
                 self.push();
+            }
+            PanelMsg::Speaking(list) => {
+                self.speaking = list.iter().map(|m| crate::team::hex(m)).collect();
+                if let Some(w) = &self.roster {
+                    let _ = w.emit_to(w.label(), "roster:speaking", &self.speaking);
+                }
             }
             PanelMsg::InTeam(on) => {
                 self.in_team = on;
@@ -547,6 +558,7 @@ impl Runner {
         reveal(&w);
         let dto = self.shared.lock().expect("投票锁没有中毒").clone();
         let _ = w.emit_to(w.label(), "roster:show", &dto);
+        let _ = w.emit_to(w.label(), "roster:speaking", &self.speaking);
     }
 
     /// 准备确认在主显示器中间；投降和踢人在右边、约 40% 高的地方（同英雄联盟）。

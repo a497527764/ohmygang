@@ -6,13 +6,13 @@
 //! 2. 鼠标：在根窗口上对左键和两个侧键做被动抓取（同步模式），按下时交给手势状态机：
 //!    要拦就 AsyncPointer（之后的移动和抬起都到我们这里），不拦就 ReplayPointer（原样交给下面的程序）。
 //! 3. 键盘：用 XInput2 的原始按键事件看所有按键（不抢焦点）；只对要拦的键做被动抓取：自定义触发键、
-//!    暂停、文字快捷键、面板键，以及轮盘开着时的 Esc。抓到的按键 ReplayKeyboard 放行或 AsyncKeyboard 拦下。
+//!    暂停、文字快捷键、面板键、说话键，以及轮盘开着时的 Esc。抓到的按键 ReplayKeyboard 放行或 AsyncKeyboard 拦下。
 //! 4. 回放用 XTest：先在服务器抓取下拿掉自己的被动抓取，发完再装回来，所以回放不会又被自己抓到。
 //!    XTest 发的按键也会产生原始事件，按键码记个数，回来时认出是自己的。
 //! 5. 键码 → Windows 键码：先按 XKB 的物理键名（和键盘布局无关），认不出再按 keysym（`keymap`）。
 //! 6. 收事件的线程和处理的线程分开：一个线程等 X 事件，和命令一起送进同一个通道；处理线程每 25 毫秒至少醒一次，
 //!    每秒让状态机检查看门狗。鼠标没被抓时拿不到位置，原始移动事件来了就问一次服务器（最多每 16 毫秒一次）。
-//! 7. 没有全屏检查（Windows 才有），`game_check` 在这里不起作用；面板键的连发看门狗也关掉。
+//! 7. 没有全屏检查（Windows 才有），`game_check` 在这里不起作用；面板键、说话键的连发看门狗也关掉。
 //! 8. 窗口管理器已经占着某个组合（常见的是按住 Alt 拖动窗口）时，抓取会报 Access 错误：
 //!    记下提示，控制面板的「信号」页显示，让用户换键；改了设置就清掉，新的抓取再出错再记。
 
@@ -528,6 +528,8 @@ impl Hooks {
                     || (live && chord(vk, mods, c.text_vk, c.text_mods))
                     // 面板键只在不按修饰键时抓：Ctrl+Tab、Alt+Tab 照常归别的程序
                     || (live && c.panel_vk != 0 && vk == c.panel_vk && without_locks(mods) == 0)
+                    // 说话键也只在不按修饰键时抓：Ctrl+V 照常粘贴
+                    || (live && c.talk_vk != 0 && vk == c.talk_vk && without_locks(mods) == 0)
                     || (!self.suspended && chord(vk, mods, c.toggle_vk, c.toggle_mods));
                 if grab {
                     self.conn.grab_key(

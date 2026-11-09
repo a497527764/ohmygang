@@ -72,6 +72,23 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 @keyframes shake { 0%, 100% { transform: none } 25% { transform: translate(-3px, 2px) } 50% { transform: translate(3px, -2px) } 75% { transform: translate(-2px, -1px) } }
 @keyframes flash { 0% { opacity: 0; transform: scale(.3) } 30% { opacity: 1 } 100% { opacity: 0; transform: scale(2.2) } }
 
+/* ---------- 语音（右下角，提示的上面）：谁在说、自己在录 ---------- */
+#voice {
+  position: fixed; right: 24px; bottom: 150px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  pointer-events: none;
+}
+.voice-pill {
+  display: flex; align-items: center; gap: 8px; max-width: 260px; padding: 5px 12px 5px 10px; border-radius: 2px;
+  background: rgba(1, 10, 19, .86); border: 1px solid rgba(200, 170, 110, .55); color: var(--tag, #f0e6d2);
+  font: 600 14px/20px var(--sans); text-shadow: 0 1px 2px #000; filter: drop-shadow(0 8px 14px rgba(0, 0, 0, .45));
+}
+.voice-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 话筒：一个发光的菱形，说话时轻轻跳动 */
+.voice-pill i { flex: none; width: 9px; height: 9px; background: currentColor; transform: rotate(45deg); box-shadow: 0 0 8px currentColor; animation: talk .7s ease-in-out infinite alternate; }
+.voice-pill.me { color: #ff8a9a; border-color: rgba(190, 30, 55, .75); }
+@keyframes talk { to { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .voice-pill i { animation: none; } }
+
 /* ---------- 提示（右下角，几秒后消失） ---------- */
 .toast {
   position: absolute; right: 24px; bottom: 72px; min-width: 220px; max-width: 420px; padding: 10px 14px;

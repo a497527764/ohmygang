@@ -8,7 +8,8 @@
 //! 3. `gesture_config` 把设置换成手势状态机的配置；`overlay` 换成透明窗口画画要用的那部分。
 //!    文字快捷键和面板键只在队伍里、对应功能开着时交给手势，别的时候 Alt+T、Tab 照常给别的程序。
 //! 4. 键不能两用：表情触发键撞了就关掉；文字快捷键撞上暂停快捷键就换一个备用的；
-//!    面板键撞上任何一个键就换成备用列表里第一个没被占的（Tab、`、F2、F3、F4）。
+//!    说话键撞上触发键、表情键、快捷键的键就换成备用列表里第一个没被占的（V、G、Z、X、N、M）；
+//!    面板键排在最后，撞上任何一个键就换成备用列表里第一个没被占的（Tab、`、F2、F3、F4、F5）。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -61,8 +62,12 @@ const TEXT_HOTKEYS: [Hotkey; 3] = [
         vk: 0x54,
     },
 ];
-/// 面板键的候选：Tab，然后 `、F2、F3、F4。最多 5 个键被占，所以总有一个空着。
-const PANEL_KEYS: [u32; 5] = [0x09, 0xC0, 0x71, 0x72, 0x73];
+/// 面板键的候选：Tab，然后 `、F2、F3、F4、F5。最多 5 个键被占（两个触发键、两个快捷键、说话键），所以总有一个空着。
+const PANEL_KEYS: [u32; 6] = [0x09, 0xC0, 0x71, 0x72, 0x73, 0x74];
+/// 说话键的候选：V，撞了依次换。最多 4 个键被占（两个触发键、两个快捷键），所以总有一个空着。
+const TALK_KEYS: [u32; 6] = [0x56, 0x47, 0x5A, 0x58, 0x4E, 0x4D];
+/// 麦克风设备 id 的长度上限（cpal 的 id 像 "wasapi:{0.0.1.00000000}.{guid}"）。
+const MIC_ID_MAX: usize = 512;
 /// 默认中继（1.x 架构 6.4，2026-11-02 实测选定）。
 pub const DEFAULT_RELAYS: [&str; 8] = [
     "wss://relay.nostrfeed.com",
@@ -171,6 +176,14 @@ pub struct Settings {
     pub team_panel: bool,
     /// 面板键的虚拟键码，不带修饰键。
     pub panel_key: u32,
+    /// 语音：按住说话键说话，队友的话直接播放。关掉后说话键不拦、队友的语音不放。
+    pub voice: bool,
+    /// 说话键（按住）的虚拟键码，不带修饰键。
+    pub talk_key: u32,
+    /// 队友语音的音量（0–100），和信号的音量分开。
+    pub voice_volume: u32,
+    /// 麦克风：cpal 的设备 id；空表示跟随系统默认。
+    pub mic: String,
     /// 开机时自动启动（只在改动时去改系统设置）。
     pub launch_at_startup: bool,
     /// 启动后和每 6 小时查一次新版本（只提示，不自己装）。
@@ -213,6 +226,10 @@ impl Default for Settings {
             team_votes: true,
             team_panel: true,
             panel_key: PANEL_KEYS[0],
+            voice: true,
+            talk_key: TALK_KEYS[0],
+            voice_volume: 80,
+            mic: String::new(),
             launch_at_startup: false,
             auto_update_check: true,
         }
@@ -362,6 +379,27 @@ fn panel_key(raw: Option<&Value>, taken: &[u32]) -> u32 {
     }
 }
 
+/// 说话键：普通键（不是修饰键，也不是空格、回车这些会弄坏打字的键），不和别的键撞；否则换候选里第一个没被占的。
+fn talk_key(raw: Option<&Value>, taken: &[u32]) -> u32 {
+    match raw
+        .and_then(Value::as_u64)
+        .and_then(|v| u32::try_from(v).ok())
+    {
+        Some(vk)
+            if is_vk(vk)
+                && !UNSAFE_TRIGGER_VKS.contains(&vk)
+                && !MODIFIER_VKS.contains(&vk)
+                && !taken.contains(&vk) =>
+        {
+            vk
+        }
+        _ => TALK_KEYS
+            .into_iter()
+            .find(|k| !taken.contains(k))
+            .unwrap_or(TALK_KEYS[0]),
+    }
+}
+
 /// 自定义触发键和 Caps Lock 的键码；其他触发方式没有。
 fn trigger_vk(t: TriggerKey) -> Option<u32> {
     match t {
@@ -439,11 +477,18 @@ pub fn normalize(raw: &Value) -> Settings {
     let custom = emotes::normalize_custom(get("customEmotes"));
     let emote_trigger = emote_trigger(get("emoteTrigger"), trigger, &[toggle_hotkey]);
     let text_hotkey = text_hotkey(get("textHotkey"), &[toggle_hotkey]);
-    let taken: Vec<u32> = [trigger_vk(trigger), emote_trigger.and_then(trigger_vk)]
+    let mut taken: Vec<u32> = [trigger_vk(trigger), emote_trigger.and_then(trigger_vk)]
         .into_iter()
         .flatten()
         .chain([toggle_hotkey.vk, text_hotkey.vk])
         .collect();
+    let talk_key = talk_key(get("talkKey"), &taken);
+    taken.push(talk_key);
+    let mic = get("mic")
+        .and_then(Value::as_str)
+        .filter(|m| m.len() <= MIC_ID_MAX)
+        .unwrap_or_default()
+        .to_string();
     Settings {
         trigger,
         drag_threshold_px: num(
@@ -483,6 +528,10 @@ pub fn normalize(raw: &Value) -> Settings {
         team_votes: bool_or(get("teamVotes"), d.team_votes),
         team_panel: bool_or(get("teamPanel"), d.team_panel),
         panel_key: panel_key(get("panelKey"), &taken),
+        voice: bool_or(get("voice"), d.voice),
+        talk_key,
+        voice_volume: num(get("voiceVolume"), &VOLUME, f64::from(d.voice_volume)) as u32,
+        mic,
         launch_at_startup: bool_or(get("launchAtStartup"), d.launch_at_startup),
         auto_update_check: bool_or(get("autoUpdateCheck"), d.auto_update_check),
     }
@@ -532,6 +581,11 @@ impl Settings {
             } else {
                 0
             },
+            talk_vk: if in_team && self.voice {
+                self.talk_key
+            } else {
+                0
+            },
             enabled,
         }
     }
@@ -556,6 +610,15 @@ impl Settings {
             custom_emotes: self.custom_emotes.clone(),
             friend_emotes: self.friend_emotes,
             text_style: self.text_style.clone(),
+        }
+    }
+
+    /// 语音线程要的那部分设置。
+    pub fn voice_config(&self) -> crate::voice::VoiceConfig {
+        crate::voice::VoiceConfig {
+            enabled: self.voice,
+            volume: self.voice_volume as f32 / 100.0,
+            mic: self.mic.clone(),
         }
     }
 

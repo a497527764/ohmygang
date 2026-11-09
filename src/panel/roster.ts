@@ -13,6 +13,8 @@ let team: TeamView | null = null;
 let vote: VoteDto | null = null;
 let error: string | null = null;
 let current: { v: VoteDto; bar: HTMLElement } | null = null;
+/** 正在说话的队员（公钥的十六进制），那一行亮起。 */
+let speaking = new Set<string>();
 
 const PATH: Record<string, string> = { lan: "局域网", relay: "中继", offline: "离线" };
 const STATUS: Record<string, string> = { online: "在线", paused: "信号暂停", away: "离开电脑" };
@@ -53,7 +55,8 @@ async function act(p: Promise<unknown>): Promise<void> {
 
 function memberRow(m: Member): HTMLElement {
   const off = !m.isMe && (m.path === "offline" || m.path === null);
-  const row = el("div", `member${m.isMe ? " me" : ""}${off ? " off" : ""}`);
+  const talking = speaking.has(m.memberId) ? " speaking" : "";
+  const row = el("div", `member${m.isMe ? " me" : ""}${off ? " off" : ""}${talking}`);
   const who = el("div", "who");
   who.append(el("span", "name", m.nickname || m.fingerprint), el("span", "path", line(m)));
   row.append(portrait(m), who);
@@ -104,6 +107,10 @@ async function load(): Promise<void> {
   render();
 }
 
+void listen<string[]>("roster:speaking", (e) => {
+  speaking = new Set(e.payload);
+  if (team) render();
+});
 void listen<VoteDto | null>("roster:show", (e) => {
   vote = e.payload;
   error = null;

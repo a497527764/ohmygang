@@ -1068,3 +1068,142 @@ fn panel_watchdog_can_be_turned_off() {
     assert_eq!(g.release_panel().emits, vec![Emit::Panel { show: false }]);
     assert!(g.release_panel().emits.is_empty());
 }
+
+// ---- 说话键（3.0 语音）----
+
+fn ku_at(vk: u32, t: u64) -> InputEvent {
+    InputEvent::key(EvKind::KeyUp, vk, t)
+}
+
+fn with_talk() -> Gesture {
+    with_config(Config {
+        talk_vk: KEY_V,
+        ..Config::default()
+    })
+}
+
+fn talk(r: &Outcome) -> Vec<TalkPhase> {
+    r.emits
+        .iter()
+        .filter_map(|e| match *e {
+            Emit::Talk(p) => Some(p),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn holding_the_talk_key_talks_and_releasing_sends() {
+    let mut g = with_talk();
+    let r = g.on_event(&kd_at(KEY_V, 1000));
+    assert!(r.swallow && r.injects.is_empty());
+    assert_eq!(
+        talk(&r),
+        vec![TalkPhase::Start],
+        "按下就开始录，不吃掉第一个字"
+    );
+    let r = g.on_event(&kd_at(KEY_V, 1500));
+    assert!(r.swallow && talk(&r).is_empty(), "连发拦下，不重复开始");
+    let r = g.on_event(&ku_at(KEY_V, 2200));
+    assert!(r.swallow && r.injects.is_empty());
+    assert_eq!(talk(&r), vec![TalkPhase::End]);
+}
+
+#[test]
+fn tapping_the_talk_key_types_it() {
+    let mut g = with_talk();
+    g.on_event(&kd_at(KEY_V, 1000));
+    let r = g.on_event(&ku_at(KEY_V, 1000 + TALK_MIN_MS - 1));
+    assert!(r.swallow, "真正的抬起拦下（系统没见过按下）");
+    assert_eq!(
+        r.injects,
+        vec![Inject::KeyDown(KEY_V), Inject::KeyUp(KEY_V)]
+    );
+    assert_eq!(talk(&r), vec![TalkPhase::Cancel]);
+}
+
+#[test]
+fn typing_right_after_the_talk_key_types_it_first() {
+    let mut g = with_talk();
+    g.on_event(&kd_at(KEY_V, 1000));
+    // 0.3 秒内来了别的键：在打字。先补发 V，再回放这个键，保持顺序
+    let r = g.on_event(&kd_at(KEY_G, 1100));
+    assert!(r.swallow);
+    assert_eq!(
+        r.injects,
+        vec![Inject::KeyDown(KEY_V), Inject::KeyDown(KEY_G)]
+    );
+    assert_eq!(talk(&r), vec![TalkPhase::Cancel]);
+    // V 的连发和真正的抬起交给系统
+    assert!(!g.on_event(&kd_at(KEY_V, 1150)).swallow);
+    let up = g.on_event(&ku_at(KEY_V, 1200));
+    assert!(!up.swallow && up.injects.is_empty() && talk(&up).is_empty());
+    assert!(!g.on_event(&ku_at(KEY_G, 1210)).swallow);
+}
+
+#[test]
+fn other_keys_while_talking_pass_through() {
+    let mut g = with_talk();
+    g.on_event(&kd_at(KEY_V, 1000));
+    // 说了 0.3 秒以后按技能键：照常交给游戏，接着说
+    let r = g.on_event(&kd_at(KEY_G, 1000 + TALK_MIN_MS + 50));
+    assert!(!r.swallow && r.injects.is_empty() && talk(&r).is_empty());
+    g.on_event(&ku_at(KEY_G, 1400));
+    assert_eq!(talk(&g.on_event(&ku_at(KEY_V, 2000))), vec![TalkPhase::End]);
+}
+
+#[test]
+fn talk_key_with_modifiers_or_outside_a_team_is_left_alone() {
+    let mut g = with_talk();
+    g.on_event(&kd(CTRL));
+    let r = g.on_event(&kd(KEY_V));
+    assert!(!r.swallow && talk(&r).is_empty(), "Ctrl+V 照常粘贴");
+    g.on_event(&ku(KEY_V));
+    g.on_event(&ku(CTRL));
+    let mut g = Gesture::new();
+    assert!(
+        !g.on_event(&kd(KEY_V)).swallow,
+        "没配置（不在队伍里、关了语音）：照常打字"
+    );
+    g.on_event(&ku(KEY_V));
+    let mut g = with_talk();
+    g.set_enabled(false);
+    assert!(!g.on_event(&kd(KEY_V)).swallow, "信号暂停时不拦");
+}
+
+#[test]
+fn pausing_or_reconfiguring_mid_talk_ends_it_and_still_swallows_the_up() {
+    let mut g = with_talk();
+    g.on_event(&kd_at(KEY_V, 1000));
+    let r = g.set_enabled(false);
+    assert_eq!(talk(&r), vec![TalkPhase::End]);
+    let up = g.on_event(&ku_at(KEY_V, 3000));
+    assert!(up.swallow && talk(&up).is_empty() && up.injects.is_empty());
+
+    let mut g = with_talk();
+    g.on_event(&kd_at(KEY_V, 1000));
+    let r = g.set_config(Config::default());
+    assert_eq!(talk(&r), vec![TalkPhase::End], "退出队伍（说话键关掉）");
+    assert!(g.on_event(&ku_at(KEY_V, 3000)).swallow);
+}
+
+#[test]
+fn a_lost_talk_key_up_ends_talking_after_the_repeats_stop() {
+    let mut g = with_talk();
+    g.on_event(&kd_at(KEY_V, 1000));
+    g.on_event(&kd_at(KEY_V, 1500)); // 连发
+    assert!(talk(&g.tick(1500 + PANEL_REPEAT_GAP_MS)).is_empty());
+    // 按别的键会停掉连发，但说明还按着
+    g.on_event(&kd_at(KEY_G, 2000));
+    assert!(talk(&g.tick(2000 + PANEL_REPEAT_GAP_MS)).is_empty());
+    assert_eq!(
+        talk(&g.tick(2001 + PANEL_REPEAT_GAP_MS)),
+        vec![TalkPhase::End]
+    );
+    // 下一次按下重新开始
+    g.on_event(&ku_at(KEY_G, 4000));
+    assert_eq!(
+        talk(&g.on_event(&kd_at(KEY_V, 5000))),
+        vec![TalkPhase::Start]
+    );
+}

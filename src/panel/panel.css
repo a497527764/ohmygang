@@ -114,6 +114,13 @@ button:focus-visible {
 .member.me {
   border-color: rgba(200, 170, 110, 0.4);
 }
+/* 正在说话：海克斯蓝的边和头像光圈 */
+.member.speaking {
+  border-color: #0ac8b9;
+}
+.member.speaking .portrait {
+  box-shadow: 0 0 0 2px #0ac8b9, 0 0 10px #0ac8b9;
+}
 .member.off {
   opacity: 0.5;
 }

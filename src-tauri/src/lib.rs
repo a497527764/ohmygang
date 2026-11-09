@@ -20,6 +20,7 @@ pub mod team_text;
 pub mod transport;
 pub mod tray;
 pub mod update;
+pub mod voice;
 pub mod votes;
 
 use std::sync::atomic::AtomicBool;
@@ -35,17 +36,22 @@ use settings2::Hotkey;
 /// 开机自动启动时带的参数：这时只进托盘，不打开控制面板。
 pub const AUTOSTART_ARG: &str = "--autostart";
 
-/// 开发用的单机双开：环境变量 `LOLGANG_INSTANCE=2` 表示第二实例，数据目录换一套。
-pub fn is_second_instance() -> bool {
-    std::env::var("LOLGANG_INSTANCE").is_ok_and(|v| v == "2")
+/// 开发用的单机多开：环境变量 `LOLGANG_INSTANCE=2` 或 `3` 表示第二、第三实例，数据目录换一套。
+/// 第一实例和装好的正式版共用数据目录（同一个身份、同一个队伍），所以两个实例互测要用 2 和 3。
+pub fn dev_instance() -> Option<u16> {
+    match std::env::var("LOLGANG_INSTANCE").as_deref() {
+        Ok("2") => Some(2),
+        Ok("3") => Some(3),
+        _ => None,
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
     // 再次打开程序时不起新进程，而是把已经打开的控制面板调到前面。
-    // 第二实例不注册，单机双开不受影响。这个插件只在 Rust 侧检查，不给前端任何权限。
-    if !is_second_instance() {
+    // 开发用的第二、第三实例不注册，单机多开不受影响。这个插件只在 Rust 侧检查，不给前端任何权限。
+    if dev_instance().is_none() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main(app)
         }));
@@ -113,6 +119,8 @@ pub fn run() {
             api::emote_preview,
             api::open_accessibility_settings,
             api::app_relaunch,
+            api::voice_view,
+            api::voice_test,
             panel::vote_view,
             panel::vote_start,
             panel::vote_answer,
@@ -138,12 +146,12 @@ pub fn run() {
 /// → 启动透明窗口线程 → 启动键鼠监听（把手势事件交给透明窗口线程）→ 交给 Tauri 管理 → 托盘 → 控制面板的主题
 /// → 在线状态每 5 秒看一次（离开电脑要靠时间判断）。键鼠监听起不来时程序照常打开，控制面板显示原因。
 ///
-/// 单机双开（开发用）：环境变量 `LOLGANG_INSTANCE=2` 时，数据目录、凭据条目、UDP 端口都换一套；
-/// 开发版的广播同时发往两个端口，两个实例就能在一台电脑上互相发现。
+/// 单机多开（开发用）：环境变量 `LOLGANG_INSTANCE=2` 或 `3` 时，数据目录、凭据条目、UDP 端口都换一套；
+/// 开发版的广播同时发往这几个端口，几个实例就能在一台电脑上互相发现。
 fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let mut dir = app.path().app_data_dir()?;
-    if is_second_instance() {
-        dir.push("instance-2");
+    if let Some(n) = dev_instance() {
+        dir.push(format!("instance-{n}"));
     }
     std::fs::create_dir_all(&dir)?;
     let db = storage::open(&dir.join("gang2.db"))?;
@@ -170,12 +178,15 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let panel = panel::Panel::start(app.handle());
+    let voice = voice::Voice::start(app.handle(), settings.voice_config());
+    let talk_to = voice.clone();
     let share = node.clone();
     let (text_to, panel_to) = (panel.clone(), panel.clone());
     let hooks = Hooks {
         on_toggled,
         on_live: Box::new(move |body| share.send_live(body)),
         on_text: Box::new(move || text_to.send(panel::PanelMsg::TextRequested)),
+        on_talk: Box::new(move |p| talk_to.send(voice::VoiceMsg::Talk(p))),
         on_panel: Box::new(move |show| panel_to.send(panel::PanelMsg::Show(show))),
     };
     let overlays = Overlays::start(app.handle(), settings.overlay(), hooks);
@@ -203,6 +214,7 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         emote_net,
         panel,
         updates: Default::default(),
+        voice,
     });
     tray::setup(app, true)?;
     api::apply_window_theme(app.handle(), &theme);
@@ -233,24 +245,26 @@ fn start_node(
     dir: &std::path::Path,
     settings: &settings2::Settings,
 ) -> Result<node::NodeHandle, Box<dyn std::error::Error>> {
-    let second = is_second_instance();
-    let keystore = if second {
-        keystore::SystemKeyStore {
+    let instance = dev_instance();
+    let keystore = match instance {
+        Some(2) => keystore::SystemKeyStore {
             service: "lolgang-2",
-        }
-    } else {
-        keystore::APP_KEYSTORE
+        },
+        Some(_) => keystore::SystemKeyStore {
+            service: "lolgang-3",
+        },
+        None => keystore::APP_KEYSTORE,
     };
     let core = app_core::Core::open(storage::open(&dir.join("gang2.db"))?, &keystore)?;
     let mut cfg = node::NodeConfig {
         relay_urls: settings.active_relays(),
         ..node::NodeConfig::default()
     };
-    if second {
-        cfg.lan.bind.set_port(transport::lan::LAN_PORT + 1);
+    if let Some(n) = instance {
+        cfg.lan.bind.set_port(transport::lan::LAN_PORT + n - 1);
     }
     if cfg!(debug_assertions) {
-        cfg.lan.broadcast_ports = vec![transport::lan::LAN_PORT, transport::lan::LAN_PORT + 1];
+        cfg.lan.broadcast_ports = (0..3).map(|i| transport::lan::LAN_PORT + i).collect();
     }
     let handle = app.clone();
     let sink: node::Sink = Arc::new(move |e| team::on_node_event(&handle, e));

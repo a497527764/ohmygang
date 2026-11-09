@@ -333,6 +333,7 @@ fn live_priority(body: &LiveBody) -> Priority {
         LiveBody::Ping { .. }
         | LiveBody::Emote { .. }
         | LiveBody::Text { .. }
+        | LiveBody::Voice { .. }
         | LiveBody::Vote { .. }
         | LiveBody::Ballot { .. }
         | LiveBody::Bye => Priority::Live,

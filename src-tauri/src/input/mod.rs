@@ -31,7 +31,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use gesture::{Config, Emit, Trigger, WheelKind};
+pub use gesture::{Config, Emit, TalkPhase, Trigger, WheelKind};
 
 /// 最后一次真实键鼠输入的时间（Unix 毫秒），0 表示还没见过。平台层在钩子回调里更新，用来判断离开电脑。
 static LAST_INPUT_MS: AtomicU64 = AtomicU64::new(0);

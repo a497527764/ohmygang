@@ -1,4 +1,4 @@
-//! 实时帧（2.0 架构第 5 节）：在线状态、信号、表情和导入表情的传输、文字、投票。
+//! 实时帧（2.0 架构第 5 节）：在线状态、信号、表情和导入表情的传输、文字、投票、语音（3.0）。
 //! 不入库、不补齐，丢了就丢了。做法参考 lolPing 设计文档 12 节（MIT，© 2026 Danrui Meng）。
 //!
 //! 实现流程：
@@ -10,7 +10,7 @@
 //! 3. 发送方的 seq 用「微秒时间戳，且比上一个大」：重启后也比以前的大，不用存。
 //! 4. 位置用「显示器号 + 0–65535 的比例」，落到收的人同号显示器的同一比例处（2.0 架构 3.1）。
 //! 5. 和 2.0 互通（3.0 去掉了对线模式，协议版本不变）：2.0 的鼠标帧（C）、充能帧（K）在这里是不认识的帧，丢掉；
-//!    在线状态里 2.0 必须有的「对线」一项照发，总是 false。
+//!    在线状态里 2.0 必须有的「对线」一项照发，总是 false。3.0 加的语音帧（A）2.0 不认识，丢掉。
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -150,6 +150,19 @@ pub enum LiveBody {
     /// 离开队伍或退出程序。
     #[serde(rename = "Y")]
     Bye,
+    /// 一段语音（3.0，按住说话），约 400 毫秒一帧：第几段话（说的人每次随机取一个号）、
+    /// 这一帧里第一个小帧在这段话里的序号、一串 Opus 小帧（每个 20 毫秒）、是不是这段话的最后一帧。
+    #[serde(rename = "A")]
+    Voice {
+        #[serde(rename = "s")]
+        stream: u32,
+        #[serde(rename = "i")]
+        first: u32,
+        #[serde(rename = "f")]
+        frames: Vec<serde_bytes::ByteBuf>,
+        #[serde(rename = "e", default)]
+        end: bool,
+    },
 }
 
 /// 在线状态里「关掉了的功能」的位。
@@ -499,6 +512,26 @@ mod tests {
         };
         let OldPresence::Presence { laning } = body::decode(&body::encode(&mine)).unwrap();
         assert!(!laning);
+    }
+
+    /// 400 毫秒的语音（20 个 16 kbps 的 Opus 小帧，每个 40 字节）装得进一个包。
+    #[test]
+    fn a_voice_frame_round_trips_and_fits_in_one_packet() {
+        let voice = LiveBody::Voice {
+            stream: u32::MAX,
+            first: u32::MAX,
+            frames: (0..20)
+                .map(|_| serde_bytes::ByteBuf::from(vec![0xab; 40]))
+                .collect(),
+            end: true,
+        };
+        let w = sign_live(&me(), &ROOM, 9, NOW, &voice);
+        assert_eq!(open_live(&w, &ROOM).unwrap().body, voice);
+        assert!(
+            wire_len(&voice) <= crate::protocol::frame::MAX_FRAME_LEN,
+            "语音帧 {} 字节",
+            wire_len(&voice)
+        );
     }
 
     #[test]

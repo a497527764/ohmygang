@@ -1,0 +1,605 @@
+//! 语音（3.0，按住说话；计划 3.4）：按住说话键录音、编码、发给队友；队友的话收下来、排好、解码、混音、播放。
+//!
+//! 实现流程：
+//! 1. 一个专门的线程拥有全部状态，别处只往它的通道里发消息（`VoiceMsg`）：手势交来的说话键、
+//!    队友的语音帧、设置、试音；麦克风录到的声音也从声卡线程发到这里。闲着时只等消息，有事时每 10 毫秒走一步。
+//! 2. 说话：按下就开麦克风（`audio`），录到的声音是 16 kHz 单声道，每 20 毫秒编一个 Opus 小帧（16 kbps 恒定码率），
+//!    攒够 400 毫秒打成一个语音帧（`packet`）交给节点发出去（局域网和中继都走）。
+//!    点了一下或在打字（手势说「丢掉」）就关麦克风、什么都不发；400 毫秒内松开的第一帧还没发，也就不会有半个字。
+//!    松开时把剩下的发出去并标上「结束」；最长 30 秒，到时自动结束。
+//! 3. 播放：每个人的每段话一个抖动缓冲（`jitter`）和一个 Opus 解码器。扬声器的队列里保持约 60 毫秒的声音：
+//!    不够时从每段话各取 20 毫秒、解码（丢了的让解码器补）、乘上语音音量、加起来，转成扬声器的采样率放进去。
+//!    所以放的快慢跟着声卡的时钟走。没人说话 3 秒后关掉扬声器。
+//! 4. 显示：自己在录时透明窗口右下角显示「正在录音」和剩余秒数；队友在说时显示他的名字（队伍面板里他那一行也亮起），
+//!    变了才通知。
+//! 5. 试音：录 3 秒，在本机编码再解码放给自己听（不发给任何人），走的是和队友语音一样的路。
+//! 6. 关了语音：说话键本来就不拦（手势配置），收到的语音也不放。
+
+pub mod audio;
+pub mod jitter;
+pub mod packet;
+pub mod resample;
+
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use opus_rs::{Application, OpusDecoder, OpusEncoder};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::api::AppState;
+use crate::crypto::MemberId;
+use crate::input::TalkPhase;
+use crate::input::gesture::TALK_MIN_MS;
+use crate::node::now_ms;
+use crate::overlay::Msg;
+use crate::panel::PanelMsg;
+use jitter::{Jitter, Pull};
+use packet::Packer;
+use resample::Resampler;
+
+/// 语音编码的采样率（单声道）。
+pub const RATE: u32 = 16_000;
+/// 一个小帧 20 毫秒。
+const FRAME: usize = 320;
+const BITRATE: i32 = 16_000;
+/// 一次最长说多久。
+pub const MAX_TALK_MS: u64 = 30_000;
+/// 试音录多久。
+const TEST_MS: u64 = 3_000;
+/// 扬声器队列里保持多少声音：够盖住线程调度的抖动，又不加太多延迟。
+const AHEAD_MS: usize = 60;
+/// 没人说话多久后关掉扬声器。
+const SPEAKER_IDLE: Duration = Duration::from_secs(3);
+/// 同时最多放这么多段话（队伍最多 16 人，留余量）。
+const MAX_STREAMS: usize = 32;
+const TICK: Duration = Duration::from_millis(10);
+/// 试音那段话的「说话人」：不会和真正的公钥撞。
+const LOCAL: MemberId = [0; 32];
+
+pub enum VoiceMsg {
+    Talk(TalkPhase),
+    /// 队友的一个语音帧（已验签、是队员）。
+    Remote {
+        from: MemberId,
+        stream: u32,
+        first: u32,
+        frames: Vec<Vec<u8>>,
+        end: bool,
+    },
+    /// 队员退出程序或离开队伍。
+    Gone(MemberId),
+    Config(VoiceConfig),
+    /// 试音：录 3 秒放给自己听。
+    Test,
+    /// 麦克风录到的一块（16 kHz 单声道）；`take` 是第几次开麦，旧的丢掉。
+    Captured {
+        take: u32,
+        pcm: Vec<f32>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VoiceConfig {
+    pub enabled: bool,
+    /// 0 到 1。
+    pub volume: f32,
+    /// 麦克风的设备 id；空表示系统默认。
+    pub mic: String,
+}
+
+/// 语音页要显示的状态。
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceStatus {
+    /// 麦克风或扬声器打不开的原因；好了就是 null。
+    pub error: Option<String>,
+    /// 试音：recording、playing；没在试是 null。
+    pub test: Option<&'static str>,
+}
+
+#[derive(Clone)]
+pub struct Voice {
+    tx: Sender<VoiceMsg>,
+    status: Arc<Mutex<VoiceStatus>>,
+}
+
+impl Voice {
+    pub fn start(app: &AppHandle, config: VoiceConfig) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let status = Arc::new(Mutex::new(VoiceStatus::default()));
+        let runner = Runner {
+            app: app.clone(),
+            tx: tx.clone(),
+            status: status.clone(),
+            config,
+            rec: None,
+            take: 0,
+            streams: HashMap::new(),
+            speaker: None,
+            idle_since: None,
+            shown: (None, Vec::new()),
+        };
+        std::thread::Builder::new()
+            .name("voice".into())
+            .spawn(move || runner.run(rx))
+            .expect("能开线程");
+        Self { tx, status }
+    }
+
+    pub fn send(&self, m: VoiceMsg) {
+        let _ = self.tx.send(m);
+    }
+
+    pub fn status(&self) -> VoiceStatus {
+        self.status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    Talk,
+    Test,
+}
+
+/// 正在录的一段：说话或试音。
+struct Recording {
+    purpose: Purpose,
+    take: u32,
+    _mic: cpal::Stream,
+    since: Instant,
+    pcm: Vec<f32>,
+    encoder: OpusEncoder,
+    packer: Packer,
+    /// 试音录下的小帧（不发出去）。
+    kept: Vec<Vec<u8>>,
+}
+
+struct Incoming {
+    jitter: Jitter,
+    decoder: OpusDecoder,
+}
+
+struct Runner {
+    app: AppHandle,
+    tx: Sender<VoiceMsg>,
+    status: Arc<Mutex<VoiceStatus>>,
+    config: VoiceConfig,
+    rec: Option<Recording>,
+    take: u32,
+    streams: HashMap<(MemberId, u32), Incoming>,
+    speaker: Option<(audio::Speaker, Resampler)>,
+    idle_since: Option<Instant>,
+    /// 上一次交给透明窗口的：自己还剩几秒、谁在说。
+    shown: (Option<u64>, Vec<MemberId>),
+}
+
+impl Runner {
+    fn run(mut self, rx: Receiver<VoiceMsg>) {
+        loop {
+            let busy = self.rec.is_some() || !self.streams.is_empty() || self.speaker.is_some();
+            let msg = if busy {
+                match rx.recv_timeout(TICK) {
+                    Ok(m) => Some(m),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            } else {
+                match rx.recv() {
+                    Ok(m) => Some(m),
+                    Err(_) => return,
+                }
+            };
+            if let Some(m) = msg {
+                self.handle(m);
+            }
+            self.step();
+        }
+    }
+
+    fn state(&self) -> Option<tauri::State<'_, AppState>> {
+        self.app.try_state::<AppState>()
+    }
+
+    fn handle(&mut self, m: VoiceMsg) {
+        match m {
+            VoiceMsg::Talk(TalkPhase::Start) => {
+                if self.config.enabled && self.rec.is_none() {
+                    self.start_recording(Purpose::Talk);
+                }
+            }
+            VoiceMsg::Talk(TalkPhase::End) => {
+                if self
+                    .rec
+                    .as_ref()
+                    .is_some_and(|r| r.purpose == Purpose::Talk)
+                {
+                    self.finish_talk();
+                }
+            }
+            VoiceMsg::Talk(TalkPhase::Cancel) => {
+                if self
+                    .rec
+                    .as_ref()
+                    .is_some_and(|r| r.purpose == Purpose::Talk)
+                {
+                    self.rec = None;
+                }
+            }
+            VoiceMsg::Remote {
+                from,
+                stream,
+                first,
+                frames,
+                end,
+            } => {
+                if !self.config.enabled {
+                    return;
+                }
+                let key = (from, stream);
+                if !self.streams.contains_key(&key) && self.streams.len() >= MAX_STREAMS {
+                    return;
+                }
+                let Some(s) = self.incoming(key) else { return };
+                s.jitter.push(first, frames, end, now_ms());
+            }
+            VoiceMsg::Gone(from) => self.streams.retain(|(m, _), _| *m != from),
+            VoiceMsg::Config(c) => {
+                if !c.enabled {
+                    self.streams.clear();
+                    if self
+                        .rec
+                        .as_ref()
+                        .is_some_and(|r| r.purpose == Purpose::Talk)
+                    {
+                        self.rec = None;
+                    }
+                }
+                self.config = c;
+            }
+            VoiceMsg::Test => {
+                if self.rec.is_none() {
+                    self.start_recording(Purpose::Test);
+                }
+            }
+            VoiceMsg::Captured { take, pcm } => self.captured(take, pcm),
+        }
+    }
+
+    fn incoming(&mut self, key: (MemberId, u32)) -> Option<&mut Incoming> {
+        match self.streams.entry(key) {
+            Entry::Occupied(e) => Some(e.into_mut()),
+            Entry::Vacant(v) => {
+                let decoder = OpusDecoder::new(RATE as i32, 1).ok()?;
+                Some(v.insert(Incoming {
+                    jitter: Jitter::default(),
+                    decoder,
+                }))
+            }
+        }
+    }
+
+    fn set_status(&self, f: impl FnOnce(&mut VoiceStatus)) {
+        let snapshot = {
+            let mut s = self.status.lock().unwrap_or_else(|e| e.into_inner());
+            f(&mut s);
+            s.clone()
+        };
+        let _ = self.app.emit_to("main", "voice://changed", snapshot);
+    }
+
+    fn start_recording(&mut self, purpose: Purpose) {
+        self.take = self.take.wrapping_add(1);
+        let (tx, take) = (self.tx.clone(), self.take);
+        let mic = audio::open_mic(&self.config.mic, move |pcm| {
+            let _ = tx.send(VoiceMsg::Captured { take, pcm });
+        });
+        let mic = match mic {
+            Ok(m) => m,
+            Err(e) => {
+                let error = format!("麦克风打不开：{e}");
+                if let Some(s) = self.state() {
+                    s.overlays.send(Msg::Toast {
+                        title: "麦克风打不开".into(),
+                        body: e.clone(),
+                    });
+                }
+                self.set_status(|s| s.error = Some(error));
+                return;
+            }
+        };
+        let Ok(mut encoder) = OpusEncoder::new(RATE as i32, 1, Application::Voip) else {
+            return;
+        };
+        encoder.bitrate_bps = BITRATE;
+        encoder.use_cbr = true;
+        self.rec = Some(Recording {
+            purpose,
+            take,
+            _mic: mic,
+            since: Instant::now(),
+            pcm: Vec::new(),
+            encoder,
+            packer: Packer::new(getrandom::u32().unwrap_or(take)),
+            kept: Vec::new(),
+        });
+        self.set_status(|s| {
+            s.error = None;
+            if purpose == Purpose::Test {
+                s.test = Some("recording");
+            }
+        });
+    }
+
+    /// 录到的声音：凑够 20 毫秒就编一个小帧；说话的攒够 400 毫秒就发出去。
+    fn captured(&mut self, take: u32, pcm: Vec<f32>) {
+        let Some(rec) = self.rec.as_mut().filter(|r| r.take == take) else {
+            return;
+        };
+        rec.pcm.extend(pcm);
+        let mut out = Vec::new();
+        while rec.pcm.len() >= FRAME {
+            let frame: Vec<f32> = rec.pcm.drain(..FRAME).collect();
+            let Some(packet) = encode(&mut rec.encoder, &frame) else {
+                continue;
+            };
+            match rec.purpose {
+                Purpose::Talk => out.extend(rec.packer.push(packet)),
+                Purpose::Test => rec.kept.push(packet),
+            }
+        }
+        for body in out {
+            self.send_live(body);
+        }
+    }
+
+    fn send_live(&self, body: crate::protocol::live::LiveBody) {
+        if let Some(s) = self.state() {
+            s.node.send_live(body);
+        }
+    }
+
+    /// 说完了：剩下的（不满 20 毫秒的补静音）编完，和「结束」一起发出去。还没发过东西、说得又太短就算了。
+    fn finish_talk(&mut self) {
+        let Some(mut rec) = self.rec.take() else {
+            return;
+        };
+        if rec.packer.sent() == 0 && rec.since.elapsed() < Duration::from_millis(TALK_MIN_MS) {
+            return;
+        }
+        let mut out = Vec::new();
+        if !rec.pcm.is_empty() {
+            rec.pcm.resize(FRAME, 0.0);
+            if let Some(p) = encode(&mut rec.encoder, &rec.pcm) {
+                out.extend(rec.packer.push(p));
+            }
+        }
+        out.push(rec.packer.finish());
+        for body in out {
+            self.send_live(body);
+        }
+    }
+
+    /// 试音录完：把录下的小帧当成一段本机的话放出来。
+    fn finish_test(&mut self) {
+        let Some(rec) = self.rec.take() else { return };
+        let count = rec.kept.len();
+        if let Some(s) = self.incoming((LOCAL, 0)) {
+            s.jitter = Jitter::default();
+            s.jitter.push(0, rec.kept, true, now_ms());
+        }
+        self.set_status(|s| s.test = (count > 0).then_some("playing"));
+    }
+
+    fn step(&mut self) {
+        if let Some(rec) = &self.rec {
+            let elapsed = rec.since.elapsed();
+            match rec.purpose {
+                Purpose::Talk if elapsed >= Duration::from_millis(MAX_TALK_MS) => {
+                    self.finish_talk()
+                }
+                Purpose::Test if elapsed >= Duration::from_millis(TEST_MS) => self.finish_test(),
+                _ => {}
+            }
+        }
+        self.play();
+        self.show();
+    }
+
+    /// 让扬声器的队列里保持约 60 毫秒的声音。
+    fn play(&mut self) {
+        if self.streams.is_empty() {
+            let drained = self
+                .speaker
+                .as_ref()
+                .is_none_or(|(s, _)| s.queue.lock().map(|q| q.is_empty()).unwrap_or(true));
+            if drained && self.speaker.is_some() {
+                let since = *self.idle_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= SPEAKER_IDLE {
+                    self.speaker = None;
+                    self.idle_since = None;
+                }
+            }
+            return;
+        }
+        self.idle_since = None;
+        if self.speaker.is_none() {
+            match audio::open_speaker() {
+                Ok(s) => {
+                    let r = Resampler::new(RATE, s.rate);
+                    self.speaker = Some((s, r));
+                }
+                Err(e) => {
+                    self.streams.clear();
+                    let error = format!("扬声器打不开：{e}");
+                    self.set_status(|s| {
+                        s.error = Some(error);
+                        s.test = None;
+                    });
+                    return;
+                }
+            }
+        }
+        let now = now_ms();
+        let Some((speaker, _)) = &self.speaker else {
+            return;
+        };
+        let target = speaker.rate as usize * AHEAD_MS / 1000;
+        let queue = speaker.queue.clone();
+        while !self.streams.is_empty() && queue.lock().map(|q| q.len()).unwrap_or(target) < target {
+            let block = self.mix(now);
+            let Some((_, resampler)) = self.speaker.as_mut() else {
+                return;
+            };
+            let mut out = Vec::with_capacity(block.len() * 3);
+            resampler.process(&block, &mut out);
+            queue.lock().unwrap_or_else(|e| e.into_inner()).extend(out);
+        }
+    }
+
+    /// 每段话各取 20 毫秒，解码、加起来；放完的去掉。
+    fn mix(&mut self, now: u64) -> Vec<f32> {
+        let mut sum = vec![0f32; FRAME];
+        let mut decoded = vec![0f32; FRAME];
+        let volume = self.config.volume;
+        let mut done = Vec::new();
+        let mut test_done = false;
+        for (key, s) in &mut self.streams {
+            let input: &[u8] = match s.jitter.pull(now) {
+                Pull::Frame(f) => {
+                    let n = s.decoder.decode(&f, FRAME, &mut decoded).unwrap_or(0);
+                    add(&mut sum, &decoded[..n.min(FRAME)], volume);
+                    continue;
+                }
+                Pull::Lost => &[],
+                Pull::Wait => continue,
+                Pull::Done => {
+                    done.push(*key);
+                    test_done |= key.0 == LOCAL;
+                    continue;
+                }
+            };
+            let n = s.decoder.decode(input, FRAME, &mut decoded).unwrap_or(0);
+            add(&mut sum, &decoded[..n.min(FRAME)], volume);
+        }
+        for k in done {
+            self.streams.remove(&k);
+        }
+        if test_done {
+            self.set_status(|s| s.test = None);
+        }
+        for v in &mut sum {
+            *v = v.clamp(-1.0, 1.0);
+        }
+        sum
+    }
+
+    /// 透明窗口上的「正在录音」「谁在说」，队伍面板里亮起的人；变了才通知。
+    fn show(&mut self) {
+        let me = self
+            .rec
+            .as_ref()
+            .filter(|r| r.purpose == Purpose::Talk)
+            .map(|r| (MAX_TALK_MS / 1000).saturating_sub(r.since.elapsed().as_secs()));
+        let mut others: Vec<MemberId> = self
+            .streams
+            .iter()
+            .filter(|((m, _), s)| *m != LOCAL && s.jitter.speaking())
+            .map(|((m, _), _)| *m)
+            .collect();
+        others.sort();
+        others.dedup();
+        if (me, &others) == (self.shown.0, &self.shown.1) {
+            return;
+        }
+        if let Some(s) = self.state() {
+            s.overlays.send(Msg::Speaking {
+                me,
+                others: others.clone(),
+            });
+            if others != self.shown.1 {
+                s.panel.send(PanelMsg::Speaking(others.clone()));
+            }
+        }
+        self.shown = (me, others);
+    }
+}
+
+fn encode(encoder: &mut OpusEncoder, pcm: &[f32]) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 400];
+    let n = encoder.encode(pcm, FRAME, &mut buf).ok()?;
+    Some(buf[..n].to_vec())
+}
+
+fn add(sum: &mut [f32], pcm: &[f32], volume: f32) {
+    for (s, p) in sum.iter_mut().zip(pcm) {
+        *s += p * volume;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 编码、打包、按到达顺序进抖动缓冲、解码：一段话从头到尾走一遍，声音还在。
+    #[test]
+    fn a_phrase_survives_encode_pack_jitter_decode() {
+        let mut enc = OpusEncoder::new(RATE as i32, 1, Application::Voip).unwrap();
+        enc.bitrate_bps = BITRATE;
+        enc.use_cbr = true;
+        let mut packer = Packer::new(3);
+        let mut bodies = Vec::new();
+        let tone: Vec<f32> = (0..RATE as usize)
+            .map(|i| (i as f32 * 300.0 * 2.0 * std::f32::consts::PI / RATE as f32).sin() * 0.4)
+            .collect();
+        for chunk in tone.chunks(FRAME) {
+            let p = encode(&mut enc, chunk).unwrap();
+            assert_eq!(p.len(), 40, "16 kbps 恒定码率：每 20 毫秒 40 字节");
+            bodies.extend(packer.push(p));
+        }
+        bodies.push(packer.finish());
+        assert_eq!(
+            bodies.len(),
+            3,
+            "1 秒 = 两个 400 毫秒的帧，剩下的 200 毫秒和「结束」一起发"
+        );
+
+        let mut j = Jitter::default();
+        for b in bodies {
+            if let crate::protocol::live::LiveBody::Voice {
+                first, frames, end, ..
+            } = b
+            {
+                j.push(
+                    first,
+                    frames.into_iter().map(|f| f.into_vec()).collect(),
+                    end,
+                    0,
+                );
+            }
+        }
+        let mut dec = OpusDecoder::new(RATE as i32, 1).unwrap();
+        let mut out = vec![0f32; FRAME];
+        let (mut energy, mut frames) = (0f64, 0);
+        loop {
+            match j.pull(0) {
+                Pull::Frame(f) => {
+                    let n = dec.decode(&f, FRAME, &mut out).unwrap();
+                    energy += out[..n].iter().map(|s| f64::from(*s).powi(2)).sum::<f64>();
+                    frames += 1;
+                }
+                Pull::Done => break,
+                p => panic!("不该是 {p:?}"),
+            }
+        }
+        assert_eq!(frames, 50);
+        let input: f64 = tone.iter().map(|s| f64::from(*s).powi(2)).sum();
+        assert!(energy / input > 0.5, "解码后的能量 {:.2}", energy / input);
+    }
+}

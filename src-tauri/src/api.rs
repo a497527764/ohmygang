@@ -2,7 +2,7 @@
 //!
 //! 实现流程：
 //! 1. 启动时（`lib.rs`）开 `gang2.db`、读设置，建 `AppState` 交给 Tauri 管理。
-//! 2. 改设置：整份设置过 `normalize` → 存库 → 交给输入线程（手势配置）和透明窗口线程（画画的设置）→ 主窗口换主题。
+//! 2. 改设置：整份设置过 `normalize` → 存库 → 交给输入线程（手势配置）、透明窗口线程（画画的设置）、语音线程 → 主窗口换主题。
 //! 3. 信号开关（托盘、控制面板、暂停快捷键）统一走 `set_enabled`：告诉输入线程、勾上托盘、通知控制面板、更新在线状态。
 //!    改了「允许互联网」或中继列表时，让节点换中继。
 //! 4. 这些命令都很快（读写一行 SQLite、往通道里放消息），而且持锁时不等别的线程，所以放在主线程上执行没问题。
@@ -41,6 +41,8 @@ pub struct AppState {
     pub panel: crate::panel::Panel,
     /// 自动更新的状态。
     pub updates: crate::update::Updates,
+    /// 语音（按住说话）。
+    pub voice: crate::voice::Voice,
 }
 
 impl AppState {
@@ -84,10 +86,10 @@ pub fn after_toggle(app: &AppHandle, on: bool) {
     team::refresh_presence(app);
 }
 
-/// 开机启动：只在设置改了时去改系统设置。开发用的第二实例不碰。
+/// 开机启动：只在设置改了时去改系统设置。开发用的第二、第三实例不碰。
 fn set_autostart(app: &AppHandle, on: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
-    if crate::is_second_instance() {
+    if crate::dev_instance().is_some() {
         return Ok(());
     }
     let launcher = app.autolaunch();
@@ -106,7 +108,9 @@ pub fn ensure_autostart(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    if cfg!(debug_assertions) || crate::is_second_instance() || !state.settings().launch_at_startup
+    if cfg!(debug_assertions)
+        || crate::dev_instance().is_some()
+        || !state.settings().launch_at_startup
     {
         return;
     }
@@ -174,6 +178,9 @@ fn apply_settings(app: &AppHandle, state: &AppState, settings: &Value) -> Result
         )));
     }
     state.overlays.send(Msg::Settings(s.overlay()));
+    state
+        .voice
+        .send(crate::voice::VoiceMsg::Config(s.voice_config()));
     apply_window_theme(app, &s.theme);
     team::refresh_presence(app); // 轮盘上的导入表情变了，报的哈希跟着变
     let relays = s.active_relays();
@@ -312,6 +319,28 @@ pub fn emote_remove(
 }
 
 /// 在主显示器中间放一个表情看看效果。
+/// 语音页：麦克风列表和语音的状态（打不开的原因、试音进行到哪）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceView {
+    pub mics: Vec<crate::voice::audio::MicInfo>,
+    pub status: crate::voice::VoiceStatus,
+}
+
+#[tauri::command]
+pub fn voice_view(state: State<'_, AppState>) -> VoiceView {
+    VoiceView {
+        mics: crate::voice::audio::mics(),
+        status: state.voice.status(),
+    }
+}
+
+/// 试音：录 3 秒放给自己听。进度经 "voice://changed" 推给控制面板。
+#[tauri::command]
+pub fn voice_test(state: State<'_, AppState>) {
+    state.voice.send(crate::voice::VoiceMsg::Test);
+}
+
 #[tauri::command]
 pub fn emote_preview(state: State<'_, AppState>, emote: String) {
     if emotes::is_ref_shape(&emote) {

@@ -24,7 +24,7 @@ export function triggerLabel(t: TriggerKey): string {
   return typeof t === "object" ? vkLabel(t.vk) : (TRIGGERS.find((x) => x.value === t)?.label ?? t);
 }
 
-type RowId = "trigger" | "emote" | "toggle" | "text" | "panel";
+type RowId = "trigger" | "emote" | "toggle" | "text" | "talk" | "panel";
 type Value = TriggerKey | "off" | Hotkey | number;
 
 const NAMES: Record<RowId, string> = {
@@ -32,16 +32,17 @@ const NAMES: Record<RowId, string> = {
   emote: "表情轮盘",
   toggle: "暂停 / 恢复",
   text: "打字给队友",
+  talk: "说话",
   panel: "队伍面板",
 };
 
 const valueOf = (s: Settings, id: RowId): Value =>
-  ({ trigger: s.trigger, emote: s.emoteTrigger, toggle: s.toggleHotkey, text: s.textHotkey, panel: s.panelKey })[id];
+  ({ trigger: s.trigger, emote: s.emoteTrigger, toggle: s.toggleHotkey, text: s.textHotkey, talk: s.talkKey, panel: s.panelKey })[id];
 
 function label(id: RowId, v: Value): string {
   if (v === OFF) return "关";
   if (id === "toggle" || id === "text") return hotkeyParts(v as Hotkey).join(" + ");
-  if (id === "panel") return vkLabel(v as number);
+  if (id === "panel" || id === "talk") return vkLabel(v as number);
   return triggerLabel(v as TriggerKey);
 }
 
@@ -52,7 +53,7 @@ function marks(id: RowId, v: Value): string[] {
     const h = v as Hotkey;
     return [`hk:${h.mods}:${h.vk}`, `vk:${h.vk}`];
   }
-  if (id === "panel") return [`vk:${v as number}`];
+  if (id === "panel" || id === "talk") return [`vk:${v as number}`];
   const t = v as TriggerKey;
   if (typeof t === "object") return [`t:vk${t.vk}`, `vk:${t.vk}`];
   return t === "capslock" ? [`t:${t}`, "vk:20"] : [`t:${t}`];
@@ -81,7 +82,7 @@ function TriggerPick(props: { value: TriggerKey | "off"; allowOff: boolean; take
         onChange={(e) => {
           const v = e.target.value;
           // 自定义先给一个不常用的键，用户再录
-          if (v === CUSTOM) onPick({ vk: allowOff ? 0x54 : 0x56 });
+          if (v === CUSTOM) onPick({ vk: allowOff ? 0x54 : 0x4a });
           else onPick(v as NamedTrigger | "off");
         }}
       >
@@ -135,6 +136,13 @@ export function ShortcutsPage({ settings: s, onChange }: Props) {
           hint={note("text") || (!s.teamText && "已关，在「功能」页打开")}
         >
           <KeyCapture kind="hotkey" value={s.textHotkey} onPick={(h) => pick("text", h, { textHotkey: h })} />
+        </Row>
+        <Row
+          label="说话（按住）"
+          tip="在队伍里按住说话，松开发给队友。点一下照常打出这个字；按下后马上又按别的键也算打字"
+          hint={note("talk") || (!s.voice && "已关，在「语音」页打开")}
+        >
+          <KeyCapture kind="key" value={s.talkKey} onPick={(vk) => pick("talk", vk, { talkKey: vk })} />
         </Row>
         <Row
           label="队伍面板（按住）"

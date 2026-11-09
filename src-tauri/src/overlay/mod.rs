@@ -26,7 +26,7 @@ use tauri::{
 };
 
 use crate::crypto::MemberId;
-use crate::input::{Emit, WheelKind};
+use crate::input::{Emit, TalkPhase, WheelKind};
 use crate::protocol::live::{LiveBody, from_ratio, to_ratio};
 use crate::settings2::OverlaySettings;
 use displays::{Display, Rect};
@@ -83,6 +83,11 @@ pub enum Msg {
     },
     /// 队友的名字，信号下面的标签用。
     Names(Vec<(MemberId, String)>),
+    /// 语音：自己在录时还剩几秒，哪些队友在说（主显示器右下角）。
+    Speaking {
+        me: Option<u64>,
+        others: Vec<MemberId>,
+    },
 }
 
 /// 透明窗口线程交出去的事，都在这个线程上调用，只能做不阻塞的事。
@@ -93,6 +98,8 @@ pub struct Hooks {
     pub on_live: Box<dyn Fn(LiveBody) + Send>,
     /// 按了队伍文字快捷键。
     pub on_text: Box<dyn Fn() + Send>,
+    /// 说话键：开始录、说完了、丢掉。
+    pub on_talk: Box<dyn Fn(TalkPhase) + Send>,
     /// 面板键按下或松开。
     pub on_panel: Box<dyn Fn(bool) + Send>,
 }
@@ -112,6 +119,7 @@ impl Overlays {
             settings,
             hooks,
             names: HashMap::new(),
+            voice_shown: false,
             displays: Vec::new(),
             windows: HashMap::new(),
             next_id: 0,
@@ -158,6 +166,8 @@ struct Actor {
     settings: OverlaySettings,
     hooks: Hooks,
     names: HashMap<MemberId, String>,
+    /// 主显示器上正画着语音的提示。
+    voice_shown: bool,
     /// 按编号排好的显示器（第 0 个是 1 号，主显示器）。
     displays: Vec<Display>,
     windows: HashMap<String, Win>,
@@ -232,6 +242,7 @@ impl Actor {
                 } => self.text(from, display, (x, y), text),
                 Msg::Poll => self.refresh(),
                 Msg::Names(list) => self.names = list.into_iter().collect(),
+                Msg::Speaking { me, others } => self.speaking(me, &others),
                 Msg::RemotePing {
                     from,
                     display,
@@ -315,6 +326,7 @@ impl Actor {
             }
             Emit::Cancel => self.cancel_wheel(),
             Emit::TextRequested => (self.hooks.on_text)(),
+            Emit::Talk(p) => (self.hooks.on_talk)(p),
             Emit::Panel { show } => (self.hooks.on_panel)(show),
             Emit::Toggled { enabled } => {
                 if !enabled {
@@ -481,6 +493,29 @@ impl Actor {
         if let Some(w) = self.windows.get(key) {
             let _ = w.window.emit_to(w.label.as_str(), event, payload);
         }
+    }
+
+    /// 语音的提示画在主显示器右下角。从没有变成有时才挪回、置顶窗口，之后（比如每秒的倒计时）只通知页面。
+    fn speaking(&mut self, me: Option<u64>, others: &[MemberId]) {
+        self.refresh();
+        let Some(d) = self.displays.first().cloned() else {
+            return;
+        };
+        let list: Vec<serde_json::Value> = others
+            .iter()
+            .map(|m| {
+                let name = self.names.get(m).cloned().unwrap_or_else(|| "队友".into());
+                json!({ "name": name, "color": tag_color(m) })
+            })
+            .collect();
+        let has = me.is_some() || !list.is_empty();
+        let payload = json!({ "me": me, "others": list });
+        if has && !self.voice_shown {
+            self.show(&d.key, "voice:state", payload);
+        } else {
+            self.emit(&d.key, "voice:state", payload);
+        }
+        self.voice_shown = has;
     }
 
     /// 画新东西：先把窗口挪回显示器上、重新置顶，再通知页面。
