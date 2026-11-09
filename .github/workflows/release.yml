@@ -1,7 +1,7 @@
-# 发版：推送 v 开头的标签（比如 v2.0.0）时运行。三个平台各自打包、给更新包签名，全部成功后才建 Release，
+# 发版：推送 v 开头的标签（比如 v2.0.0）时运行。Windows、macOS 各自打包、给更新包签名，全部成功后才建 Release，
 # 上传安装包和 latest.json（已安装的程序从 releases/latest/download/latest.json 查新版本）。
 # 需要仓库 Secrets：TAURI_SIGNING_PRIVATE_KEY（更新私钥文件的内容）和 TAURI_SIGNING_PRIVATE_KEY_PASSWORD（生成私钥时设的密码）。
-# 更新说明取自带注释的标签：git tag -a v2.0.0 -m "这一版改了什么"。macOS 和 Linux 是实验版。
+# 更新说明取自带注释的标签：git tag -a v2.0.0 -m "这一版改了什么"。macOS 是实验版；3.1 起不再出 Linux 的包。
 name: 发版
 
 on:
@@ -23,9 +23,6 @@ jobs:
           - os: macos-latest
             platform: macos
             bundles: app,dmg
-          - os: ubuntu-22.04
-            platform: linux
-            bundles: appimage,deb
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -35,12 +32,6 @@ jobs:
           node-version: 24
       - name: 版本号和标签一致、更新公钥已填
         run: node scripts/release.mjs check "${{ github.ref_name }}"
-
-      - name: Linux 系统库（WebKitGTK、托盘、OpenSSL、D-Bus、AppImage 要的 patchelf）
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev libasound2-dev pkg-config patchelf
 
       - uses: pnpm/action-setup@v4
         with:

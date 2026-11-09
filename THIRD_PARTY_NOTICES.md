@@ -2,7 +2,7 @@
 
 ## lolPing
 
-lolGang（原名钢一下）的信号轮盘、信号动画、表情（清单、表情动画和出场效果、导入和传输规则）、队伍面板、投票规则、队伍文字、键鼠手势判定、macOS 和 Linux 的键鼠监听、透明窗口的做法移植自 lolPing：<https://github.com/darrenprx/lolPing>。移植来的文件开头注明了来源。lolPing 的许可如下：
+lolGang（原名钢一下）的信号轮盘、信号动画、表情（清单、表情动画和出场效果、导入和传输规则）、队伍面板、投票规则、队伍文字、键鼠手势判定、macOS 的键鼠监听、透明窗口的做法移植自 lolPing：<https://github.com/darrenprx/lolPing>。移植来的文件开头注明了来源。lolPing 的许可如下：
 
 ```
 MIT License

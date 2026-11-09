@@ -285,7 +285,7 @@ pub struct Gesture {
     /// 触发键按住时按了别的普通键（Alt+Tab 之类）：这是别的程序的组合键，触发键全松开前单击都放行。
     foreign_key: bool,
     mask_menu_keys: bool,
-    /// 面板键连发停了多久算抬起丢了；0 表示不看（macOS 和 X11 收不到可靠的连发）。
+    /// 面板键连发停了多久算抬起丢了；0 表示不看（macOS 收不到可靠的连发）。
     panel_repeat_gap_ms: u64,
     /// 自定义触发键按下了但还没发给系统；拖动用掉它，单独松开就补打。0 表示没有。
     held_back_vk: u32,
@@ -372,7 +372,7 @@ impl Gesture {
         self.mask_menu_keys = on;
     }
 
-    /// 面板键的连发看门狗；macOS、X11 由平台层传 0 关掉（那边的抬起由事件流或重新对状态保证）。
+    /// 面板键的连发看门狗；macOS 由平台层传 0 关掉（那边的抬起由事件流保证）。
     pub fn set_panel_repeat_gap(&mut self, ms: u64) {
         self.panel_repeat_gap_ms = ms;
     }

@@ -62,20 +62,6 @@ pub struct Status {
     pub input_error: Option<String>,
     /// macOS 上监听没起来：多半是缺「辅助功能」权限，控制面板顶部显示授权卡片。
     pub needs_permission: bool,
-    /// 监听起来了但有键被占着（Linux 窗口管理器）。
-    pub input_warning: Option<String>,
-}
-
-/// 状态里只有「有键被占着」（Linux）会在运行中变：在线状态线程每 5 秒看一次，变了才通知控制面板重新取状态
-/// （3.0-M6：以前是控制面板每 5 秒取一次）。
-pub fn watch_status(app: &AppHandle) {
-    static LAST: Mutex<Option<String>> = Mutex::new(None);
-    let now = crate::input::warning();
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if *last != now {
-        *last = now;
-        let _ = app.emit_to("main", "status://changed", ());
-    }
 }
 
 /// 开关信号，并让托盘、控制面板跟上。
@@ -211,7 +197,6 @@ pub fn status_get(state: State<'_, AppState>) -> Status {
         enabled: state.enabled.load(Ordering::Relaxed),
         input_error: state.input_error.clone(),
         needs_permission: cfg!(target_os = "macos") && state.input_error.is_some(),
-        input_warning: crate::input::warning(),
     }
 }
 

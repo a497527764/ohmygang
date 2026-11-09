@@ -1,4 +1,4 @@
-//! 声卡（cpal：Windows WASAPI、macOS CoreAudio、Linux ALSA）：列出麦克风、开麦克风录音、开扬声器放音。
+//! 声卡（cpal：Windows WASAPI、macOS CoreAudio）：列出麦克风、开麦克风录音、开扬声器放音。
 //! 只有这个文件碰 cpal。
 //!
 //! 实现流程：

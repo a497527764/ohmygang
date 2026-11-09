@@ -259,7 +259,7 @@ select:hover {
   border-color: var(--line-hi);
 }
 /* 新版 Chromium（WebView2）能自己画下拉菜单：金边深底，当前项海克斯蓝、打勾。
-   macOS 和 Linux 的 WebView 不支持，照旧用系统的下拉菜单。 */
+   macOS 的 WebView 不支持，照旧用系统的下拉菜单。 */
 @supports (appearance: base-select) {
   select,
   select::picker(select) {

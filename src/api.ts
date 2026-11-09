@@ -76,8 +76,6 @@ export interface Status {
   inputError: string | null;
   /** macOS 上监听没起来，顶部显示授权卡片。 */
   needsPermission: boolean;
-  /** 监听起来了，但有键被别的程序占着（Linux 窗口管理器），提示换键；没有时为 null。 */
-  inputWarning: string | null;
 }
 
 export const readSettings = (): Promise<Settings> => invoke("settings_read");
@@ -193,9 +191,6 @@ export interface UpdateView {
   /** 下载进度 0 到 1；不知道总大小时是 null。 */
   progress: number | null;
   error: string | null;
-  /** Linux 的 deb 不能自动更新，只能去发版页下载。 */
-  canInstall: boolean;
-  releasesUrl: string;
 }
 
 export const updateView = (): Promise<UpdateView> => invoke("update_view");
@@ -204,8 +199,6 @@ export const updateCheck = (): Promise<UpdateView> => invoke("update_check");
 export const updateInstall = (): Promise<void> => invoke("update_install");
 export const onUpdate = (cb: (v: UpdateView) => void): Promise<UnlistenFn> =>
   listen<UpdateView>("update://changed", (e) => cb(e.payload));
-/** 状态变了（比如 Linux 上有键被占着），重新取一次。 */
-export const onStatusChanged = (cb: () => void): Promise<UnlistenFn> => listen("status://changed", () => cb());
 /** 托盘要求打开某一页（比如「检查更新」打开「关于」）。 */
 export const onNavigate = (cb: (page: string) => void): Promise<UnlistenFn> =>
   listen<string>("nav://page", (e) => cb(e.payload));

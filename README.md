@@ -12,7 +12,6 @@
 |---|---|---|
 | Windows 10、11 | `lolgang_<版本>_x64-setup.exe` | 正式支持 |
 | macOS 13 以上（Apple 芯片） | `lolgang_<版本>_aarch64.dmg` | 实验版，没在真机上测试过。要在「系统设置 → 隐私与安全性」里允许 lolGang 使用辅助功能和麦克风 |
-| Linux（X11 桌面） | `lolgang_<版本>_amd64.AppImage` 或 `.deb` | 实验版，没在真机上测试过。要有窗口合成器才能透明；Wayland 会话拿不到全局键鼠，不支持 |
 
 装好后会自己检查新版本，在「关于」页点「更新并重启」即可升级。
 
@@ -41,7 +40,7 @@
 
 - 局域网：UDP 端口 47480 广播。第一次运行时 Windows 防火墙会询问，请勾选「专用网络」并允许，否则同一局域网的队友找不到你。
 - 互联网：不在同一个局域网时经公共 Nostr 中继转发。所有内容都用队伍密钥加密，中继只看得到密文。「队伍」页可以关掉「允许互联网」，只用局域网。
-- 不连别的服务器，不收集任何数据。身份密钥存在系统的凭据管理（Windows 凭据管理器、macOS 钥匙串、Linux Secret Service）。
+- 不连别的服务器，不收集任何数据。身份密钥存在系统的凭据管理（Windows 凭据管理器、macOS 钥匙串）。
 
 ## 开发
 
@@ -56,6 +55,6 @@ pnpm release                   # 本机打 Windows 安装包（不带更新签�
 
 ## 许可和致谢
 
-代码用 [MIT 许可](LICENSE)。信号轮盘、信号动画、表情、队伍面板、投票、键鼠手势判定，以及 macOS、Linux 的键鼠监听，移植自 [lolPing](https://github.com/darrenprx/lolPing)（作者 Danrui Meng，MIT 许可），移植来的文件开头注明了来源。其他第三方声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+代码用 [MIT 许可](LICENSE)。信号轮盘、信号动画、表情、队伍面板、投票、键鼠手势判定，以及 macOS 的键鼠监听，移植自 [lolPing](https://github.com/darrenprx/lolPing)（作者 Danrui Meng，MIT 许可），移植来的文件开头注明了来源。其他第三方声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 信号图标、音效、表情来自英雄联盟，版权归 Riot Games 所有，不在 MIT 许可范围内。lolGang 不代表 Riot Games，也没有得到 Riot Games 的认可。

@@ -49,7 +49,7 @@ function UpdateCard({ settings, onChange }: Props) {
           {phaseLine(u) && <small className={`hint${u.phase === "failed" ? " warn" : ""}`}>{phaseLine(u)}</small>}
         </div>
         <div className="row-control">
-          {u.phase === "available" && u.canInstall ? (
+          {u.phase === "available" ? (
             <button className="primary" disabled={busy} onClick={() => void updateInstall().catch(() => undefined)}>
               更新并重启
             </button>
@@ -65,9 +65,6 @@ function UpdateCard({ settings, onChange }: Props) {
       )}
       {u.version && u.notes && (u.phase === "available" || u.phase === "downloading") && (
         <pre className="update-notes">{u.notes}</pre>
-      )}
-      {u.phase === "available" && !u.canInstall && (
-        <p className="muted">用 deb 装的版本不能自动更新，请到发版页下载新的安装包：{u.releasesUrl}</p>
       )}
       <Row label="自动检查更新" tip="启动后和每 6 小时查一次，查到只提示，你点了才下载安装">
         <Switch label="自动检查更新" checked={settings.autoUpdateCheck} onChange={(autoUpdateCheck) => onChange({ autoUpdateCheck })} />
@@ -90,14 +87,14 @@ export function AboutPage({ settings, onChange }: Props) {
         <h2>lolGang {version}</h2>
         <p>和开黑的朋友在桌面上互发英雄联盟信号和表情、说话、投票。免费，不需要服务器。</p>
         <p className="muted">
-          Windows 正式支持；macOS、Linux 是实验版
-          <Tip text="macOS、Linux 没有在真机上验证过。macOS 要在「系统设置 → 隐私与安全性 → 辅助功能」里允许 lolGang；Linux 只支持 X11 桌面" />
+          Windows 正式支持；macOS 是实验版
+          <Tip text="macOS 没有在真机上验证过，要在「系统设置 → 隐私与安全性 → 辅助功能」里允许 lolGang" />
         </p>
       </section>
       <section className="card prose">
         <h2>致谢</h2>
         <p>
-          信号轮盘、信号动画、表情、队伍面板、投票、键鼠手势判定，以及 macOS、Linux 的键鼠监听，移植自 lolPing（作者 Danrui Meng，MIT 许可）。
+          信号轮盘、信号动画、表情、队伍面板、投票、键鼠手势判定，以及 macOS 的键鼠监听，移植自 lolPing（作者 Danrui Meng，MIT 许可）。
         </p>
         <details>
           <summary>第三方声明全文</summary>

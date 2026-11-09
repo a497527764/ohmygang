@@ -5,8 +5,7 @@
 //! 2. 查到新版本只提示：托盘那一项变成「更新到 vX」，透明窗口弹一次提示（同一个版本只弹一次），控制面板「关于」页显示版本号和更新说明。
 //! 3. 用户点「更新并重启」才下载。下载的包先用 `tauri.conf.json` 里的公钥校验签名，签名里记的版本也要和清单一致
 //!    （`requireSignedVersion`，防止拿旧版本的真包冒充新版本），不对就放弃并显示原因；装好后重启。
-//! 4. Linux 用 deb 装的没法自己替换：只提示去 Release 页下载（只有 AppImage 能自动更新）。
-//! 5. 状态放在 `Updates` 里（一把锁），每次变化推 "update://changed" 给控制面板。
+//! 4. 状态放在 `Updates` 里（一把锁），每次变化推 "update://changed" 给控制面板。
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -20,8 +19,6 @@ use crate::overlay::Msg;
 
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const EVERY: Duration = Duration::from_secs(6 * 60 * 60);
-/// 发版页（deb 用户手动下载，或者自动更新出错时）。
-pub const RELEASES_URL: &str = "https://github.com/lijianqiao/lolGang/releases/latest";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,14 +58,6 @@ pub struct UpdateView {
     pub notes: Option<String>,
     pub progress: Option<f64>,
     pub error: Option<String>,
-    /// 能不能在程序里直接更新（Linux 的 deb 不能）。
-    pub can_install: bool,
-    pub releases_url: &'static str,
-}
-
-/// 能不能自己替换：Linux 只有从 AppImage 运行时可以（AppImage 运行时会设 APPIMAGE）。
-fn can_install() -> bool {
-    !cfg!(target_os = "linux") || std::env::var_os("APPIMAGE").is_some()
 }
 
 fn view(app: &AppHandle) -> UpdateView {
@@ -94,8 +83,6 @@ fn view(app: &AppHandle) -> UpdateView {
         notes,
         progress,
         error,
-        can_install: can_install(),
-        releases_url: RELEASES_URL,
     }
 }
 
@@ -204,9 +191,6 @@ pub async fn update_check(app: AppHandle) -> UpdateView {
 /// 下载、校验、安装，然后重启。出错时留在原版本，「关于」页显示原因。
 #[tauri::command]
 pub async fn update_install(app: AppHandle) -> Result<(), String> {
-    if !can_install() {
-        return Err("用 deb 装的版本不能自动更新，请到发版页下载新的安装包".into());
-    }
     let update = app
         .try_state::<AppState>()
         .and_then(|s| {

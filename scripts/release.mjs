@@ -2,8 +2,8 @@
 //   check <标签>                       三处版本号和标签一致、更新公钥已经填了，否则失败（不打一个没法更新的包）
 //   collect <平台> <输出目录>          把这个平台打好的包改成英文文件名放进输出目录，另写一个片段：更新包的文件名和签名
 //   manifest <输出目录> <标签> <说明文件>  把各平台的片段合成 latest.json（自动更新读它），片段删掉
-// 平台：windows、macos、linux。安装包的英文名：lolgang_<版本>_x64-setup.exe、lolgang_<版本>_aarch64.dmg、
-// lolgang_<版本>_amd64.AppImage / .deb；Tauri 按产品名 lolGang 起名，这里统一成上面的小写文件名。
+// 平台：windows、macos（3.1 起不再出 Linux 的包）。安装包的英文名：lolgang_<版本>_x64-setup.exe、lolgang_<版本>_aarch64.dmg；
+// Tauri 按产品名 lolGang 起名，这里统一成上面的小写文件名。
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -43,11 +43,6 @@ const PLATFORMS = {
     key: "darwin-aarch64",
     update: [only(`${BUNDLE}/macos`, ".app.tar.gz"), `lolgang_${v}_aarch64.app.tar.gz`],
     extra: [[only(`${BUNDLE}/dmg`, ".dmg"), `lolgang_${v}_aarch64.dmg`]],
-  }),
-  linux: (v) => ({
-    key: "linux-x86_64",
-    update: [only(`${BUNDLE}/appimage`, ".AppImage"), `lolgang_${v}_amd64.AppImage`],
-    extra: [[only(`${BUNDLE}/deb`, ".deb"), `lolgang_${v}_amd64.deb`]],
   }),
 };
 

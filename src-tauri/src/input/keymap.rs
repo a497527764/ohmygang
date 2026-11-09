@@ -1,13 +1,13 @@
-//! macOS 和 X11 的按键翻译成 Windows 虚拟键码（手势状态机和设置都用 Windows 键码）。纯函数，每个平台都测。
-//! 移植自 lolPing `native/hook-helper/src/macinput.cpp`、`linuxinput.cpp`（MIT，© 2026 Danrui Meng）。
+//! macOS 的按键翻译成 Windows 虚拟键码（手势状态机和设置都用 Windows 键码）。纯函数，每个平台都测。
+//! 移植自 lolPing `native/hook-helper/src/macinput.cpp`（MIT，© 2026 Danrui Meng）。
 //!
 //! 实现流程：
 //! 1. macOS：系统给的是 kVK_* 键码，查表换成 Windows 键码；回放时反查。修饰键不单独来按键事件，
 //!    只来「修饰键状态变了」，所以按新旧状态算出哪些修饰键松开、哪些按下（先松后按），当成按键交给状态机。
 //!    状态里只有「有修饰键按着」没有左右时（别的软件合成的事件），算左边那个。
-//! 2. X11：先按物理位置的名字（AE01、AD01……，和键盘布局无关）认字母数字和符号键，认不出再按 keysym。
 
-#![cfg_attr(windows, allow(dead_code))]
+// 只有 macOS 用到；别的平台编译时不报「没用到」
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 // ---------- macOS ----------
 
@@ -211,100 +211,6 @@ pub fn mac_modifier_transitions(old: u64, new: u64) -> Vec<(u32, bool)> {
     ups
 }
 
-// ---------- X11 ----------
-
-/// XKB 的物理键名（四个字符，比如 AE01、AC05、TLDE）→ Windows 键码；不是字母数字和符号键的返回 0。
-pub fn x11_key_name_to_vk(name: &[u8]) -> u32 {
-    const ROWS: [(&[u8; 2], &[u8]); 4] = [
-        (b"AE", b"1234567890"),
-        (b"AD", b"QWERTYUIOP"),
-        (b"AC", b"ASDFGHJKL"),
-        (b"AB", b"ZXCVBNM"),
-    ];
-    if name.len() >= 4 && name[2].is_ascii_digit() && name[3].is_ascii_digit() {
-        let col = usize::from(name[2] - b'0') * 10 + usize::from(name[3] - b'0');
-        for (row, keys) in ROWS {
-            if name[..2] == row[..] && (1..=keys.len()).contains(&col) {
-                return u32::from(keys[col - 1]);
-            }
-        }
-    }
-    const NAMED: [(&[u8; 4], u32); 11] = [
-        (b"TLDE", 0xC0),
-        (b"AE11", 0xBD),
-        (b"AE12", 0xBB),
-        (b"AD11", 0xDB),
-        (b"AD12", 0xDD),
-        (b"BKSL", 0xDC),
-        (b"AC10", 0xBA),
-        (b"AC11", 0xDE),
-        (b"AB08", 0xBC),
-        (b"AB09", 0xBE),
-        (b"AB10", 0xBF),
-    ];
-    NAMED
-        .iter()
-        .find(|(n, _)| name.starts_with(&n[..]))
-        .map_or(0, |(_, vk)| *vk)
-}
-
-/// X keysym → Windows 键码；认不出返回 0。
-pub fn x11_keysym_to_vk(s: u32) -> u32 {
-    match s {
-        0x61..=0x7A => 0x41 + s - 0x61,       // a–z
-        0x41..=0x5A => s,                     // A–Z
-        0x30..=0x39 => s,                     // 0–9
-        0xFFBE..=0xFFD5 => 0x70 + s - 0xFFBE, // F1–F24
-        0xFFB0..=0xFFB9 => 0x60 + s - 0xFFB0, // 小键盘 0–9
-        0xFFE1 => 0xA0,                       // Shift_L
-        0xFFE2 => 0xA1,                       // Shift_R
-        0xFFE3 => 0xA2,                       // Control_L
-        0xFFE4 => 0xA3,                       // Control_R
-        0xFFE9 => 0xA4,                       // Alt_L
-        0xFFEA => 0xA5,                       // Alt_R
-        0xFFEB => 0x5B,                       // Super_L
-        0xFFEC => 0x5C,                       // Super_R
-        0xFF1B => 0x1B,                       // Escape
-        0xFF09 | 0xFE20 => 0x09,              // Tab、ISO_Left_Tab
-        0xFF0D | 0xFF8D => 0x0D,              // Return、KP_Enter
-        0x20 => 0x20,                         // space
-        0xFF08 => 0x08,                       // BackSpace
-        0xFFFF | 0xFF9F => 0x2E,              // Delete
-        0xFF63 | 0xFF9E => 0x2D,              // Insert
-        0xFF50 | 0xFF95 => 0x24,              // Home
-        0xFF57 | 0xFF9C => 0x23,              // End
-        0xFF55 | 0xFF9A => 0x21,              // Page_Up
-        0xFF56 | 0xFF9B => 0x22,              // Page_Down
-        0xFF51 | 0xFF96 => 0x25,              // Left
-        0xFF52 | 0xFF97 => 0x26,              // Up
-        0xFF53 | 0xFF98 => 0x27,              // Right
-        0xFF54 | 0xFF99 => 0x28,              // Down
-        0xFFE5 => 0x14,                       // Caps_Lock
-        0xFF61 => 0x2C,                       // Print
-        0xFF14 => 0x91,                       // Scroll_Lock
-        0xFF13 => 0x13,                       // Pause
-        0xFF7F => 0x90,                       // Num_Lock
-        0xFF67 => 0x5D,                       // Menu
-        0xFFAA => 0x6A,                       // KP_Multiply
-        0xFFAB => 0x6B,                       // KP_Add
-        0xFFAD => 0x6D,                       // KP_Subtract
-        0xFFAE => 0x6E,                       // KP_Decimal
-        0xFFAF => 0x6F,                       // KP_Divide
-        0x3B => 0xBA,                         // ;
-        0x3D => 0xBB,                         // =
-        0x2C => 0xBC,                         // ,
-        0x2D => 0xBD,                         // -
-        0x2E => 0xBE,                         // .
-        0x2F => 0xBF,                         // /
-        0x60 => 0xC0,                         // `
-        0x5B => 0xDB,                         // [
-        0x5C => 0xDC,                         // \
-        0x5D => 0xDD,                         // ]
-        0x27 => 0xDE,                         // '
-        _ => 0,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,21 +247,5 @@ mod tests {
         let t = mac_modifier_transitions(FLAG_SHIFT | DEV_LSHIFT, FLAG_CONTROL | DEV_LCTRL);
         assert_eq!(t, vec![(0xA0, false), (0xA2, true)], "先松后按");
         assert!(mac_modifier_transitions(FLAG_SHIFT, FLAG_SHIFT).is_empty());
-    }
-
-    #[test]
-    fn x11_names_and_keysyms() {
-        assert_eq!(x11_key_name_to_vk(b"AE01"), 0x31);
-        assert_eq!(x11_key_name_to_vk(b"AC05"), 0x47, "G 的物理位置");
-        assert_eq!(x11_key_name_to_vk(b"AB07"), 0x4D);
-        assert_eq!(x11_key_name_to_vk(b"AB08"), 0xBC, "逗号");
-        assert_eq!(x11_key_name_to_vk(b"TLDE"), 0xC0);
-        assert_eq!(x11_key_name_to_vk(b"RTRN"), 0);
-        assert_eq!(x11_keysym_to_vk(0x74), 0x54, "t");
-        assert_eq!(x11_keysym_to_vk(0x54), 0x54, "T");
-        assert_eq!(x11_keysym_to_vk(0xFF09), 0x09);
-        assert_eq!(x11_keysym_to_vk(0xFFBF), 0x71, "F2");
-        assert_eq!(x11_keysym_to_vk(0xFFE9), 0xA4);
-        assert_eq!(x11_keysym_to_vk(0x1234), 0);
     }
 }

@@ -1,33 +1,28 @@
 //! 全局键鼠输入（架构第 2 节）。
 //!
 //! - `gesture`：不认平台的手势状态机（纯函数）。
-//! - 各平台的监听放在自己的文件里，用 `cfg` 选：Windows 是 `win32.rs`，macOS 是 `macos.rs`（CGEventTap），
-//!   Linux 是 `linux.rs`（X11，XInput2 + XTest）；macOS 和 Linux 是实验版，没在真机上测过。别的系统用 `stub.rs`。
-//! - `keymap`：macOS、X11 的按键换成 Windows 键码（纯函数，每个平台都测）。
+//! - 各平台的监听放在自己的文件里，用 `cfg` 选：Windows 是 `win32.rs`，macOS 是 `macos.rs`（CGEventTap，实验版，
+//!   没在真机上测过）。别的系统（包括 Linux，3.1 起不再支持）用 `stub.rs`。
+//! - `keymap`：macOS 的按键换成 Windows 键码（纯函数，每个平台都测）。
 //! - 对外只有 `start` 和 `InputHandle`：启动后监听跑在自己的线程上，要画的东西（`Emit`）交给传进来的 `Sink`，
 //!   设置和开关通过 `InputHandle::send` 送进去。
 
 pub mod gesture;
 pub mod keymap;
-#[cfg(target_os = "linux")]
-mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "macos")))]
 mod stub;
 #[cfg(windows)]
 mod win32;
 
-#[cfg(target_os = "linux")]
-use linux as platform;
 #[cfg(target_os = "macos")]
 use macos as platform;
-#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use stub as platform;
 #[cfg(windows)]
 use win32 as platform;
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -44,10 +39,7 @@ fn unix_ms() -> u64 {
 }
 
 /// 平台层收到一个真实（不是自己回放的）键鼠事件时调用。
-#[cfg_attr(
-    not(any(windows, target_os = "macos", target_os = "linux")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn touch() {
     LAST_INPUT_MS.store(unix_ms(), Ordering::Relaxed);
 }
@@ -56,10 +48,7 @@ fn touch() {
 static CURSOR: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// 平台层收到真实的鼠标移动时调用。
-#[cfg_attr(
-    not(any(windows, target_os = "macos", target_os = "linux")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn set_cursor(x: i32, y: i32) {
     CURSOR.store(
         (u64::from(x as u32) << 32) | u64::from(y as u32),
@@ -73,19 +62,6 @@ pub fn cursor() -> Option<(i32, i32)> {
         u64::MAX => None,
         v => Some(((v >> 32) as u32 as i32, v as u32 as i32)),
     }
-}
-
-/// 监听起来了但有问题时给用户看的提示（Linux：有组合键被窗口管理器占着，抓不到）。
-static WARNING: Mutex<Option<String>> = Mutex::new(None);
-
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn set_warning(w: Option<String>) {
-    *WARNING.lock().expect("提示锁没有中毒") = w;
-}
-
-/// 现在的提示；没有问题时是 None。
-pub fn warning() -> Option<String> {
-    WARNING.lock().expect("提示锁没有中毒").clone()
 }
 
 /// 多久没碰键鼠了；平台层还没报告过输入时返回 None。

@@ -342,7 +342,7 @@ fn trigger_or(raw: Option<&Value>, default: TriggerKey) -> TriggerKey {
         return default;
     };
     match t {
-        // macOS 和 X11 拦不住 Caps Lock 的切换，只有 Windows 提供（同 lolPing）。
+        // macOS 拦不住 Caps Lock 的切换，只有 Windows 提供（同 lolPing）。
         TriggerKey::Named(NamedTrigger::CapsLock) if !cfg!(windows) => default,
         TriggerKey::Custom { vk }
             if !is_vk(vk) || UNSAFE_TRIGGER_VKS.contains(&vk) || MODIFIER_VKS.contains(&vk) =>

@@ -58,7 +58,7 @@ pub fn run() {
         }));
     }
     builder
-        // 开机启动（Windows 注册表 Run、macOS 登录项、Linux 自启动目录）；只在 Rust 侧用，不给前端权限。
+        // 开机启动（Windows 注册表 Run、macOS 登录项）；只在 Rust 侧用，不给前端权限。
         // 自动更新：只在 Rust 侧用（update.rs），不给前端权限；公钥和地址在 tauri.conf.json 的 plugins.updater。
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
@@ -263,7 +263,6 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 team::refresh_presence(&presence);
                 team::watch(&presence);
-                api::watch_status(&presence);
                 std::thread::sleep(Duration::from_secs(5));
             }
         })?;
