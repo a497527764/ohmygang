@@ -483,7 +483,7 @@ p .tip {
   font-weight: 400;
   line-height: 1.5;
   letter-spacing: 0;
-  white-space: normal;
+  white-space: pre-line; /* 说明文字里的换行照样换行（中继的逐个状态） */
   opacity: 0;
   visibility: hidden;
   pointer-events: none;

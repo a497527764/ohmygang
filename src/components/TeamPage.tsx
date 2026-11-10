@@ -13,6 +13,7 @@ import {
   teamRename,
   teamView,
   type Member,
+  type Relay,
   type Settings,
   type TeamView,
 } from "../api";
@@ -107,14 +108,30 @@ export function TeamPage({ settings, onSettings }: Props) {
           <Switch label="允许互联网" checked={settings.allowInternet} onChange={(allowInternet) => onSettings({ allowInternet })} />
         </Row>
         <p className="net-status">
-          {settings.allowInternet
-            ? `中继：${view.relaysOk} / ${view.relaysTotal} 个已连接`
-            : "只用局域网"}
+          {settings.allowInternet ? (
+            <>
+              {`中继：${view.relaysOk} / ${view.relaysTotal} 个已连接`}
+              {view.relays.length > 0 && <Tip text={relayLines(view.relays)} />}
+            </>
+          ) : (
+            "只用局域网"
+          )}
           {view.lanDegraded && <span className="warn-text">　局域网端口被别的程序占了，只能经中继联系</span>}
         </p>
       </section>
     </div>
   );
+}
+
+const RELAY_STATE: Record<Relay["state"], string> = { ok: "已连接", connecting: "连接中", cooling: "被限速", retired: "不再使用" };
+
+/** 每个中继一行：状态、发出的事件有多少从它那里回来了、最近一次多久回来。 */
+function relayLines(relays: Relay[]): string {
+  const lines = relays.map((r) => {
+    const echo = r.echoPct === null ? "还没发过" : `回显 ${r.echoPct}%${r.echoMs === null ? "" : `，${r.echoMs} 毫秒`}`;
+    return `${r.host}：${RELAY_STATE[r.state]}，${echo}`;
+  });
+  return ["发出的事件有多少从中继回到自己这里（最近 50 个）：", ...lines].join("\n");
 }
 
 function NoTeam({ busy, onCreate, onJoin }: { busy: boolean; onCreate: (t: string) => void; onJoin: (c: string) => void }) {

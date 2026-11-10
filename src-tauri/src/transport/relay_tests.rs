@@ -110,6 +110,179 @@ async fn missing_echo_reconnects() {
     );
 }
 
+/// 3.2.0-M10（P7）：真实公共中继上的实测，手动跑（要联网，约 5 分钟）：
+/// `cargo test --lib real_relays_probe -- --ignored --nocapture`
+///
+/// A 用正常的连接池发给全部默认中继：每 400 毫秒一个 1150 字节的探测包（像说话时的语音帧），说 30 秒停 15 秒，共 6 段。
+/// B 对每个中继各开一个只连它的连接池，记下每个探测包从每个中继到达的时间，所以「只发其中几个」能从同一次运行里算出来：
+/// 前 2 段之后按 A 的回显成功率挑 3 个，后 4 段比较「全发」和「只发这 3 个」各收到多少、多快。
+/// 挑定的 3 个在后 4 段里不换（真要改时掉线会换下一个），所以「只发 3 个」的数字偏保守。房间编号是随机的，不碰真队伍。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "连真实的公共中继，手动跑"]
+async fn real_relays_probe() {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    const PER_BURST: u32 = 75;
+    const BURSTS: u32 = 6;
+    const WARMUP: u32 = 2;
+    let urls: Vec<String> = crate::settings2::DEFAULT_RELAYS
+        .iter()
+        .map(|u| u.to_string())
+        .collect();
+    let room: RoomId = crate::crypto::random_bytes::<16>().unwrap();
+    let (a, _a_in) = RelayPool::start(urls.clone(), vec![room], RelayConfig::default());
+    let arrivals: Arc<Mutex<HashMap<(usize, u32), Instant>>> = Arc::default();
+    let mut listeners = Vec::new();
+    for (i, url) in urls.iter().enumerate() {
+        let (b, mut inbox) =
+            RelayPool::start(vec![url.clone()], vec![room], RelayConfig::default());
+        let arrivals = arrivals.clone();
+        tokio::spawn(async move {
+            while let Some(p) = inbox.recv().await {
+                if let Some(seq) = p.packet.get(..4).and_then(|b| b.try_into().ok()) {
+                    arrivals
+                        .lock()
+                        .unwrap()
+                        .entry((i, u32::from_le_bytes(seq)))
+                        .or_insert_with(Instant::now);
+                }
+            }
+        });
+        listeners.push(b);
+    }
+    for _ in 0..40 {
+        if a.status()
+            .iter()
+            .filter(|r| r.state == RelayState::Ok)
+            .count()
+            >= urls.len() / 2
+        {
+            break;
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+    sleep(Duration::from_secs(3)).await; // 让 B 的订阅都发出去
+    let connected = |h: &RelayHandle| {
+        h.status()
+            .iter()
+            .filter(|r| r.state == RelayState::Ok)
+            .count()
+    };
+    println!(
+        "A 连上 {} / {} 个；B 连上 {} 个",
+        connected(&a),
+        urls.len(),
+        listeners.iter().map(connected).sum::<usize>()
+    );
+
+    let mut sent_at: HashMap<u32, Instant> = HashMap::new();
+    let mut best: Vec<usize> = Vec::new();
+    for burst in 0..BURSTS {
+        for k in 0..PER_BURST {
+            let seq = burst * PER_BURST + k;
+            let mut packet = seq.to_le_bytes().to_vec();
+            packet.resize(1150, 0x5a);
+            sent_at.insert(seq, Instant::now());
+            a.publish(room, packet, Priority::Live);
+            sleep(Duration::from_millis(400)).await;
+        }
+        if burst + 1 == WARMUP {
+            sleep(Duration::from_secs(5)).await; // 最后几个的回显
+            let s = a.status();
+            let mut order: Vec<usize> = (0..s.len())
+                .filter(|&i| s[i].state == RelayState::Ok)
+                .collect();
+            order.sort_by_key(|&i| {
+                (
+                    std::cmp::Reverse(s[i].echo_pct.unwrap_or(0)),
+                    s[i].last_echo_ms.unwrap_or(u64::MAX),
+                )
+            });
+            best = order.into_iter().take(3).collect();
+            println!("热身后 A 的回显：");
+            for r in &s {
+                println!(
+                    "  {:<40} {:?} 发 {} 回 {} 最近 {:?}% {:?} 毫秒",
+                    r.url, r.state, r.sent, r.echoed, r.echo_pct, r.last_echo_ms
+                );
+            }
+            println!(
+                "挑的 3 个：{:?}",
+                best.iter().map(|&i| urls[i].as_str()).collect::<Vec<_>>()
+            );
+        }
+        sleep(Duration::from_secs(15)).await;
+    }
+    sleep(Duration::from_secs(15)).await;
+
+    let arrivals = arrivals.lock().unwrap().clone();
+    let eval: Vec<u32> = (WARMUP * PER_BURST..BURSTS * PER_BURST).collect();
+    let delay = |set: &[usize], seq: u32| -> Option<u128> {
+        set.iter()
+            .filter_map(|&i| arrivals.get(&(i, seq)))
+            .min()
+            .map(|t| t.duration_since(sent_at[&seq]).as_millis())
+    };
+    let report = |name: &str, set: &[usize]| {
+        let mut d: Vec<u128> = eval.iter().filter_map(|&s| delay(set, s)).collect();
+        d.sort_unstable();
+        let pct = |p: usize| {
+            d.get((d.len() * p / 100).min(d.len().saturating_sub(1)))
+                .copied()
+                .unwrap_or(0)
+        };
+        println!(
+            "{name:<24} 收到 {:>3} / {} = {:>5.1}%  延迟中位 {:>4} 毫秒  95% {:>5} 毫秒  最慢 {:>5} 毫秒",
+            d.len(),
+            eval.len(),
+            d.len() as f64 * 100.0 / eval.len() as f64,
+            pct(50),
+            pct(95),
+            d.last().copied().unwrap_or(0)
+        );
+    };
+    let all: Vec<usize> = (0..urls.len()).collect();
+    println!("\n后 {} 段（{} 个探测包）：", BURSTS - WARMUP, eval.len());
+    report("全发", &all);
+    report("只发挑的 3 个", &best);
+    report("只发列表前 3 个", &[0, 1, 2]);
+    for (i, url) in urls.iter().enumerate() {
+        report(url.trim_start_matches("wss://"), &[i]);
+    }
+    let s = a.status();
+    println!("\n结束时 A 的回显：");
+    for r in &s {
+        println!(
+            "  {:<40} {:?} 发 {} 回 {} 最近 {:?}%",
+            r.url, r.state, r.sent, r.echoed, r.echo_pct
+        );
+    }
+}
+
+/// 回显统计：转发的中继回显 100%，只收不转发的中继超时断开后算 0%，发出的数都记着。
+#[tokio::test]
+async fn echo_success_is_counted_per_relay() {
+    let good = FakeRelay::start(Behavior::default()).await;
+    let silent = FakeRelay::start(Behavior {
+        silent: true,
+        ..Behavior::default()
+    })
+    .await;
+    let (a, _a_in) = start(&[&good.url, &silent.url], &[R1]);
+    assert!(wait_until(|| good.subscribers(&R1) == 1 && silent.subscribers(&R1) == 1).await);
+    assert_eq!(a.status()[0].echo_pct, None, "还没发过");
+
+    a.publish(R1, vec![1; 10], Priority::Live);
+    a.publish(R1, vec![2; 10], Priority::Live);
+    assert!(wait_until(|| a.status()[0].echoed == 2 && a.status()[1].echo_pct.is_some()).await);
+    let s = a.status();
+    assert_eq!((s[0].sent, s[0].echoed, s[0].echo_pct), (2, 2, Some(100)));
+    assert_eq!((s[1].sent, s[1].echoed, s[1].echo_pct), (2, 0, Some(0)));
+    assert!(s[0].last_echo_ms.is_some() && s[1].last_echo_ms.is_none());
+}
+
 #[tokio::test]
 async fn rate_limited_relay_cools_down_then_resumes() {
     let relay = FakeRelay::start(Behavior {

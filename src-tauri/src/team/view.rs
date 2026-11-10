@@ -12,7 +12,7 @@ use crate::node::Outbox;
 use crate::protocol::body::{Avatar, image_mime};
 use crate::protocol::live::Status;
 use crate::sync::path::PathKind;
-use crate::transport::relay::RelayState;
+use crate::transport::relay::{RelayHealth, RelayState};
 
 fn base64(b: &[u8]) -> String {
     use base64::Engine;
@@ -108,6 +108,34 @@ pub struct TeamView {
     /// 连着几个中继、一共几个；关了互联网时都是 0。
     pub relays_ok: usize,
     pub relays_total: usize,
+    /// 每个中继的连接状态和回显统计（3.2.0），队伍页「中继」那一行的说明里显示。
+    pub relays: Vec<RelayDto>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayDto {
+    /// 地址去掉 `wss://`。
+    pub host: String,
+    /// ok、connecting、cooling、retired。
+    pub state: &'static str,
+    /// 最近 50 个事件的回显成功率；还没发过时是 null。
+    pub echo_pct: Option<u8>,
+    pub echo_ms: Option<u64>,
+}
+
+fn relay_dto(r: &RelayHealth) -> RelayDto {
+    RelayDto {
+        host: r.url.strip_prefix("wss://").unwrap_or(&r.url).to_string(),
+        state: match r.state {
+            RelayState::Ok => "ok",
+            RelayState::Connecting => "connecting",
+            RelayState::Cooling => "cooling",
+            RelayState::Retired => "retired",
+        },
+        echo_pct: r.echo_pct,
+        echo_ms: r.last_echo_ms,
+    }
 }
 
 fn me_dto(v: &IdentityView) -> MeDto {
@@ -210,6 +238,7 @@ pub async fn view(app: &AppHandle) -> Result<TeamView, String> {
         lan_degraded: lan.degraded,
         relays_ok: relays.iter().filter(|r| r.state == RelayState::Ok).count(),
         relays_total: relays.len(),
+        relays: relays.iter().map(relay_dto).collect(),
     })
 }
 

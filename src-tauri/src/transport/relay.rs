@@ -14,6 +14,8 @@
 //!    - `OK` 或 `CLOSED` 回 `blocked` 等：本次运行不再使用这个中继；
 //!    - 网络恢复时节点调用 `reconnect_now`，正在等待重连的连接立刻重连，退避从头算。
 //! 6. 状态表放在共享的 `Mutex` 里，连接任务写、调度任务和 `status()` 读；中继变为可用时唤醒调度任务。
+//! 7. 回显统计（3.2.0）：每个中继记发出并等回显的事件数、收到回显的数、最近 50 个的回显成功率和最近一次的往返时间，
+//!    队伍页「中继」那一行的说明里能看到。断线时还没等到的算没回显。
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -36,6 +38,8 @@ use crate::crypto::RoomId;
 const SUB_ID: &str = "hs";
 const DEDUP_CAP: usize = 4096;
 const MAX_PENDING_ECHOES: usize = 64;
+/// 回显成功率看最近这么多个事件。
+const RECENT_ECHOES: usize = 50;
 
 #[derive(Clone, Debug)]
 pub struct RelayConfig {
@@ -83,6 +87,12 @@ pub struct RelayHealth {
     pub state: RelayState,
     /// 最近一次回显的往返时间（毫秒）。
     pub last_echo_ms: Option<u64>,
+    /// 本次运行发出并等回显的事件数、其中收到回显的数（3.2.0）。
+    pub sent: u64,
+    pub echoed: u64,
+    /// 最近 `RECENT_ECHOES` 个有结果的事件里收到回显的百分比；还没有结果时是 None。
+    /// 没回显的算法：25 秒没来、被中继拒收、连接断了还没来。
+    pub echo_pct: Option<u8>,
 }
 
 /// 从中继收到的包。
@@ -150,6 +160,9 @@ impl RelayPool {
                     url: url.clone(),
                     state: RelayState::Connecting,
                     last_echo_ms: None,
+                    sent: 0,
+                    echoed: 0,
+                    echo_pct: None,
                 })
                 .collect(),
         ));
@@ -173,6 +186,7 @@ impl RelayPool {
                 wake: wake.clone(),
                 rooms: rooms_rx.clone(),
                 inbound: from_tx.clone(),
+                recent: VecDeque::new(),
             };
             tasks.push(tokio::spawn(conn.run(rx)));
         }
@@ -372,15 +386,23 @@ struct Connection {
     wake: Arc<Notify>,
     rooms: watch::Receiver<Vec<RoomId>>,
     inbound: mpsc::Sender<FromRelay>,
+    /// 最近有结果的事件收没收到回显（跨重连保留）。
+    recent: VecDeque<bool>,
 }
 
 impl Connection {
     async fn run(mut self, mut out: mpsc::Receiver<ToRelay>) {
         let (min, max) = self.cfg.backoff;
         let mut backoff = min;
+        let mut pending = VecDeque::new();
         loop {
             self.set(RelayState::Connecting);
-            match self.session(&mut out).await {
+            let end = self.session(&mut out, &mut pending).await;
+            // 连接断了还没等到的回显不会再来了
+            for _ in pending.drain(..) {
+                self.outcome(false, None);
+            }
+            match end {
                 End::Retire => {
                     self.set(RelayState::Retired);
                     return;
@@ -418,7 +440,12 @@ impl Connection {
         Some(req_message(SUB_ID, &rooms, since))
     }
 
-    async fn session(&mut self, out: &mut mpsc::Receiver<ToRelay>) -> End {
+    /// `pending`：发出去还在等回显的事件；由 `run` 持有，连接结束时剩下的算没回显。
+    async fn session(
+        &mut self,
+        out: &mut mpsc::Receiver<ToRelay>,
+        pending: &mut VecDeque<(String, Instant)>,
+    ) -> End {
         let ws_cfg = WebSocketConfig::default()
             .max_message_size(Some(256 << 10))
             .max_frame_size(Some(256 << 10));
@@ -436,7 +463,6 @@ impl Connection {
         self.set(RelayState::Ok);
 
         let mut healthy = false;
-        let mut pending: VecDeque<(String, Instant)> = VecDeque::new();
         let mut cooling_until: Option<Instant> = None;
         let mut check =
             tokio::time::interval((self.cfg.echo_timeout / 4).min(Duration::from_secs(1)));
@@ -462,9 +488,10 @@ impl Connection {
                     if sink.send(Message::Text(text)).await.is_err() {
                         return End::Reconnect { healthy };
                     }
-                    // 判断超时只看最早的那个；积压太多时不再记新的
+                    // 判断超时只看最早的那个；积压太多时不再记新的（也不算进回显成功率）
                     if pending.len() < MAX_PENDING_ECHOES {
                         pending.push_back((id, Instant::now()));
+                        self.count_sent();
                     }
                 }
                 msg = source.next() => {
@@ -479,7 +506,7 @@ impl Connection {
                         RelayMsg::Event { event_id, pubkey, room_id, packet, .. } => {
                             if let Some(pos) = pending.iter().position(|(id, _)| *id == event_id) {
                                 if let Some((_, sent)) = pending.remove(pos) {
-                                    self.echoed(sent.elapsed());
+                                    self.outcome(true, Some(sent.elapsed()));
                                 }
                                 healthy = true;
                             }
@@ -487,7 +514,12 @@ impl Connection {
                         }
                         RelayMsg::Ok { event_id, accepted, message } => {
                             if !accepted || message.starts_with("duplicate:") {
-                                pending.retain(|(id, _)| *id != event_id); // 不会有回显
+                                // 不会有回显：拒收的算没回显，重复的不算
+                                let before = pending.len();
+                                pending.retain(|(id, _)| *id != event_id);
+                                if !accepted && pending.len() < before {
+                                    self.outcome(false, None);
+                                }
                             }
                             if !accepted {
                                 match classify_rejection(&message) {
@@ -523,9 +555,28 @@ impl Connection {
         }
     }
 
-    fn echoed(&self, rtt: Duration) {
+    fn count_sent(&self) {
         if let Ok(mut h) = self.health.lock() {
-            h[self.index].last_echo_ms = Some(rtt.as_millis() as u64);
+            h[self.index].sent += 1;
+        }
+    }
+
+    /// 一个等回显的事件有了结果：收到了（带往返时间）或者不会来了。
+    fn outcome(&mut self, echoed: bool, rtt: Option<Duration>) {
+        if self.recent.len() >= RECENT_ECHOES {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(echoed);
+        let ok = self.recent.iter().filter(|e| **e).count();
+        if let Ok(mut h) = self.health.lock() {
+            let me = &mut h[self.index];
+            me.echo_pct = Some((ok * 100 / self.recent.len()) as u8);
+            if echoed {
+                me.echoed += 1;
+            }
+            if let Some(rtt) = rtt {
+                me.last_echo_ms = Some(rtt.as_millis() as u64);
+            }
         }
     }
 }

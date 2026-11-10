@@ -157,6 +157,16 @@ export interface TeamView {
   lanDegraded: boolean;
   relaysOk: number;
   relaysTotal: number;
+  relays: Relay[];
+}
+
+/** 一个中继的连接状态和回显统计（3.2.0）。 */
+export interface Relay {
+  host: string;
+  state: "ok" | "connecting" | "cooling" | "retired";
+  /** 最近 50 个事件的回显成功率；还没发过时是 null。 */
+  echoPct: number | null;
+  echoMs: number | null;
 }
 
 export const teamView = (): Promise<TeamView> => invoke("team_view");
