@@ -90,7 +90,11 @@ async fn same_event_from_two_relays_arrives_once() {
         recv_within(&mut b_in, 500).await.is_none(),
         "第二个中继来的同一事件要去重"
     );
-    assert_eq!((r1.accepted(), r2.accepted()), (1, 1), "一个包发给所有中继");
+    assert_eq!(
+        (r1.accepted(), r2.accepted()),
+        (1, 1),
+        "还在量回显的中继都发"
+    );
 }
 
 #[tokio::test]
@@ -113,7 +117,7 @@ async fn missing_echo_reconnects() {
 /// 3.2.0-M10（P7）：真实公共中继上的实测，手动跑（要联网，约 5 分钟）：
 /// `cargo test --lib real_relays_probe -- --ignored --nocapture`
 ///
-/// A 用正常的连接池发给全部默认中继：每 400 毫秒一个 1150 字节的探测包（像说话时的语音帧），说 30 秒停 15 秒，共 6 段。
+/// A 的连接池设成发给全部默认中继（正式的只发最好的 3 个）：每 400 毫秒一个 1150 字节的探测包（像说话时的语音帧），说 30 秒停 15 秒，共 6 段。
 /// B 对每个中继各开一个只连它的连接池，记下每个探测包从每个中继到达的时间，所以「只发其中几个」能从同一次运行里算出来：
 /// 前 2 段之后按 A 的回显成功率挑 3 个，后 4 段比较「全发」和「只发这 3 个」各收到多少、多快。
 /// 挑定的 3 个在后 4 段里不换（真要改时掉线会换下一个），所以「只发 3 个」的数字偏保守。房间编号是随机的，不碰真队伍。
@@ -132,7 +136,14 @@ async fn real_relays_probe() {
         .map(|u| u.to_string())
         .collect();
     let room: RoomId = crate::crypto::random_bytes::<16>().unwrap();
-    let (a, _a_in) = RelayPool::start(urls.clone(), vec![room], RelayConfig::default());
+    let (a, _a_in) = RelayPool::start(
+        urls.clone(),
+        vec![room],
+        RelayConfig {
+            fanout: usize::MAX, // 全发，「只发其中几个」由 B 那边逐个中继的到达时间算
+            ..RelayConfig::default()
+        },
+    );
     let arrivals: Arc<Mutex<HashMap<(usize, u32), Instant>>> = Arc::default();
     let mut listeners = Vec::new();
     for (i, url) in urls.iter().enumerate() {

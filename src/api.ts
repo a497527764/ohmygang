@@ -166,7 +166,10 @@ export interface Relay {
   state: "ok" | "connecting" | "cooling" | "retired";
   /** 最近 50 个事件的回显成功率；还没发过时是 null。 */
   echoPct: number | null;
+  /** 平均回显往返时间（毫秒）。 */
   echoMs: number | null;
+  /** 现在的包发给它（只发回显最好的 3 个）。 */
+  sending: boolean;
 }
 
 export const teamView = (): Promise<TeamView> => invoke("team_view");

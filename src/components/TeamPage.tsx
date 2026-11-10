@@ -125,13 +125,13 @@ export function TeamPage({ settings, onSettings }: Props) {
 
 const RELAY_STATE: Record<Relay["state"], string> = { ok: "已连接", connecting: "连接中", cooling: "被限速", retired: "不再使用" };
 
-/** 每个中继一行：状态、发出的事件有多少从它那里回来了、最近一次多久回来。 */
+/** 每个中继一行：正在发给它的打 ●，状态、发出的事件有多少从它那里回来了、平均多久回来。 */
 function relayLines(relays: Relay[]): string {
   const lines = relays.map((r) => {
-    const echo = r.echoPct === null ? "还没发过" : `回显 ${r.echoPct}%${r.echoMs === null ? "" : `，${r.echoMs} 毫秒`}`;
-    return `${r.host}：${RELAY_STATE[r.state]}，${echo}`;
+    const echo = r.echoPct === null ? "还没发过" : `回显 ${r.echoPct}%${r.echoMs === null ? "" : `，平均 ${r.echoMs} 毫秒`}`;
+    return `${r.sending ? "●" : "○"} ${r.host}：${RELAY_STATE[r.state]}，${echo}`;
   });
-  return ["发出的事件有多少从中继回到自己这里（最近 50 个）：", ...lines].join("\n");
+  return ["● 正在发给它（只发回显最好的 3 个，收照常全听）", "回显：发出的事件有多少从中继回到自己这里（最近 50 个）", ...lines].join("\n");
 }
 
 function NoTeam({ busy, onCreate, onJoin }: { busy: boolean; onCreate: (t: string) => void; onJoin: (c: string) => void }) {

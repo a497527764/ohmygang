@@ -121,7 +121,10 @@ pub struct RelayDto {
     pub state: &'static str,
     /// 最近 50 个事件的回显成功率；还没发过时是 null。
     pub echo_pct: Option<u8>,
+    /// 平均回显往返时间（毫秒）。
     pub echo_ms: Option<u64>,
+    /// 现在的包发给它（只发回显最好的 3 个）。
+    pub sending: bool,
 }
 
 fn relay_dto(r: &RelayHealth) -> RelayDto {
@@ -134,7 +137,8 @@ fn relay_dto(r: &RelayHealth) -> RelayDto {
             RelayState::Retired => "retired",
         },
         echo_pct: r.echo_pct,
-        echo_ms: r.last_echo_ms,
+        echo_ms: r.echo_avg_ms,
+        sending: r.sending,
     }
 }
 

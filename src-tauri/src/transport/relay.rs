@@ -4,7 +4,10 @@
 //! 1. 一个调度任务 + 每个中继一个连接任务。调度任务持有发送预算、每个房间的 Nostr 密钥和收包去重表；
 //!    连接任务只管一条 WebSocket：连接、订阅、收发、判断健康。`RelayHandle` 被丢弃时所有任务结束、连接断开。
 //! 2. 发包：`publish` 进入发送预算的优先级队列；有令牌且至少一个中继可用时取出，用该房间的密钥签成
-//!    Nostr 事件，发给所有可用中继（只扣一个令牌）。没有可用中继时包留在队列里等。
+//!    Nostr 事件，发给挑出来的几个可用中继（只扣一个令牌）。没有可用中继时包留在队列里等。
+//!    挑法（3.2.0，所有者看了实测定的，需求文档第 3 节）：还没发满 10 个的中继都发（刚启动时全发，先量出回显）；
+//!    其余的按回显成功率从高到低、一样时平均回显快的优先，凑够 3 个。掉线、被限速的不可用，自动由下一个顶上。
+//!    收照常全听：别人发到哪个中继都收得到。
 //! 3. 收包：同一个事件从多个中继来只交一次（最近 4096 个事件 id）；自己发的事件不交；总共每秒最多 200 个。
 //! 4. 订阅：连上后按当前房间列表发 `REQ`；房间列表变化时（`set_rooms`）所有连接重发 `REQ`，同名订阅会被替换。
 //! 5. 健康（沿用 lolPing）：
@@ -14,8 +17,8 @@
 //!    - `OK` 或 `CLOSED` 回 `blocked` 等：本次运行不再使用这个中继；
 //!    - 网络恢复时节点调用 `reconnect_now`，正在等待重连的连接立刻重连，退避从头算。
 //! 6. 状态表放在共享的 `Mutex` 里，连接任务写、调度任务和 `status()` 读；中继变为可用时唤醒调度任务。
-//! 7. 回显统计（3.2.0）：每个中继记发出并等回显的事件数、收到回显的数、最近 50 个的回显成功率和最近一次的往返时间，
-//!    队伍页「中继」那一行的说明里能看到。断线时还没等到的算没回显。
+//! 7. 回显统计（3.2.0）：每个中继记发出并等回显的事件数、收到回显的数、最近 50 个的回显成功率和平均往返时间，
+//!    队伍页「中继」那一行的说明里能看到（也标出正在发给哪几个）。断线时还没等到的算没回显。
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -40,6 +43,8 @@ const DEDUP_CAP: usize = 4096;
 const MAX_PENDING_ECHOES: usize = 64;
 /// 回显成功率看最近这么多个事件。
 const RECENT_ECHOES: usize = 50;
+/// 一个中继发满这么多个事件之前一直发给它，好量出它的回显。
+const LEARN_EVENTS: u64 = 10;
 
 #[derive(Clone, Debug)]
 pub struct RelayConfig {
@@ -54,6 +59,8 @@ pub struct RelayConfig {
     pub since_back: Duration,
     /// 每秒最多交给节点多少个包。
     pub recv_per_sec: u32,
+    /// 量完回显以后每个包发给几个中继（见文件头第 2 条）。
+    pub fanout: usize,
 }
 
 impl Default for RelayConfig {
@@ -65,6 +72,7 @@ impl Default for RelayConfig {
             connect_timeout: Duration::from_secs(10),
             since_back: Duration::from_secs(10),
             recv_per_sec: 200,
+            fanout: 3,
         }
     }
 }
@@ -93,6 +101,28 @@ pub struct RelayHealth {
     /// 最近 `RECENT_ECHOES` 个有结果的事件里收到回显的百分比；还没有结果时是 None。
     /// 没回显的算法：25 秒没来、被中继拒收、连接断了还没来。
     pub echo_pct: Option<u8>,
+    /// 回显往返时间的平滑平均（毫秒，新的占 1/8）。
+    pub echo_avg_ms: Option<u64>,
+    /// 现在的包发给它。
+    pub sending: bool,
+}
+
+/// 这次发给哪几个中继（见文件头第 2 条）：可用的里面，还没发满 `LEARN_EVENTS` 个的都发；
+/// 其余的按回显成功率从高到低、平均回显从快到慢排，补到 `fanout` 个。
+fn pick_targets(h: &[RelayHealth], fanout: usize) -> Vec<usize> {
+    let usable = (0..h.len()).filter(|&i| h[i].state == RelayState::Ok);
+    let (mut out, mut known): (Vec<usize>, Vec<usize>) =
+        usable.partition(|&i| h[i].sent < LEARN_EVENTS);
+    known.sort_by_key(|&i| {
+        (
+            std::cmp::Reverse(h[i].echo_pct.unwrap_or(0)),
+            h[i].echo_avg_ms.unwrap_or(u64::MAX),
+        )
+    });
+    let room = fanout.saturating_sub(out.len());
+    out.extend(known.into_iter().take(room));
+    out.sort_unstable();
+    out
 }
 
 /// 从中继收到的包。
@@ -163,6 +193,8 @@ impl RelayPool {
                     sent: 0,
                     echoed: 0,
                     echo_pct: None,
+                    echo_avg_ms: None,
+                    sending: false,
                 })
                 .collect(),
         ));
@@ -318,11 +350,23 @@ impl Scheduler {
             .collect()
     }
 
+    /// 挑这次发给哪几个中继，顺便在状态表里标出来（队伍页显示）。
+    fn targets(&self) -> Vec<usize> {
+        let Ok(mut h) = self.health.lock() else {
+            return Vec::new();
+        };
+        let targets = pick_targets(&h, self.cfg.fanout);
+        for (i, r) in h.iter_mut().enumerate() {
+            r.sending = targets.contains(&i);
+        }
+        targets
+    }
+
     /// 有令牌、有可用中继时把队列里的包发出去。
     fn flush(&mut self) {
         loop {
-            let usable = self.usable();
-            if usable.is_empty() {
+            let targets = self.targets();
+            if targets.is_empty() {
                 return;
             }
             let now = self.now_ms();
@@ -336,7 +380,7 @@ impl Scheduler {
                 continue;
             };
             let text = Utf8Bytes::from(event_message(&event));
-            for i in usable {
+            for i in targets {
                 let _ = self.relays[i].try_send((event.id.clone(), text.clone()));
             }
         }
@@ -575,8 +619,68 @@ impl Connection {
                 me.echoed += 1;
             }
             if let Some(rtt) = rtt {
-                me.last_echo_ms = Some(rtt.as_millis() as u64);
+                let ms = rtt.as_millis() as u64;
+                me.last_echo_ms = Some(ms);
+                me.echo_avg_ms = Some(me.echo_avg_ms.map_or(ms, |avg| (avg * 7 + ms) / 8));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn relay(state: RelayState, sent: u64, pct: u8, avg: u64) -> RelayHealth {
+        RelayHealth {
+            url: String::new(),
+            state,
+            last_echo_ms: Some(avg),
+            sent,
+            echoed: sent,
+            echo_pct: Some(pct),
+            echo_avg_ms: Some(avg),
+            sending: false,
+        }
+    }
+
+    #[test]
+    fn relays_still_being_measured_all_get_the_packet() {
+        let h: Vec<_> = (0..8).map(|i| relay(RelayState::Ok, i, 100, 300)).collect();
+        assert_eq!(pick_targets(&h, 3), (0..8).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn measured_relays_are_ranked_by_echo_then_speed() {
+        let h = vec![
+            relay(RelayState::Ok, 50, 100, 450),
+            relay(RelayState::Ok, 50, 90, 100), // 回显差：快也排后面
+            relay(RelayState::Ok, 50, 100, 200),
+            relay(RelayState::Ok, 50, 100, 380),
+            relay(RelayState::Cooling, 50, 100, 50), // 被限速：不发
+            relay(RelayState::Ok, 50, 100, 600),
+        ];
+        assert_eq!(pick_targets(&h, 3), vec![0, 2, 3]);
+        // 最好的掉线了：下一个顶上
+        let mut h = h;
+        h[2].state = RelayState::Connecting;
+        assert_eq!(pick_targets(&h, 3), vec![0, 3, 5]);
+    }
+
+    #[test]
+    fn a_newly_connected_relay_is_measured_alongside_the_best() {
+        let mut h: Vec<_> = (0..5)
+            .map(|i| relay(RelayState::Ok, 50, 100, 100 + i as u64))
+            .collect();
+        h.push(relay(RelayState::Ok, 0, 0, 0));
+        h[5].echo_pct = None;
+        h[5].echo_avg_ms = None;
+        assert_eq!(pick_targets(&h, 3), vec![0, 1, 5]);
+        assert_eq!(
+            pick_targets(&h[..2], 3),
+            vec![0, 1],
+            "可用的不够 3 个就全发"
+        );
+        assert!(pick_targets(&[], 3).is_empty());
     }
 }
