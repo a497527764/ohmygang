@@ -51,7 +51,7 @@ cd src-tauri && cargo test     # Rust 测试
 pnpm release                   # 本机打 Windows 安装包（不带更新签名，只用来自己试）
 ```
 
-设计文档：[3.1.1 需求](docs/v3.1/requirements.md)和[计划](docs/v3.1/plan.md)、[3.0 计划](docs/v3/plan.md)、[2.0 需求](docs/v2/requirements.md)、[2.0 架构](docs/v2/architecture.md)。
+设计文档：[3.2.0 需求](docs/v3.2/requirements.md)和[计划](docs/v3.2/plan.md)、[3.1.1 需求](docs/v3.1/requirements.md)和[计划](docs/v3.1/plan.md)、[3.0 计划](docs/v3/plan.md)、[2.0 需求](docs/v2/requirements.md)、[2.0 架构](docs/v2/architecture.md)。
 
 ## 许可和致谢
 
