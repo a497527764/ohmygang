@@ -44,6 +44,14 @@ cpal = "0.18"
 opus-rs = "0.1"
 
 
+# 只有 input/win32.rs、input/macos.rs 能写 unsafe（这两个文件开头放开了），别处写了编译不过（3.2.0）
+[lints.rust]
+unsafe_code = "deny"
+
+# 那两个文件里每个 unsafe 块前面都要有 `// SAFETY:` 写明为什么成立
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

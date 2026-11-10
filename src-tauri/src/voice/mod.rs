@@ -266,7 +266,7 @@ impl Runner {
                 frames,
                 end,
             } => {
-                if !self.config.enabled {
+                if !self.config.enabled || !frames_in_range(first, frames.len()) {
                     return;
                 }
                 let key = (from, stream);
@@ -647,6 +647,12 @@ fn encode(encoder: &mut OpusEncoder, pcm: &[f32]) -> Option<Vec<u8>> {
     Some(buf[..n].to_vec())
 }
 
+/// 队友的一段话最多 30 秒：小帧序号超出 `MAX_RECORDED` 的是坏包（3.2.0）。不拦的话序号相加会溢出，
+/// 两个序号隔得很远的包还会让抖动缓冲把中间的空档一个个当「丢了」补下去，这段话就一直放不完。
+fn frames_in_range(first: u32, count: usize) -> bool {
+    first as usize + count <= MAX_RECORDED
+}
+
 fn add(sum: &mut [f32], pcm: &[f32], volume: f32) {
     for (s, p) in sum.iter_mut().zip(pcm) {
         *s += p * volume;
@@ -711,5 +717,68 @@ mod tests {
         assert_eq!(frames, 50);
         let input: f64 = tone.iter().map(|s| f64::from(*s).powi(2)).sum();
         assert!(energy / input > 0.5, "解码后的能量 {:.2}", energy / input);
+    }
+
+    #[test]
+    fn frame_numbers_past_a_talk_are_refused() {
+        assert!(frames_in_range(0, 20));
+        assert!(frames_in_range((MAX_RECORDED - 20) as u32, 20));
+        assert!(!frames_in_range((MAX_RECORDED - 19) as u32, 20));
+        assert!(!frames_in_range(u32::MAX, 20));
+    }
+
+    /// 队友发来的语音帧只验了签名，内容可能是坏的：每种帧头、随机字节、改坏的真帧，解码都不能 panic
+    /// （正式版 panic 直接退出）。
+    #[test]
+    fn malformed_voice_frames_do_not_panic_the_decoder() {
+        let mut enc = OpusEncoder::new(RATE as i32, 1, Application::Voip).unwrap();
+        enc.bitrate_bps = BITRATE;
+        enc.use_cbr = true;
+        let real: Vec<Vec<u8>> = (0..10)
+            .map(|k| {
+                let pcm: Vec<f32> = (0..FRAME)
+                    .map(|i| ((i + k * FRAME) as f32 * 0.12).sin() * 0.5)
+                    .collect();
+                encode(&mut enc, &pcm).unwrap()
+            })
+            .collect();
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut inputs: Vec<Vec<u8>> = Vec::new();
+        // 帧头（TOC）的 32 种配置 × 单双声道 × 4 种帧数写法，后面跟随机内容，长短都有
+        for toc in 0..=255u8 {
+            for len in [1usize, 2, 3, 5, 40, 120, 400] {
+                let mut p = vec![toc];
+                p.extend((1..len).map(|_| rnd() as u8));
+                inputs.push(p);
+            }
+        }
+        for _ in 0..5000 {
+            let len = (rnd() % 401) as usize;
+            inputs.push((0..len).map(|_| rnd() as u8).collect());
+        }
+        for f in &real {
+            for _ in 0..300 {
+                let mut p = f.clone();
+                let at = (rnd() as usize) % p.len();
+                p[at] ^= 1 << (rnd() % 8);
+                if rnd() % 3 == 0 {
+                    p.truncate((rnd() as usize) % p.len());
+                }
+                inputs.push(p);
+            }
+        }
+        // 同一个解码器一直用下去：坏帧留下的状态也不能让后面的帧出事
+        let mut dec = OpusDecoder::new(RATE as i32, 1).unwrap();
+        let mut out = vec![0f32; FRAME];
+        for p in &inputs {
+            let n = dec.decode(p, FRAME, &mut out).unwrap_or(0);
+            assert!(n <= FRAME, "{p:02x?} 解出 {n} 个样本，超过缓冲");
+        }
     }
 }

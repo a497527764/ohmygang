@@ -116,6 +116,31 @@ mod tests {
         );
     }
 
+    /// 事件内容（最多 1 KB）里藏着很深的嵌套或谎报的长度：解不出来，不爆栈、不按谎报的长度分配内存。
+    #[test]
+    fn deep_nesting_and_lying_lengths_do_not_decode() {
+        // {"zz": <value>}：不认识的字段要整个跳过
+        let in_unknown_field = |value: &[u8]| {
+            let mut b = vec![0xa1, 0x62, b'z', b'z'];
+            b.extend_from_slice(value);
+            b
+        };
+        let mut deep = vec![0x81; MAX_BODY_LEN];
+        deep.push(0x00);
+        assert_eq!(
+            decode::<ProfileBody>(&in_unknown_field(&deep)),
+            Err(BodyError)
+        );
+        for head in [0x5b, 0x7b, 0x9b, 0xbb] {
+            let mut lie = vec![head];
+            lie.extend([0xff; 8]);
+            assert_eq!(
+                decode::<ProfileBody>(&in_unknown_field(&lie)),
+                Err(BodyError)
+            );
+        }
+    }
+
     fn webp(len: usize) -> Vec<u8> {
         let mut b = b"RIFF\0\0\0\0WEBPVP8 ".to_vec();
         b.resize(len, 7);

@@ -417,6 +417,28 @@ mod tests {
         assert_eq!(check_sound(&big), Err(ImportError::Size));
     }
 
+    /// 队友发来的静态图只看文件头：截断在文件头任何位置的图都被拒，读头时不越界。
+    #[test]
+    fn truncated_headers_are_rejected() {
+        // 三种头各自刚好够读出宽高的长度，都是 64×64
+        let mut vp8 = b"RIFF\0\0\0\0WEBPVP8 \0\0\0\0\0\0\0\x9d\x01\x2a".to_vec();
+        vp8.extend_from_slice(&[64, 0, 64, 0]);
+        let mut vp8x = b"RIFF\0\0\0\0WEBPVP8X\0\0\0\0\0\0\0\0".to_vec();
+        vp8x.extend_from_slice(&[63, 0, 0, 63, 0, 0]);
+        let vp8l = webp(64, 64, 0);
+        for full in [&vp8, &vp8l, &vp8x] {
+            assert_eq!(check_still(full), Ok(()));
+            for len in 0..full.len() {
+                assert!(check_still(&full[..len]).is_err(), "截到 {len} 字节");
+                let _ = check_anim(&full[..len]);
+            }
+        }
+        for len in 0..10 {
+            assert!(check_anim(&b"GIF89a\x10\x00\x10\x00"[..len]).is_err());
+            let _ = sound_mime(&b"RIFF\0\0\0\0WAVE"[..len]);
+        }
+    }
+
     #[test]
     fn imports_are_stored_by_hash_and_served() {
         let d = dir();

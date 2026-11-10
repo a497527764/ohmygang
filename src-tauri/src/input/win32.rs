@@ -19,6 +19,8 @@
 //!    离开电脑看 `GetLastInputInfo`（系统记的最后一次输入），鼠标位置用 `GetCursorPos`，都不靠钩子。
 //!
 //! `unsafe` 只在这个文件里：都是 Win32 调用和钩子回调里对系统给的结构体指针的读取，每处写了为什么成立。
+//! 整个 crate 禁止 `unsafe`（Cargo.toml 的 `[lints.rust]`），只有这里和 `macos.rs` 放开（3.2.0）。
+#![allow(unsafe_code)]
 
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, Sender};

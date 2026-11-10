@@ -13,6 +13,8 @@
 //! 7. 没有全屏检查（Windows 才有），`game_check` 在这里不起作用；面板键的连发看门狗也关掉。
 //!
 //! `unsafe` 只在这个文件里：都是 CoreGraphics、CoreFoundation 的调用和回调参数的使用，每处写了为什么成立。
+//! 整个 crate 禁止 `unsafe`（Cargo.toml 的 `[lints.rust]`），只有这里和 `win32.rs` 放开（3.2.0）。
+#![allow(unsafe_code)]
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -430,11 +432,14 @@ fn to_physical(s: &mut TapState, p: CGPoint) -> (i32, i32) {
             unsafe {
                 let bounds = CGDisplayBounds(id);
                 let mode = CGDisplayCopyDisplayMode(id);
-                if mode.is_null() || bounds.size.width <= 0.0 {
+                if mode.is_null() {
                     return 1.0;
                 }
                 let pixels = CGDisplayModeGetPixelWidth(mode) as f64;
-                CGDisplayModeRelease(mode);
+                CGDisplayModeRelease(mode); // 先放掉再看宽度，宽度不对提前返回也不漏
+                if bounds.size.width <= 0.0 {
+                    return 1.0;
+                }
                 (pixels / bounds.size.width).max(1.0)
             }
         })

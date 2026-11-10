@@ -228,6 +228,38 @@ mod tests {
         assert_eq!(decode_frame(&unknown), None);
     }
 
+    /// 解密后的帧来自队友，内容可能是坏的：嵌套到包能装下的最深、谎报 2^64 那么长，都只是解不出来，
+    /// 不爆栈、不按谎报的长度分配内存。不认识的字段会被整个跳过，跳的时候要一层层走进去，所以坏内容放在那里。
+    #[test]
+    fn deep_nesting_and_lying_lengths_are_rejected() {
+        // {"L": {"zz": <value>}}
+        let in_unknown_field = |value: &[u8]| {
+            let mut b = vec![0xa1, 0x61, b'L', 0xa1, 0x62, b'z', b'z'];
+            b.extend_from_slice(value);
+            b
+        };
+        let mut deep = vec![0x81; MAX_FRAME_LEN]; // [[[[…0]]]]
+        deep.push(0x00);
+        assert_eq!(decode_frame(&in_unknown_field(&deep)), None);
+        let mut deep_maps = [0xa1, 0x00].repeat(MAX_FRAME_LEN / 2); // {0: {0: …}}
+        deep_maps.push(0x00);
+        assert_eq!(decode_frame(&in_unknown_field(&deep_maps)), None);
+        // 字节串、文字、数组、表的长度都写成 2^64-1，后面只跟 4 个字节
+        for head in [0x5b, 0x7b, 0x9b, 0xbb] {
+            let mut lie = vec![head];
+            lie.extend([0xff; 8]);
+            lie.extend([0; 4]);
+            assert_eq!(decode_frame(&in_unknown_field(&lie)), None);
+        }
+        // 事件列表谎报 2^63 项：{"E": {"l": true, "e": [<2^63 项>…]}}
+        let mut events = vec![
+            0xa1, 0x61, b'E', 0xa2, 0x61, b'l', 0xf5, 0x61, b'e', 0x9b, 0x7f,
+        ];
+        events.extend([0xff; 7]);
+        events.extend([0x80; 4]);
+        assert_eq!(decode_frame(&events), None);
+    }
+
     #[test]
     fn largest_events_fit_in_one_packet() {
         let fits = |e: SignedEvent| {

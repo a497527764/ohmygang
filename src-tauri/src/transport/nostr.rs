@@ -353,6 +353,51 @@ mod tests {
         );
     }
 
+    /// 中继上谁都能发东西：一条消息（最多 256 KB）嵌套到最深、类型全不对、房间编号不是十六进制，都只是忽略，不爆栈。
+    #[test]
+    fn hostile_relay_messages_are_ignored() {
+        let max = 256 << 10;
+        for deep in [
+            "[".repeat(max),
+            format!("[\"EVENT\",\"hs\",{}", "{\"a\":".repeat(max / 5)),
+        ] {
+            assert_eq!(parse_relay_message(&deep), RelayMsg::Ignore);
+        }
+        for text in [
+            r#"["EVENT"]"#,
+            r#"["EVENT",1,{}]"#,
+            r#"["EVENT","hs",[]]"#,
+            r#"["EVENT","hs",{"kind":"x","tags":7,"content":null}]"#,
+            r#"["OK"]"#,
+            r#"["OK",1,"yes"]"#,
+            r#"[null,"OK"]"#,
+            "[]",
+            "",
+        ] {
+            assert_eq!(parse_relay_message(text), RelayMsg::Ignore, "{text}");
+        }
+        let e = build_event_with_aux(
+            &golden_key(),
+            &[2u8; 16],
+            &[3u8; 10],
+            1_700_000_000,
+            &[0u8; 32],
+        );
+        let json = serde_json::to_string(&e).unwrap();
+        for room in [
+            "0202",
+            "zz02020202020202020202020202020202",
+            "字字0202020202020202020202020202",
+        ] {
+            let moved = json.replace("02020202020202020202020202020202", room);
+            assert_eq!(
+                parse_relay_message(&format!(r#"["EVENT","hs",{moved}]"#)),
+                RelayMsg::Ignore,
+                "{room}"
+            );
+        }
+    }
+
     #[test]
     fn classifies_ok_messages() {
         assert_eq!(

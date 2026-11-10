@@ -176,6 +176,20 @@ mod tests {
         assert_eq!(peek_room_id(b"hello"), None);
     }
 
+    /// 截断在任何一个字节的包：只是打不开，读包头也不越界。
+    #[test]
+    fn truncated_packets_are_rejected_at_every_length() {
+        let p = one(&Frame::Events {
+            live: true,
+            events: vec![wire(1, 30)],
+        });
+        for len in 0..p.len() {
+            assert!(open_packet(&KEY, &p[..len]).is_err(), "截到 {len} 字节");
+            let peek = peek_room_id(&p[..len]);
+            assert!(peek.is_none() || len >= HEADER_LEN + TAG_LEN);
+        }
+    }
+
     #[test]
     fn long_events_frame_is_split_into_several_packets() {
         let events: Vec<WireEvent> = (1..=20).map(|i| wire(i, 300)).collect();
