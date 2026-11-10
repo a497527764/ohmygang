@@ -63,7 +63,8 @@
     "macOS": {
       "signingIdentity": "-"
     },
-    "shortDescription": "lolGang（钢一下）：桌面上的英雄联盟信号、表情和组队小玩具",
+    "shortDescription": "常驻桌面的英雄联盟开黑小工具：屏幕上发信号、放表情、按住说话，队友同步看到",
+    "copyright": "Copyright © 2026 lijianqiao",
     "windows": {
       "nsis": {
         "installerHooks": "./windows/hooks.nsh",

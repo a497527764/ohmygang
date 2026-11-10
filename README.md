@@ -1,8 +1,38 @@
 # lolGang
 
+> 参考 [lolPing](https://github.com/darrenprx/lolPing)（作者 Danrui Meng，MIT 许可）用 Rust 重写的版本：信号、表情、组队、队伍面板、投票和打字沿用 lolPing 的做法，另外加了按住说话的语音、带历史记录的聊天框、6 种字幕特效，界面换成英雄联盟客户端的样子。
+
+[![最新版本](https://img.shields.io/github/v/release/lijianqiao/lolGang?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/lijianqiao/lolGang/releases/latest)
+[![下载次数](https://img.shields.io/github/downloads/lijianqiao/lolGang/total?label=%E4%B8%8B%E8%BD%BD)](https://github.com/lijianqiao/lolGang/releases)
+[![CI](https://github.com/lijianqiao/lolGang/actions/workflows/ci.yml/badge.svg)](https://github.com/lijianqiao/lolGang/actions/workflows/ci.yml)
+[![许可](https://img.shields.io/github/license/lijianqiao/lolGang?label=%E8%AE%B8%E5%8F%AF)](LICENSE)
+
 常驻桌面的英雄联盟小玩具：按住 Alt 拖动，在屏幕任何地方发英雄联盟的信号；按住 Ctrl 拖动放表情。和朋友组队后，你发的信号、表情、文字会出现在队友屏幕上同样的位置，按住 V 说话队友直接听到。
 
 不需要服务器：同一个局域网里直接连，不在一起时经公共中继转发，内容加密。Tauri 2（Rust 核心 + React 控制面板）。
+
+## 看看效果
+
+下面都是程序在屏幕上实际画出来的样子（截自透明窗口，背景是后加的）。
+
+**信号**：危险、正在路上、请求协助、敌人消失，一共 12 种，带音效。
+
+![四种信号的动画](.github/readme/pings.gif)
+
+**表情**：44 个英雄联盟表情，也能导入自己的图，队友没有时自动传过去。
+
+![三个表情的动画](.github/readme/emotes.gif)
+
+**打字**：按 Alt + T 打一句话，队友屏幕上冒出来；有金色、霓虹、弹跳、抖动等 6 种字幕特效，也能改成弹幕。
+
+![四种字幕特效](.github/readme/text.gif)
+
+**控制面板**：轮盘上每一格放什么信号、什么表情都能换，按键全部能改。
+
+<p>
+  <img src=".github/readme/panel-pings.png" alt="控制面板：信号轮盘" width="49%">
+  <img src=".github/readme/panel-emotes.png" alt="控制面板：表情轮盘" width="49%">
+</p>
 
 ## 下载
 
@@ -12,6 +42,11 @@
 |---|---|---|
 | Windows 10、11 | `lolgang_<版本>_x64-setup.exe` | 正式支持 |
 | macOS 13 以上（Apple 芯片） | `lolgang_<版本>_aarch64.dmg` | 实验版，没在真机上测试过。要在「系统设置 → 隐私与安全性」里允许 lolGang 使用辅助功能和麦克风 |
+
+第一次运行时：
+
+- Windows 可能弹出「Windows 已保护你的电脑」：安装包没有买代码签名证书，点「更多信息」→「仍要运行」即可。
+- macOS 版没有经过苹果公证，提示「无法验证开发者」时，到「系统设置 → 隐私与安全性」里点「仍要打开」。
 
 装好后会自己检查新版本，在「关于」页点「更新并重启」即可升级。
 
