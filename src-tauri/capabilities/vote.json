@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "vote",
+  "description": "投票卡片：看投票、投票（src/panel/vote.ts）",
+  "windows": ["vote"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-vote-view",
+    "allow-vote-answer"
+  ]
+}

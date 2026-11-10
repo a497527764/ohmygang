@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "text",
+  "description": "聊天框：发文字、看和放历史记录、读设置里的字号和特效、看队员名字（src/text/main.ts）",
+  "windows": ["text"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-text-send",
+    "allow-text-cancel",
+    "allow-history-list",
+    "allow-history-play",
+    "allow-history-stop",
+    "allow-settings-read",
+    "allow-team-view"
+  ]
+}

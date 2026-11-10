@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "roster",
+  "description": "队伍面板：看队伍、发起投票、投票（src/panel/roster.ts）",
+  "windows": ["roster"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-team-view",
+    "allow-vote-start",
+    "allow-vote-answer"
+  ]
+}

@@ -1,9 +1,36 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "控制面板：收 Rust 发来的消息、读版本号（关于页），和它自己用的命令（src/api.ts）",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:app:allow-version",
+    "allow-settings-read",
+    "allow-settings-write",
+    "allow-status-get",
+    "allow-pings-set-enabled",
+    "allow-input-suspend",
+    "allow-ping-preview",
+    "allow-emote-import",
+    "allow-emote-remove",
+    "allow-emote-preview",
+    "allow-open-accessibility-settings",
+    "allow-app-relaunch",
+    "allow-voice-view",
+    "allow-voice-test",
+    "allow-text-preview",
+    "allow-update-view",
+    "allow-update-check",
+    "allow-update-install",
+    "allow-team-view",
+    "allow-team-create",
+    "allow-team-join",
+    "allow-team-cancel",
+    "allow-team-leave",
+    "allow-team-dissolve",
+    "allow-team-rename",
+    "allow-profile-set"
   ]
 }

@@ -1,9 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "overlay",
-  "description": "透明窗口只需要收 Rust 发来的画面消息",
+  "description": "透明窗口：收 Rust 发来的画面消息，只能告诉 Rust「页面好了」「画完了」",
   "windows": ["overlay-*"],
   "permissions": [
-    "core:event:default"
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-overlay-hello",
+    "allow-overlay-idle"
   ]
 }
