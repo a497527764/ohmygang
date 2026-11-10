@@ -75,9 +75,10 @@ coverage/
 test-results/
 playwright-report/
 blob-report/
-docs/relay/
-docs/superpowers/
 .superpowers/
+
+# 项目文档（各版本的需求、计划、架构、发版步骤）只留在本地，不传到 GitHub（2026-11-10 起；之前传过的版本留在历史里）
+/docs/
 
 # ides
 .vscode/

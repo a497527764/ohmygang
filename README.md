@@ -51,8 +51,6 @@ cd src-tauri && cargo test     # Rust 测试
 pnpm release                   # 本机打 Windows 安装包（不带更新签名，只用来自己试）
 ```
 
-设计文档：[3.2.0 需求](docs/v3.2/requirements.md)和[计划](docs/v3.2/plan.md)、[3.1.1 需求](docs/v3.1/requirements.md)和[计划](docs/v3.1/plan.md)、[3.0 计划](docs/v3/plan.md)、[2.0 需求](docs/v2/requirements.md)、[2.0 架构](docs/v2/architecture.md)。
-
 ## 许可和致谢
 
 代码用 [MIT 许可](LICENSE)。信号轮盘、信号动画、表情、队伍面板、投票、键鼠手势判定，以及 macOS 的键鼠监听，移植自 [lolPing](https://github.com/darrenprx/lolPing)（作者 Danrui Meng，MIT 许可），移植来的文件开头注明了来源。其他第三方声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
