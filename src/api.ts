@@ -68,8 +68,8 @@ export interface Settings {
   teamVotes: boolean;
   /** 按住面板键显示队伍面板。 */
   teamPanel: boolean;
-  /** 面板键的虚拟键码。 */
-  panelKey: number;
+  /** 面板快捷键（默认 Alt+`），支持带修饰键的组合。 */
+  panelHotkey: Hotkey;
   /** 语音：按住说话键说话，队友的话直接播放。 */
   voice: boolean;
   /** 说话键（按住）的虚拟键码，不带修饰键。 */

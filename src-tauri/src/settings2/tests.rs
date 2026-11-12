@@ -94,7 +94,7 @@ fn a_saved_file_reads_back_the_same() {
         text_effect: "gold".into(),
         team_votes: false,
         team_panel: false,
-        panel_key: 0xC0,
+        panel_hotkey: Hotkey { mods: MOD_ALT, vk: 0xC0 },
         voice: false,
         talk_key: 0x42,
         voice_volume: 35,
@@ -370,19 +370,20 @@ fn team_keys_reach_the_gesture_only_inside_a_team() {
             vk: 0x54
         }
     );
-    assert_eq!(d.panel_key, 0xC0);
+    assert_eq!(d.panel_hotkey, Hotkey { mods: MOD_ALT, vk: 0xC0 });
     assert!(d.team_text && d.team_votes && d.team_panel && !d.launch_at_startup);
     assert!(d.auto_update_check, "默认自动检查更新");
+    // 快捷键不再看 in_team：只要开着就拦
     let out = d.gesture_config(true, false);
     assert_eq!(
-        (out.text_vk, out.panel_vk),
-        (0, 0),
-        "不在队伍里：Alt+T 和 Tab 照常给别的程序"
+        (out.text_mods, out.text_vk, out.panel_mods, out.panel_vk),
+        (MOD_ALT, 0x54, MOD_ALT, 0xC0),
+        "Alt+T 和 Alt+` 不论在不在队伍里都拦"
     );
     let inside = d.gesture_config(true, true);
     assert_eq!(
-        (inside.text_mods, inside.text_vk, inside.panel_vk),
-        (MOD_ALT, 0x54, 0xC0)
+        (inside.text_mods, inside.text_vk, inside.panel_mods, inside.panel_vk),
+        (MOD_ALT, 0x54, MOD_ALT, 0xC0)
     );
     let mut off = d.clone();
     off.team_text = false;
@@ -408,16 +409,23 @@ fn team_keys_never_share_a_key() {
             vk: 0x59
         }
     );
-    // 面板键：Esc、修饰键、被占的键都换掉
-    assert_eq!(normalize(&json!({ "panelKey": 0x1B })).panel_key, 0xC0);
-    assert_eq!(normalize(&json!({ "panelKey": 0xA2 })).panel_key, 0xC0);
-    assert_eq!(normalize(&json!({ "panelKey": 0x71 })).panel_key, 0x71);
+    // 面板快捷键：Esc、修饰键、被占的键都换掉（默认 Alt+`）
+    let default_panel = Hotkey { mods: MOD_ALT, vk: 0xC0 };
+    assert_eq!(normalize(&json!({ "panelKey": 0x1B })).panel_hotkey, default_panel);
+    assert_eq!(normalize(&json!({ "panelKey": 0xA2 })).panel_hotkey, default_panel);
+    // 旧格式纯键码：合法的转成 mods=0 的 hotkey
+    assert_eq!(normalize(&json!({ "panelKey": 0x71 })).panel_hotkey, Hotkey { mods: 0, vk: 0x71 });
+    // 新格式 panelHotkey
+    assert_eq!(
+        normalize(&json!({ "panelHotkey": { "mods": 2, "vk": 0x51 } })).panel_hotkey,
+        Hotkey { mods: MOD_ALT, vk: 0x51 }
+    );
     let s = normalize(&json!({ "toggleHotkey": { "mods": 2, "vk": 0x09 }, "panelKey": 0x09 }));
-    assert_eq!(s.panel_key, 0xC0, "Tab 被暂停快捷键占了，换成 `");
+    assert_eq!(s.panel_hotkey, default_panel, "Tab 被暂停快捷键占了，换成 Alt+`");
     let s = normalize(&json!({ "trigger": { "vk": 0x71 }, "panelKey": 0x71 }));
-    assert_eq!(s.panel_key, 0xC0, "F2 被自定义触发键占了");
+    assert_eq!(s.panel_hotkey, default_panel, "F2 被自定义触发键占了");
     let s = normalize(&json!({ "emoteTrigger": { "vk": 0x72 }, "panelKey": 0x72 }));
-    assert_eq!(s.panel_key, 0xC0);
+    assert_eq!(s.panel_hotkey, default_panel);
     assert_eq!(
         normalize(&json!({ "textStyle": "danmaku" })).text_style,
         "danmaku"
@@ -469,7 +477,8 @@ fn talk_key_is_a_plain_safe_key_that_clashes_with_nothing() {
     assert_eq!(s.talk_key, 0x56, "T 是文字快捷键的键");
     // 面板键排在说话键后面：面板键选了说话键的键，换的是面板键
     let s = normalize(&json!({ "panelKey": 0x56 }));
-    assert_eq!((s.talk_key, s.panel_key), (0x56, 0xC0));
+    assert_eq!(s.talk_key, 0x56);
+    assert_eq!(s.panel_hotkey, Hotkey { mods: MOD_ALT, vk: 0xC0 }, "V 被说话键占了，面板换成 Alt+`");
 }
 
 #[test]

@@ -95,9 +95,13 @@ const TEXT_HOTKEYS: [Hotkey; 3] = [
         vk: 0x54,
     },
 ];
-/// 面板键的候选：反引号 `，然后 Tab、F2、F3、F4、F5。反引号在 Tab 左边、不带系统语义，不会和 Alt+Tab 抢。
-/// 最多 5 个键被占（两个触发键、两个快捷键、说话键），所以总有一个空着。
-const PANEL_KEYS: [u32; 6] = [0xC0, 0x09, 0x71, 0x72, 0x73, 0x74];
+/// 面板快捷键的候选：Alt+`（反引号在 Tab 左边、不带系统语义），然后 Alt+Tab 之外的几个。
+const PANEL_HOTKEYS: [Hotkey; 4] = [
+    Hotkey { mods: MOD_ALT, vk: 0xC0 },
+    Hotkey { mods: MOD_ALT, vk: 0x51 }, // Alt+Q
+    Hotkey { mods: MOD_ALT, vk: 0x45 }, // Alt+E
+    Hotkey { mods: 0, vk: 0xC0 },       // 纯 `（兼容旧行为）
+];
 /// 说话键的候选：V，撞了依次换。最多 4 个键被占（两个触发键、两个快捷键），所以总有一个空着。
 const TALK_KEYS: [u32; 6] = [0x56, 0x47, 0x5A, 0x58, 0x4E, 0x4D];
 /// 麦克风设备 id 的长度上限（cpal 的 id 像 "wasapi:{0.0.1.00000000}.{guid}"）。
@@ -213,8 +217,8 @@ pub struct Settings {
     pub team_votes: bool,
     /// 按住面板键显示队伍面板。
     pub team_panel: bool,
-    /// 面板键的虚拟键码，不带修饰键。
-    pub panel_key: u32,
+    /// 面板快捷键（默认 Alt+`），支持带修饰键的组合。
+    pub panel_hotkey: Hotkey,
     /// 语音：按住说话键说话，队友的话直接播放。关掉后说话键不拦、队友的语音不放。
     pub voice: bool,
     /// 说话键（按住）的虚拟键码，不带修饰键。
@@ -273,7 +277,7 @@ impl Default for Settings {
             text_effect: DEFAULT_TEXT_EFFECT.into(),
             team_votes: true,
             team_panel: true,
-            panel_key: PANEL_KEYS[0],
+            panel_hotkey: PANEL_HOTKEYS[0],
             voice: true,
             talk_key: TALK_KEYS[0],
             voice_volume: 80,
@@ -455,8 +459,46 @@ fn text_hotkey(raw: Option<&Value>, toggle: Hotkey) -> (Hotkey, Option<Why>) {
     (other, why.or(raw.map(|_| Some("toggle"))))
 }
 
-/// 面板键、说话键（3.1.1 合成一个）：普通键——合法的键码、不是修饰键、不在 `forbidden` 里，
-/// 也不是别的键占着的（`taken`：键码和占着它的那一行）；否则换 `candidates` 里第一个没被占的。
+/// 面板快捷键：支持带修饰键的组合（Alt+` 等），也兼容旧版纯键码（`panelKey`）。
+/// 不能撞上已占的键；撞了换候选里第一个不撞的。
+fn panel_hotkey(
+    raw: Option<&Value>,
+    legacy: Option<&Value>,
+    taken: &[(u32, &'static str)],
+) -> (Hotkey, Option<Why>) {
+    // 新格式 {"mods":2,"vk":192} 或旧格式纯数字 192
+    let asked: Option<Hotkey> = raw
+        .and_then(|v| serde_json::from_value::<Hotkey>(v.clone()).ok())
+        .filter(|h| is_vk(h.vk) && !MODIFIER_VKS.contains(&h.vk) && h.vk != 0x1B)
+        .or_else(|| {
+            legacy
+                .and_then(Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .filter(|&vk| is_vk(vk) && !MODIFIER_VKS.contains(&vk) && vk != 0x1B)
+                .map(|vk| Hotkey { mods: 0, vk })
+        });
+    let owner = |vk: u32| taken.iter().find(|(k, _)| *k == vk).map(|(_, row)| *row);
+    if let Some(h) = asked {
+        match owner(h.vk) {
+            None => return (h, None),
+            Some(row) => {
+                let free = PANEL_HOTKEYS
+                    .into_iter()
+                    .find(|c| owner(c.vk).is_none() && *c != h)
+                    .unwrap_or(PANEL_HOTKEYS[0]);
+                return (free, Some(Some(row)));
+            }
+        }
+    }
+    let why = if raw.is_some() || legacy.is_some() { Some(None) } else { None };
+    let free = PANEL_HOTKEYS
+        .into_iter()
+        .find(|c| owner(c.vk).is_none())
+        .unwrap_or(PANEL_HOTKEYS[0]);
+    (free, why)
+}
+
+/// 说话键等纯键码：合法键码、不是修饰键、不在 `forbidden` 里、没被占；否则换候选。
 fn plain_key(
     raw: Option<&Value>,
     forbidden: &[u32],
@@ -587,8 +629,8 @@ pub fn normalize_keys(raw: &Value) -> (Settings, Vec<KeyClash>) {
     // 说话键：不能是空格、回车这些会弄坏打字的键
     let (talk_key, talk_why) = plain_key(get("talkKey"), &UNSAFE_TRIGGER_VKS, TALK_KEYS, &taken);
     taken.push((talk_key, "talk"));
-    // 面板键：不能是 Esc
-    let (panel_key, panel_why) = plain_key(get("panelKey"), &[0x1B], PANEL_KEYS, &taken);
+    // 面板快捷键：支持带修饰键的组合（默认 Alt+`），不能撞上别的快捷键
+    let (panel_hotkey, panel_why) = panel_hotkey(get("panelHotkey"), get("panelKey"), &taken);
     let clashes = [
         ("trigger", trigger_why),
         ("emote", emote_why),
@@ -653,7 +695,7 @@ pub fn normalize_keys(raw: &Value) -> (Settings, Vec<KeyClash>) {
         ),
         team_votes: bool_or(get("teamVotes"), d.team_votes),
         team_panel: bool_or(get("teamPanel"), d.team_panel),
-        panel_key,
+        panel_hotkey,
         voice: bool_or(get("voice"), d.voice),
         talk_key,
         voice_volume: num(get("voiceVolume"), &VOLUME, f64::from(d.voice_volume)) as u32,
@@ -679,9 +721,9 @@ impl Settings {
         }
     }
 
-    /// 手势状态机的配置。`enabled` 是当前的信号开关（托盘、暂停快捷键），不存在设置里；
-    /// `in_team` 是现在在不在队伍里（加入中或已加入；文字快捷键和面板键只在队伍里拦）。
-    pub fn gesture_config(&self, enabled: bool, in_team: bool) -> gesture::Config {
+    /// 手势状态机的配置。`enabled` 是当前的信号开关（托盘、暂停快捷键），不存在设置里。
+    /// 文字快捷键和面板快捷键只要开着就拦（不再看 in_team），由面板/文字模块自己判断能不能用。
+    pub fn gesture_config(&self, enabled: bool, _in_team: bool) -> gesture::Config {
         gesture::Config {
             trigger: gesture_trigger(self.trigger),
             click_ping: self.click_ping,
@@ -694,17 +736,18 @@ impl Settings {
             toggle_mods: self.toggle_hotkey.mods,
             toggle_vk: self.toggle_hotkey.vk,
             text_mods: self.text_hotkey.mods,
-            text_vk: if in_team && self.team_text {
+            text_vk: if self.team_text {
                 self.text_hotkey.vk
             } else {
                 0
             },
-            panel_vk: if in_team && self.team_panel {
-                self.panel_key
+            panel_mods: self.panel_hotkey.mods,
+            panel_vk: if self.team_panel {
+                self.panel_hotkey.vk
             } else {
                 0
             },
-            talk_vk: if in_team && self.voice {
+            talk_vk: if _in_team && self.voice {
                 self.talk_key
             } else {
                 0

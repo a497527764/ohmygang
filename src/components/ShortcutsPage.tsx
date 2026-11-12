@@ -38,12 +38,12 @@ const NAMES: Record<RowId, string> = {
 };
 
 const valueOf = (s: Settings, id: RowId): Value =>
-  ({ trigger: s.trigger, emote: s.emoteTrigger, toggle: s.toggleHotkey, text: s.textHotkey, talk: s.talkKey, panel: s.panelKey })[id];
+  ({ trigger: s.trigger, emote: s.emoteTrigger, toggle: s.toggleHotkey, text: s.textHotkey, talk: s.talkKey, panel: s.panelHotkey })[id];
 
 function label(id: RowId, v: Value): string {
   if (v === OFF) return "关";
-  if (id === "toggle" || id === "text") return hotkeyParts(v as Hotkey).join(" + ");
-  if (id === "panel" || id === "talk") return vkLabel(v as number);
+  if (id === "toggle" || id === "text" || id === "panel") return hotkeyParts(v as Hotkey).join(" + ");
+  if (id === "talk") return vkLabel(v as number);
   return triggerLabel(v as TriggerKey);
 }
 
@@ -163,11 +163,11 @@ export function ShortcutsPage({ settings: s, clashes, onChange }: Props) {
           <KeyCapture kind="key" value={s.talkKey} onPick={(vk) => pick("talk", vk, { talkKey: vk })} />
         </Row>
         <Row
-          label="队伍面板（按住）"
-          tip="在队伍里按住显示队员和投票。单独一个键，不带 Ctrl、Alt"
+          label="队伍面板"
+          tip="按下显示队员和投票，支持 Ctrl、Alt、Win 组合键（默认 Alt+`）"
           hint={note("panel") || (!s.teamPanel && "已关，在「功能」页打开")}
         >
-          <KeyCapture kind="plain" value={s.panelKey} onPick={(vk) => pick("panel", vk, { panelKey: vk })} />
+          <KeyCapture kind="hotkey" value={s.panelHotkey} onPick={(h) => pick("panel", h, { panelHotkey: h })} />
         </Row>
       </section>
     </div>

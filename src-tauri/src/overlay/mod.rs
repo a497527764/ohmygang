@@ -234,7 +234,7 @@ impl Actor {
                             &d.key,
                             "text:spawn",
                             json!({
-                                "owner": "preview", "text": "大龙刷了，集合打团！", "name": "我", "color": "#c8aa6e",
+                                "owner": "preview", "text": "这是一段预览文字", "name": "我", "color": "#c8aa6e",
                                 "style": style, "size": size, "effect": effect, "x": w / 2.0, "y": h / 2.0,
                             }),
                         );

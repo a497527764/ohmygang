@@ -129,7 +129,8 @@ pub struct Config {
     /// 队伍文字快捷键（默认 Alt+T）；vk 为 0 表示关（不在队伍里、关了文字）。
     pub text_mods: u32,
     pub text_vk: u32,
-    /// 按住显示队伍面板的键（默认 Tab，不带修饰键）；0 表示关。
+    /// 面板快捷键（默认 Alt+`），带修饰键；vk 为 0 表示关。
+    pub panel_mods: u32,
     pub panel_vk: u32,
     /// 按住说话的键（默认 V，不带修饰键）；0 表示关（不在队伍里、关了语音）。
     pub talk_vk: u32,
@@ -149,6 +150,7 @@ impl Default for Config {
             toggle_vk: 0x50, // P
             text_mods: MOD_ALT,
             text_vk: 0,
+            panel_mods: 0,
             panel_vk: 0,
             talk_vk: 0,
             enabled: true,
@@ -715,8 +717,7 @@ impl Gesture {
             }
             return;
         }
-        // 面板键：故意不放行的普通键（只在队伍里、开着面板时）。按下就拦、从不回放；
-        // 它的连发即使配置改了也照样拦，因为系统没见过按下。
+        // 面板键：按下就拦、从不回放；它的连发即使配置改了也照样拦，因为系统没见过按下。
         if self.panel_down != 0 && vk == self.panel_down {
             r.swallow = true;
             self.last_panel_ms = e.time_ms;
@@ -726,12 +727,14 @@ impl Gesture {
             && !repeat
             && self.cfg.panel_vk != 0
             && vk == self.cfg.panel_vk
-            && self.mods() == 0
+            && self.mods() == self.cfg.panel_mods
             && !self.is_any_trigger_vk(vk)
             && !(self.cfg.game_check && self.probe.as_ref().is_some_and(|p| p(self.mx, self.my)))
         {
             r.swallow = true;
             self.swallow_key_ups[i] = true;
+            self.mark_swallow();
+            self.cancel_gesture(r);
             self.panel_down = vk;
             self.last_panel_ms = e.time_ms;
             r.emits.push(Emit::Panel { show: true });

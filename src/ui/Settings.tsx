@@ -3,12 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   importEmote, onUpdate, onVoice, previewEmote, previewPing, removeEmote, textPreview,
-  teamView, updateCheck, updateInstall, updateView, voiceTest, voiceView,
+  updateCheck, updateInstall, updateView, voiceTest, voiceView,
   type KeyClash, type Settings, type Status, type TextEffect, type UpdateView, type VoiceStatus,
 } from "../api";
 import { prepareCustomEmote, prepareSound, toBase64, type PreparedEmote } from "../emoteImport";
 import { KeyCapture } from "../components/KeyCapture";
-import { hotkeyParts, vkLabel } from "../shared/keys";
+import { vkLabel } from "../shared/keys";
 import { ALL_PINGS, pingById, type PingId } from "../shared/pings";
 import { EMOTE_CATALOG } from "../shared/emoteCatalog";
 import { FX_NAMES, MAX_CUSTOM_EMOTES, emoteName, type CustomEmote } from "../shared/emotes";
@@ -25,7 +25,7 @@ const TABS: { id: SettingsTab; label: string; icon: GlyphName }[] = [
   { id: "keys", label: "按键", icon: "keyboard" },
   { id: "pings", label: "信号", icon: "target" },
   { id: "emotes", label: "表情", icon: "smile" },
-  { id: "team", label: "队伍", icon: "users" },
+  { id: "team", label: "文字", icon: "text" },
   { id: "voice", label: "语音", icon: "mic" },
   { id: "about", label: "关于", icon: "info" },
 ];
@@ -127,12 +127,10 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
   const [mics, setMics] = useState<{ id: string; name: string }[]>([]);
   const [voice, setVoice] = useState<VoiceStatus>({ error: null, test: null });
   const [update, setUpdate] = useState<UpdateView | null>(null);
-  const [team, setTeam] = useState<{ relaysOk: number; relaysTotal: number } | null>(null);
 
   useEffect(() => {
     void voiceView().then((v) => { setMics(v.mics); setVoice(v.status); });
     void updateView().then(setUpdate);
-    void teamView().then((v) => setTeam({ relaysOk: v.relaysOk, relaysTotal: v.relaysTotal }));
     const a = onVoice(setVoice);
     const b = onUpdate(setUpdate);
     return () => { void a.then((f) => f()); void b.then((f) => f()); };
@@ -140,19 +138,6 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
 
   const clash = (key: string) => clashes.some((c) => c.key === key);
   const mic = mics.some((m) => m.id === s.mic) ? s.mic : "";
-
-  // 右侧监视器里的键位文字，和主页同一套写法
-  const keyText = (t: Settings["trigger"]): string => {
-    if (typeof t === "object") return vkLabel(t.vk);
-    return t === "alt" ? "ALT" : t === "ctrl" ? "CTRL" : t === "shift" ? "SHIFT" : t === "win" ? "WIN"
-      : t === "capslock" ? "CAPS" : t === "mouse4" ? "侧键1" : t === "mouse5" ? "侧键2" : String(t).toUpperCase();
-  };
-  const railKeys = [
-    { label: "信号", key: keyText(s.trigger) },
-    { label: "表情", key: s.emoteTrigger === "off" ? "关" : keyText(s.emoteTrigger) },
-    { label: "语音", key: vkLabel(s.talkKey) },
-    { label: "打字", key: hotkeyParts(s.textHotkey).join("+") },
-  ];
 
   // ---- 信号轮盘编辑 ----
   const pingSlot = useState(0);
@@ -354,7 +339,7 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
               <KeyCapture kind="key" value={s.talkKey} onPick={(talkKey) => onChange({ talkKey })} />
             </Row>
             <Row icon="users" label="队伍面板" title={clash("panel") ? "键冲突，已由后端换成备用键" : undefined}>
-              <KeyCapture kind="plain" value={s.panelKey} onPick={(panelKey) => onChange({ panelKey })} />
+              <KeyCapture kind="hotkey" value={s.panelHotkey} onPick={(panelHotkey) => onChange({ panelHotkey })} />
             </Row>
           </section>
           <section className="v-tile v-keyhelp">
@@ -564,23 +549,6 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
         {tab === "team" && (
           <>
             <section className="v-tile v-tile-tight">
-              <Row icon="wifi" label="中继">
-                <span className="v-value">{team ? `${team.relaysOk}/${team.relaysTotal}` : "—"}</span>
-              </Row>
-              {s.relays.map((r, i) => (
-                <Row key={i} icon="globe" label={`中继 ${i + 1}`}>
-                  <input className="v-input" value={r} maxLength={120} aria-label={`中继 ${i + 1}`}
-                    onChange={(e) => onChange({ relays: s.relays.map((x, j) => (j === i ? e.target.value : x)) })} />
-                  <button className="v-icon-btn" title="移除" onClick={() => onChange({ relays: s.relays.filter((_, j) => j !== i) })}>
-                    <Glyph name="close" size={18} />
-                  </button>
-                </Row>
-              ))}
-              {s.relays.length < 16 && (
-                <Action icon="plus" label="中继" tone="ghost" onClick={() => onChange({ relays: [...s.relays, "wss://"] })} />
-              )}
-            </section>
-            <section className="v-tile v-tile-tight">
               <Row icon="text" label="队伍文字">
                 <Toggle label="队伍文字" checked={s.teamText} onChange={(teamText) => onChange({ teamText })} />
               </Row>
@@ -597,18 +565,12 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                     <select className="v-select" aria-label="字幕特效" value={s.textEffect} onChange={(e) => onChange({ textEffect: e.target.value as TextEffect })}>
                       {EFFECTS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
                     </select>
-                    <button className="v-icon-btn" title="预览" onClick={() => void textPreview(s.textStyle, s.textSizePx, s.textEffect)}>
-                      <Glyph name="play" size={18} />
-                    </button>
+                  </Row>
+                  <Row icon="play" label="预览" title="在屏幕中间显示一段预览文字，看看当前特效的效果">
+                    <Action icon="play" label="预览文字" onClick={() => void textPreview(s.textStyle, s.textSizePx, s.textEffect)} />
                   </Row>
                 </>
               )}
-              <Row icon="vote" label="投票" title="投降、准备确认、踢人；关掉后不算投票人">
-                <Toggle label="投票" checked={s.teamVotes} onChange={(teamVotes) => onChange({ teamVotes })} />
-              </Row>
-              <Row icon="users" label="队伍面板" title="按住面板键显示队伍面板">
-                <Toggle label="队伍面板" checked={s.teamPanel} onChange={(teamPanel) => onChange({ teamPanel })} />
-              </Row>
             </section>
           </>
         )}
@@ -653,19 +615,6 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
         {tab === "about" && (
           <div className="v-about">
             <section className="v-tile v-about-brand">
-              <div className="v-about-top">
-                <div className="v-about-mark" aria-hidden="true"><span className="v-brand-mark" /></div>
-                <b className="v-about-name">OH-MY-GANG!</b>
-                <span className="v-about-tag">队内信号轮盘 · 按住触发，拖一下就把话说清</span>
-              </div>
-
-              <div className="v-about-facts">
-                <div><span>协议</span><b>端到端加密 · 云端中继转发</b></div>
-                <div><span>数据</span><b>队伍、语音、表情只存在本机</b></div>
-                <div><span>语音</span><b>Opus 16 kbps · 按住才开麦</b></div>
-                <div><span>许可</span><b>MIT · 开源</b></div>
-              </div>
-
               <div className="v-about-bottom">
                 <div className="v-about-ver">
                   <span>当前版本</span>
@@ -680,21 +629,7 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                   <Action icon="refresh" label="检查更新" tone="ghost" onClick={() => void updateCheck().then(setUpdate)} />
                   {update?.phase === "available" && <Action icon="download" label="下载安装" onClick={() => void updateInstall()} />}
                 </div>
-                <p className="v-about-fine">
-                  轮盘与信号的图标、音效、表情来自英雄联盟，版权归 Riot Games 所有；本工具与 Riot Games 无关联。
-                </p>
               </div>
-            </section>
-            <section className="v-tile v-about-keys">
-              <div className="v-about-keys-title"><Glyph name="keyboard" size={18} /><b>快捷键</b></div>
-              {railKeys.map((k) => (
-                <Row key={k.label} label={k.label}>
-                  <span className="v-key-chip">{k.key}</span>
-                </Row>
-              ))}
-              <Row label="队伍面板">
-                <span className="v-key-chip">{vkLabel(s.panelKey)}</span>
-              </Row>
             </section>
           </div>
         )}

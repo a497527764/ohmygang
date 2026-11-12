@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OH-MY-GANG 后台管理</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #0f1923; color: #c8d6e5; min-height: 100vh; }
+.container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+h1 { font-size: 22px; color: #f0e6d2; margin-bottom: 24px; border-bottom: 1px solid #2a3a4a; padding-bottom: 12px; }
+.card { background: #1a2634; border: 1px solid #2a3a4a; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+label { display: block; margin-bottom: 6px; font-size: 13px; color: #8899aa; }
+input { width: 100%; padding: 10px 12px; border: 1px solid #2a3a4a; border-radius: 6px; background: #0f1923; color: #c8d6e5; font-size: 15px; margin-bottom: 12px; outline: none; }
+input:focus { border-color: #c8aa6e; }
+button { padding: 10px 24px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; transition: opacity .15s; }
+button:hover { opacity: .85; }
+.btn-primary { background: #c8aa6e; color: #0f1923; font-weight: 600; }
+.btn-danger { background: #e74c3c; color: #fff; padding: 6px 14px; font-size: 13px; }
+.btn-sm { padding: 5px 12px; font-size: 12px; }
+.error { color: #e74c3c; font-size: 13px; margin-top: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #2a3a4a; }
+th { color: #8899aa; font-weight: 600; font-size: 12px; text-transform: uppercase; }
+tr:hover td { background: #1e2e3e; }
+.code { font-family: "Cascadia Code", Consolas, monospace; font-size: 15px; font-weight: 700; color: #c8aa6e; letter-spacing: 2px; }
+.mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; color: #667788; word-break: break-all; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.badge-online { background: #1b5e20; color: #81c784; }
+.badge-idle { background: #37474f; color: #90a4ae; }
+.member-list { margin: 6px 0 0 0; padding: 0; list-style: none; }
+.member-list li { padding: 5px 0; border-top: 1px dashed #2a3a4a; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.stats { font-size: 13px; color: #8899aa; }
+.empty { text-align: center; padding: 40px; color: #556677; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>OH-MY-GANG! 后台管理</h1>
+
+  <!-- 登录 -->
+  <div id="login-view" class="card" style="max-width:400px;margin:60px auto;">
+    <label>账号</label>
+    <input id="username" placeholder="请输入账号" autocomplete="username">
+    <label>密码</label>
+    <input id="password" type="password" placeholder="请输入密码" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="btn-primary" onclick="doLogin()" style="width:100%">登 录</button>
+    <div id="login-error" class="error"></div>
+  </div>
+
+  <!-- 管理面板 -->
+  <div id="admin-view" style="display:none">
+    <div class="toolbar">
+      <div class="stats" id="stats"></div>
+      <div>
+        <button class="btn-primary btn-sm" onclick="loadTeams()">刷新</button>
+        <button class="btn-sm" style="background:#37474f;color:#c8d6e5" onclick="doLogout()">退出</button>
+      </div>
+    </div>
+    <div class="card" style="padding:0;overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>队伍码</th><th>创建时间</th><th>最后活跃</th><th>人数</th><th>成员（机器码）</th><th>操作</th></tr>
+        </thead>
+        <tbody id="team-body"></tbody>
+      </table>
+      <div id="empty-msg" class="empty" style="display:none">暂无队伍</div>
+    </div>
+  </div>
+</div>
+
+<script>
+let TOKEN = localStorage.getItem('admin_token') || '';
+
+function fmtTime(ts) {
+  if (!ts) return '—';
+  return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false });
+}
+
+function fmtAgo(ts) {
+  if (!ts) return '—';
+  const diff = Math.floor(Date.now() / 1000) - ts;
+  if (diff < 60) return diff + ' 秒前';
+  if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+  if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+  return Math.floor(diff / 86400) + ' 天前';
+}
+
+async function doLogin() {
+  const user = document.getElementById('username').value.trim();
+  const pass = document.getElementById('password').value;
+  const err = document.getElementById('login-error');
+  err.textContent = '';
+  try {
+    const r = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user, password: pass }),
+    });
+    const d = await r.json();
+    if (d.token) {
+      TOKEN = d.token;
+      localStorage.setItem('admin_token', TOKEN);
+      showAdmin();
+      loadTeams();
+    } else {
+      err.textContent = d.error || '登录失败';
+    }
+  } catch (e) {
+    err.textContent = '网络错误：' + e.message;
+  }
+}
+
+function doLogout() {
+  TOKEN = '';
+  localStorage.removeItem('admin_token');
+  document.getElementById('admin-view').style.display = 'none';
+  document.getElementById('login-view').style.display = '';
+}
+
+function showAdmin() {
+  document.getElementById('login-view').style.display = 'none';
+  document.getElementById('admin-view').style.display = '';
+}
+
+async function loadTeams() {
+  try {
+    const r = await fetch('/api/admin/teams?token=' + encodeURIComponent(TOKEN));
+    if (r.status === 401) { doLogout(); return; }
+    const d = await r.json();
+    const tbody = document.getElementById('team-body');
+    const empty = document.getElementById('empty-msg');
+    tbody.innerHTML = '';
+    if (!d.teams || d.teams.length === 0) {
+      empty.style.display = '';
+      document.getElementById('stats').textContent = '共 0 支队伍';
+      return;
+    }
+    empty.style.display = 'none';
+    document.getElementById('stats').textContent = '共 ' + d.teams.length + ' 支队伍';
+    for (const t of d.teams) {
+      const tr = document.createElement('tr');
+      const isRecent = (Date.now() / 1000 - t.last_active) < 3600;
+      let memberHtml = '<ul class="member-list">';
+      for (const m of t.members) {
+        memberHtml += '<li><span class="mono">' + m.member_hex.slice(0, 16) + '…</span><span style="color:#556677">' + fmtAgo(m.last_seen) + '</span></li>';
+      }
+      memberHtml += '</ul>';
+      tr.innerHTML =
+        '<td><span class="code">' + t.short_code + '</span></td>' +
+        '<td>' + fmtTime(t.created_at) + '</td>' +
+        '<td>' + fmtAgo(t.last_active) + '</td>' +
+        '<td><span class="badge ' + (isRecent ? 'badge-online' : 'badge-idle') + '">' + t.member_count + ' 人</span></td>' +
+        '<td>' + memberHtml + '</td>' +
+        '<td><button class="btn-danger" onclick="deleteTeam(\'' + t.short_code + '\')">删除</button></td>';
+      tbody.appendChild(tr);
+    }
+  } catch (e) {
+    alert('加载失败：' + e.message);
+  }
+}
+
+async function deleteTeam(code) {
+  if (!confirm('确定要删除队伍 ' + code + ' 吗？此操作不可撤销。')) return;
+  try {
+    const r = await fetch('/api/admin/teams/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ short_code: code, token: TOKEN }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      loadTeams();
+    } else {
+      alert(d.error || '删除失败');
+    }
+  } catch (e) {
+    alert('删除失败：' + e.message);
+  }
+}
+
+// 启动时如果有 token 就直接进管理面板
+if (TOKEN) {
+  showAdmin();
+  loadTeams();
+}
+</script>
+</body>
+</html>

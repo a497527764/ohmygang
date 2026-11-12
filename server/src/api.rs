@@ -14,6 +14,40 @@ use crate::store::Store;
 /// 限流：同一 IP 每小时最多 30 次建队，防有人把短码池占满。
 static RATE: OnceLock<Mutex<std::collections::HashMap<String, (i64, u32)>>> = OnceLock::new();
 
+/// 管理后台登录凭证（自用后台，硬编码即可）。
+const ADMIN_USER: &str = "zhaopeng";
+const ADMIN_PASS: &str = "000000";
+/// 管理会话 token：启动时随机生成，登录成功后发给前端。
+static ADMIN_TOKEN: OnceLock<String> = OnceLock::new();
+
+fn admin_token() -> &'static str {
+    ADMIN_TOKEN.get_or_init(|| {
+        let b: [u8; 16] = rand::random();
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    })
+}
+
+/// 检查请求是否带了有效的管理 token（从 Authorization: Bearer 或 ?token= 取）。
+fn check_admin(path: &str, body: &[u8]) -> bool {
+    // 先从 query string 取
+    if let Some(q) = path.split('?').nth(1) {
+        for p in q.split('&') {
+            if let Some(t) = p.strip_prefix("token=") {
+                if t == admin_token() {
+                    return true;
+                }
+            }
+        }
+    }
+    // 再从 body 取（POST 时前端用 JSON 传 token）
+    if let Ok(v) = serde_json::from_slice::<Value>(body) {
+        if v.get("token").and_then(|x| x.as_str()) == Some(admin_token()) {
+            return true;
+        }
+    }
+    false
+}
+
 /// 短码字母表：大写字母数字，去掉 0/O/1/I 等易混字符（32 个字符）。
 const SHORT_ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 
@@ -60,6 +94,16 @@ pub async fn handle(
     store: &Arc<Store>,
     peer: &str,
 ) -> String {
+    let route_path = path.split('?').next().unwrap_or(path);
+    // 管理页面直接返回 HTML
+    if method == "GET" && route_path == "/admin" {
+        let html = ADMIN_PAGE;
+        return format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            html.len(),
+            html
+        );
+    }
     let (status, body) = route(method, path, body, server, store, peer).await;
     json_resp(status, body)
 }
@@ -91,6 +135,14 @@ async fn route(
         ("POST", "/api/team/join") => join(body, store).await,
         ("POST", "/api/team/heartbeat") => heartbeat(body, store, server).await,
         ("GET", "/api/team/code") => code_lookup(path, store).await,
+        // 管理后台 API
+        ("POST", "/api/admin/login") => admin_login(body),
+        ("GET", "/api/admin/teams") => {
+            if check_admin(path, body) { admin_teams(store) } else { (401, json!({ "error": "未登录" })) }
+        }
+        ("POST", "/api/admin/teams/delete") => {
+            if check_admin(path, body) { admin_delete(body, store, server) } else { (401, json!({ "error": "未登录" })) }
+        }
         _ => (404, json!({ "error": "not found" })),
     }
 }
@@ -246,6 +298,7 @@ fn json_resp(status: u16, body: Value) -> String {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
         429 => "Too Many Requests",
         _ => "Internal Server Error",
@@ -255,3 +308,79 @@ fn json_resp(status: u16, body: Value) -> String {
         s.len()
     )
 }
+
+// ---------- 管理后台 ----------
+
+fn admin_login(body: &[u8]) -> (u16, Value) {
+    let v: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return (400, json!({ "error": "bad json" })),
+    };
+    let user = v.get("username").and_then(|x| x.as_str()).unwrap_or("");
+    let pass = v.get("password").and_then(|x| x.as_str()).unwrap_or("");
+    if user == ADMIN_USER && pass == ADMIN_PASS {
+        (200, json!({ "token": admin_token() }))
+    } else {
+        (401, json!({ "error": "账号或密码错误" }))
+    }
+}
+
+fn admin_teams(store: &Arc<Store>) -> (u16, Value) {
+    match store.list_all_teams() {
+        Ok(teams) => {
+            let list: Vec<Value> = teams
+                .iter()
+                .map(|t| {
+                    json!({
+                        "short_code": t.short_code,
+                        "room_id": t.room_id_hex,
+                        "created_at": t.created_at,
+                        "last_active": t.last_active,
+                        "member_count": t.members.len(),
+                        "members": t.members.iter().map(|m| json!({
+                            "member_hex": m.member_hex,
+                            "last_seen": m.last_seen,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            (200, json!({ "teams": list }))
+        }
+        Err(_) => (500, json!({ "error": "internal" })),
+    }
+}
+
+fn admin_delete(body: &[u8], store: &Arc<Store>, server: &Arc<RelayServer>) -> (u16, Value) {
+    let v: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return (400, json!({ "error": "bad json" })),
+    };
+    let short = match v.get("short_code").and_then(|x| x.as_str()) {
+        Some(s) => s.to_string(),
+        None => return (400, json!({ "error": "缺少 short_code" })),
+    };
+    // 先查 room_id 用于清理内存登记表
+    let room_id = store
+        .list_all_teams()
+        .ok()
+        .and_then(|list| list.into_iter().find(|t| t.short_code == short))
+        .map(|t| t.room_id_hex);
+    match store.dissolve_by_short(&short) {
+        Ok(true) => {
+            if let Some(room) = room_id {
+                if let Ok(mut a) = server.registry().activity.lock() {
+                    a.remove(&room);
+                }
+                if let Ok(mut m) = server.registry().members.lock() {
+                    m.remove(&room);
+                }
+            }
+            (200, json!({ "ok": true }))
+        }
+        Ok(false) => (404, json!({ "error": "队伍码不存在" })),
+        Err(_) => (500, json!({ "error": "internal" })),
+    }
+}
+
+/// 管理后台的单页 HTML（登录 + 队伍列表 + 删除）。
+const ADMIN_PAGE: &str = include_str!("admin.html");

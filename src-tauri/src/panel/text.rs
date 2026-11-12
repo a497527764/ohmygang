@@ -14,7 +14,7 @@ use crate::votes::VoteKind;
 
 impl Runner {
     pub(super) fn open_text(&mut self) {
-        if !self.in_team || !self.settings().is_some_and(|s| s.team_text) {
+        if !self.settings().is_some_and(|s| s.team_text) {
             return;
         }
         let Some(list) = crate::overlay::current_displays(&self.app) else {

@@ -367,7 +367,7 @@ impl Runner {
             self.hide(Which::Roster);
             return;
         }
-        if !self.in_team || !self.settings().is_some_and(|s| s.team_panel) {
+        if !self.settings().is_some_and(|s| s.team_panel) {
             return;
         }
         let Some(d) = cursor_display(&self.app) else {

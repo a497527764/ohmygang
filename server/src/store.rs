@@ -201,4 +201,86 @@ impl Store {
         conn.execute("DELETE FROM members WHERE room_id = ?1", [room_id_hex])?;
         Ok(())
     }
+
+    /// 按短码删除队伍（管理后台用）。
+    pub fn dissolve_by_short(&self, short: &str) -> rusqlite::Result<bool> {
+        let room: Option<String> = {
+            let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+            conn.query_row(
+                "SELECT room_id FROM teams WHERE short_code = ?1",
+                [short],
+                |r| r.get(0),
+            )
+            .optional()?
+        };
+        match room {
+            Some(room_id) => {
+                self.dissolve(&room_id)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// 全部队伍 + 每支队伍的成员（管理后台用）。
+    pub fn list_all_teams(&self) -> rusqlite::Result<Vec<AdminTeamRow>> {
+        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+        let mut stmt = conn.prepare(
+            "SELECT short_code, room_id, created_at, last_active FROM teams ORDER BY created_at DESC",
+        )?;
+        let teams: Vec<AdminTeamRow> = stmt
+            .query_map([], |r| {
+                Ok(AdminTeamRow {
+                    short_code: r.get(0)?,
+                    room_id_hex: r.get(1)?,
+                    created_at: r.get(2)?,
+                    last_active: r.get(3)?,
+                    members: Vec::new(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        let mut stmt = conn.prepare("SELECT room_id, member_hex, last_seen FROM members")?;
+        let member_rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut by_room: std::collections::HashMap<String, Vec<(String, i64)>> =
+            std::collections::HashMap::new();
+        for row in member_rows {
+            let (room, member, seen) = row?;
+            by_room.entry(room).or_default().push((member, seen));
+        }
+        let mut teams = teams;
+        for t in &mut teams {
+            if let Some(members) = by_room.remove(&t.room_id_hex) {
+                t.members = members
+                    .into_iter()
+                    .map(|(member_hex, last_seen)| AdminMember {
+                        member_hex,
+                        last_seen,
+                    })
+                    .collect();
+            }
+        }
+        Ok(teams)
+    }
+}
+
+/// 管理后台的队伍行。
+pub struct AdminTeamRow {
+    pub short_code: String,
+    pub room_id_hex: String,
+    pub created_at: i64,
+    pub last_active: i64,
+    pub members: Vec<AdminMember>,
+}
+
+/// 管理后台的成员行。
+pub struct AdminMember {
+    pub member_hex: String,
+    pub last_seen: i64,
 }
