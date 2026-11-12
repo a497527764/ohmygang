@@ -2,10 +2,10 @@
 
 > 参考 [lolPing](https://github.com/darrenprx/lolPing)（作者 Danrui Meng，MIT 许可）用 Rust 重写的版本：信号、表情、组队、队伍面板、投票和打字沿用 lolPing 的做法，另外加了按住说话的语音、带历史记录的聊天框、6 种字幕特效，界面换成英雄联盟客户端的样子。
 
-[![最新版本](https://img.shields.io/github/v/release/lijianqiao/lolGang?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/lijianqiao/lolGang/releases/latest)
-[![下载次数](https://img.shields.io/github/downloads/lijianqiao/lolGang/total?label=%E4%B8%8B%E8%BD%BD)](https://github.com/lijianqiao/lolGang/releases)
-[![CI](https://github.com/lijianqiao/lolGang/actions/workflows/ci.yml/badge.svg)](https://github.com/lijianqiao/lolGang/actions/workflows/ci.yml)
-[![许可](https://img.shields.io/github/license/lijianqiao/lolGang?label=%E8%AE%B8%E5%8F%AF)](LICENSE)
+[![最新版本](https://img.shields.io/github/v/release/a497527764/ohmygang?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/a497527764/ohmygang/releases/latest)
+[![下载次数](https://img.shields.io/github/downloads/a497527764/ohmygang/total?label=%E4%B8%8B%E8%BD%BD)](https://github.com/a497527764/ohmygang/releases)
+[![CI](https://github.com/a497527764/ohmygang/actions/workflows/ci.yml/badge.svg)](https://github.com/a497527764/ohmygang/actions/workflows/ci.yml)
+[![许可](https://img.shields.io/github/license/a497527764/ohmygang?label=%E8%AE%B8%E5%8F%AF)](LICENSE)
 
 常驻桌面的英雄联盟小玩具：按住 Alt 拖动，在屏幕任何地方发英雄联盟的信号；按住 Ctrl 拖动放表情。和朋友组队后，你发的信号、表情、文字会出现在队友屏幕上同样的位置，按住 V 说话队友直接听到。
 
@@ -36,7 +36,7 @@
 
 ## 下载
 
-到 [Releases](https://github.com/lijianqiao/lolGang/releases/latest) 下载：
+到 [Releases](https://github.com/a497527764/ohmygang/releases/latest) 下载：
 
 | 系统 | 文件 | 状态 |
 |---|---|---|
@@ -85,6 +85,23 @@ pnpm tauri dev                 # 开发运行
 cd src-tauri && cargo test     # Rust 测试
 pnpm release                   # 本机打 Windows 安装包（不带更新签名，只用来自己试）
 ```
+
+### 发版（自动更新走这里）
+
+自动更新从 GitHub Release 的 `latest.json` 查新版本，安装包用 minisign 签名，
+客户端拿 `src-tauri/tauri.conf.json` 里的公钥验签。发版流程：
+
+1. **一次性**：把签名私钥存进仓库的 Actions Secrets（[Settings → Secrets and variables → Actions](https://github.com/a497527764/ohmygang/settings/secrets/actions)）：
+   - `TAURI_SIGNING_PRIVATE_KEY`：私钥文件 `~/.tauri/ohmygang.key` 的**内容**（本机的更新私钥，别提交进仓库）
+   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：`~/.tauri/ohmygang.key.password` 的内容
+2. 三处版本号一起改成新版本：`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`package.json`，提交推送。
+3. 打带注释的标签并推送（注释就是更新说明）：
+   ```bash
+   git tag -a v0.1.1 -m "这一版改了什么"
+   git push origin v0.1.1
+   ```
+4. GitHub Actions 的「发版」工作流（`.github/workflows/release.yml`）自动打包、用私钥给更新包签名、
+   合成 `latest.json`、建 Release 并上传。装好的程序「关于」页点「检查更新」就能升上来。
 
 ## 许可和致谢
 

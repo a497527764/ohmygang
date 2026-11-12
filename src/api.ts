@@ -245,6 +245,8 @@ export interface UpdateView {
   /** 下载进度 0 到 1；不知道总大小时是 null。 */
   progress: number | null;
   error: string | null;
+  /** 灰字提示（比如「还没有发布过版本」），和红色的 error 分开。 */
+  note: string | null;
 }
 
 export const updateView = (): Promise<UpdateView> => invoke("update_view");

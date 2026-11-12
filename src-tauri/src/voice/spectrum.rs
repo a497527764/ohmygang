@@ -94,7 +94,10 @@ pub fn analyze(samples: &[f32]) -> [f32; BANDS] {
         let mut power = 0f64;
         let mut count = 0usize;
         for k in lo..hi {
-            let (r, i) = (f64::from(re[k]) * f64::from(scale), f64::from(im[k]) * f64::from(scale));
+            let (r, i) = (
+                f64::from(re[k]) * f64::from(scale),
+                f64::from(im[k]) * f64::from(scale),
+            );
             power += r * r + i * i;
             count += 1;
         }
@@ -117,7 +120,12 @@ mod tests {
             .map(|i| (2.0 * std::f32::consts::PI * hz * i as f32 / RATE).sin() * 0.2)
             .collect();
         let bands = analyze(&samples);
-        let peak = bands.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
+        let peak = bands
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .unwrap()
+            .0;
         let edges = band_edges();
         let hz_per_bin = RATE / N as f32;
         assert!(hz >= edges[peak] as f32 * hz_per_bin - 40.0);

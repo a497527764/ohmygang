@@ -37,7 +37,6 @@ pub(super) fn fast_config(relay: &str) -> NodeConfig {
             Duration::from_millis(600),
             Duration::from_millis(1200),
         ],
-        ..NodeConfig::default()
     }
 }
 

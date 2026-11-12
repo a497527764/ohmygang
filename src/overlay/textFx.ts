@@ -1,4 +1,4 @@
-// 队伍文字在透明窗口上的样子：在说话的位置冒出来（每人最多留 3 句，6 秒后消失），
+// 队伍文字在透明窗口上的样子：在说话的位置冒出来（每人最多留 3 句，出现 1.5 秒后开始渐隐、3 秒整消失），
 // 或者当弹幕从右往左飘过屏幕上方。冒出和弹幕的做法参考 lolPing 的 text-pop 和 danmaku（MIT，© 2026 Danrui Meng）。
 // 3.0 加了字号和字幕特效（像剪映的字幕模板）：描边大字、金色渐变、霓虹发光、逐字弹跳、打字机、抖动强调。
 // 字号、特效、冒出还是弹幕都由 Rust 随每一句交过来（看的人自己在功能页选的），这里只管画。
@@ -19,7 +19,8 @@ export interface TextSpawn {
   y: number;
 }
 
-const SPOT_MS = 6000;
+/** 一句话在屏幕上的寿命：出现 1.5 秒后开始渐隐（CSS 的 textOut），3 秒整消失（两种显示方式都一样）。 */
+const TEXT_LIFE_MS = 3000;
 const SPOT_PER_OWNER = 3;
 /** 弹幕的速度（CSS 像素每秒）、最多几行、和上一条之间至少空多少。行高跟着字号走。 */
 const DANMAKU_SPEED = 180;
@@ -81,7 +82,6 @@ export class TextStage {
     pop.style.top = `${t.y}px`;
     pop.style.setProperty("--tag", t.color);
     pop.style.setProperty("--size", `${t.size}px`);
-    pop.style.setProperty("--dur", `${SPOT_MS / 1000}s`);
     pop.append(div("text-name", t.name), line(t, "text-body"));
     const mine = this.spots.get(t.owner) ?? [];
     // 同一个人的旧句子往上让，最多留 3 句
@@ -98,7 +98,7 @@ export class TextStage {
         if (left.length) this.spots.set(t.owner, left);
         else this.spots.delete(t.owner);
       }
-    }, SPOT_MS);
+    }, TEXT_LIFE_MS);
   }
 
   private danmaku(t: TextSpawn): void {
@@ -114,11 +114,14 @@ export class TextStage {
     if (lane < 0) lane = this.laneFree.indexOf(Math.min(...this.laneFree));
     const travel = window.innerWidth + width;
     const durS = travel / DANMAKU_SPEED;
-    this.laneFree[lane] = Math.max(now, this.laneFree[lane]) + ((width + LANE_GAP_PX) / DANMAKU_SPEED) * 1000;
+    // 道路只占到这条弹幕真正消失（3 秒）为止，飘不完也不挡后面的
+    this.laneFree[lane] = Math.max(now, this.laneFree[lane]) + Math.min(((width + LANE_GAP_PX) / DANMAKU_SPEED) * 1000, TEXT_LIFE_MS);
     row.style.top = `${Math.round(window.innerHeight * 0.08) + lane * Math.round(t.size * 1.55)}px`;
     row.style.setProperty("--travel", `${-travel}px`);
     row.style.setProperty("--dur", `${durS}s`);
     row.style.visibility = "";
+    // textOut 的 animationend 或 3 秒整的兜底计时，先到的把它收走
     row.addEventListener("animationend", (e) => e.target === row && row.remove());
+    setTimeout(() => row.remove(), TEXT_LIFE_MS);
   }
 }

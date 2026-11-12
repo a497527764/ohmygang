@@ -621,6 +621,7 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                   <b>{update?.current ?? "—"}</b>
                 </div>
                 {update && UPDATE_TEXT[update.phase] && <p className="v-note">{UPDATE_TEXT[update.phase]}</p>}
+                {update?.note && <p className="v-note">{update.note}</p>}
                 {update?.error && <p className="v-error">{update.error}</p>}
                 {update?.phase === "downloading" && update.progress !== null && (
                   <div className="v-progress"><i style={{ width: `${Math.round(update.progress * 100)}%` }} /></div>

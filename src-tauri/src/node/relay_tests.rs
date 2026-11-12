@@ -94,19 +94,11 @@ async fn three_nodes_sync_and_ping_across_relay() {
 
     a.handle.send_live(ping("danger"));
     assert!(
-        wait_for(|| b
-            .lives_from(a_id)
-            .iter()
-            .any(|(_, via)| *via == Via::Relay))
-        .await,
+        wait_for(|| b.lives_from(a_id).iter().any(|(_, via)| *via == Via::Relay)).await,
         "乙经中继收到"
     );
     assert!(
-        wait_for(|| c
-            .lives_from(a_id)
-            .iter()
-            .any(|(_, via)| *via == Via::Relay))
-        .await,
+        wait_for(|| c.lives_from(a_id).iter().any(|(_, via)| *via == Via::Relay)).await,
         "丙经中继收到"
     );
     c.handle.send_live(ping("omw"));

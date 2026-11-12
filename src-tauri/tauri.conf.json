@@ -37,9 +37,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ3NTNDNDlFRTY4QjEzQjAKUldTd0U0dm1uc1JUMTBLc0RMV2xxTmFsckJOenc2U0VXNG00V0RORmFqWWpWODV5cDVkL0xsNysK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFBNDFDODg3RDM5N0U2QzcKUldUSDVwZlRoOGhCR3Z3T3lLSExGdEdGQjl6cWNnN3VkSnl6dlJGNGcyUTRUck9OVE9oMmM2c3IK",
       "endpoints": [
-        "https://github.com/lijianqiao/lolGang/releases/latest/download/latest.json"
+        "https://github.com/a497527764/ohmygang/releases/latest/download/latest.json"
       ],
       "requireSignedVersion": true,
       "windows": {

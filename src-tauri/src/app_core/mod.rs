@@ -230,7 +230,7 @@ impl Core {
     pub fn recent_rooms(&self) -> AppResult<Vec<RecentRoom>> {
         let me = self.view.member_id;
         let current = self.current_team()?.map(|t| t.room_id);
-        Ok(room_store::list_rooms(&self.conn)?
+        room_store::list_rooms(&self.conn)?
             .into_iter()
             .filter(|r| !matches!(r.status, RoomStatus::Dissolved))
             .filter(|r| current.is_none_or(|c| c != r.room_id))
@@ -249,7 +249,7 @@ impl Core {
                     members,
                 })
             })
-            .collect::<AppResult<Vec<_>>>()?)
+            .collect::<AppResult<Vec<_>>>()
     }
 
     pub fn list_members(&self, room: &RoomId) -> AppResult<Vec<MemberView>> {

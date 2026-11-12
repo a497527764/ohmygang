@@ -200,13 +200,20 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&dir)?;
     let db = storage::open(&dir.join("gang2.db"))?;
     let mut settings = storage::settings::load(&db)?;
-    // 第一次打开（还没存过设置）：按主显示器分辨率定字号和表情大小（4K 40/300、2K 30/250、1080p 25/220）。
-    if storage::settings::is_fresh(&db)? {
-        if let Some(m) = app.primary_monitor().ok().flatten() {
-            let (text, emote) = settings2::first_launch_sizes(m.size().height);
-            settings.text_size_px = text;
-            settings.emote_size_px = emote;
+    // 一次性迁移：旧的自动字号挪到新默认 50（用户自己调过的值不动），迁完存一次。
+    if let Some(px) = settings2::migrate_text_size(settings.text_size_px) {
+        settings.text_size_px = px;
+        if let Err(e) = storage::settings::save(&db, &settings) {
+            eprintln!("字号迁移没存上：{e}");
         }
+    }
+    // 第一次打开（还没存过设置）：按主显示器分辨率定字号和表情大小（字号一律 50，表情 4K 300、2K 250、1080p 220）。
+    if storage::settings::is_fresh(&db)?
+        && let Some(m) = app.primary_monitor().ok().flatten()
+    {
+        let (text, emote) = settings2::first_launch_sizes(m.size().height);
+        settings.text_size_px = text;
+        settings.emote_size_px = emote;
     }
     // 控制面板建好时藏着：开机启动就一直不显示（后面销毁），否则回到上次关掉时的位置再显示
     let autostart = std::env::args().any(|a| a == AUTOSTART_ARG);

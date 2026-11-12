@@ -40,11 +40,7 @@ pub struct TeamJoined {
 
 /// 建队：服务器分配 6 位短码并铸造 GT2 长码（owner_tag 由本人公钥生成）。
 pub async fn team_create(member_id_hex: &str) -> Result<TeamCreated, String> {
-    let v = post_json(
-        "/api/team/create",
-        &json!({ "member_id": member_id_hex }),
-    )
-    .await?;
+    let v = post_json("/api/team/create", &json!({ "member_id": member_id_hex })).await?;
     Ok(TeamCreated {
         short_code: str_field(&v, "short_code")?,
         code: str_field(&v, "code")?,
@@ -119,9 +115,13 @@ async fn post_json(path: &str, body: &Value) -> Result<Value, String> {
     let (host, port) = match rest.split_once(':') {
         Some((h, p)) => (
             h.to_string(),
-            p.parse::<u16>().map_err(|_| "云端地址格式不对".to_string())?,
+            p.parse::<u16>()
+                .map_err(|_| "云端地址格式不对".to_string())?,
         ),
-        None => (rest.split('/').next().unwrap_or("").to_string(), if use_tls { 443 } else { 80 }),
+        None => (
+            rest.split('/').next().unwrap_or("").to_string(),
+            if use_tls { 443 } else { 80 },
+        ),
     };
     let body_text = body.to_string();
     let request = format!(
@@ -184,7 +184,10 @@ fn parse_response(raw: &[u8]) -> Result<Value, String> {
         .ok_or_else(|| "云端响应格式不对".to_string())?;
     let plain = &raw[split + 4..];
     let dechunked;
-    let body: &[u8] = if head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+    let body: &[u8] = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
         dechunked = dechunk(plain);
         &dechunked
     } else {
@@ -194,7 +197,8 @@ fn parse_response(raw: &[u8]) -> Result<Value, String> {
     if (200..300).contains(&status) {
         Ok(v)
     } else {
-        Err(v.get("error")
+        Err(v
+            .get("error")
             .and_then(|e| e.as_str())
             .map(String::from)
             .unwrap_or_else(|| format!("云端服务返回 {status}")))
@@ -205,10 +209,7 @@ fn parse_response(raw: &[u8]) -> Result<Value, String> {
 fn dechunk(body: &[u8]) -> Vec<u8> {
     let mut rest = body;
     let mut out = Vec::new();
-    loop {
-        let Some(pos) = rest.windows(2).position(|w| w == b"\r\n") else {
-            break;
-        };
+    while let Some(pos) = rest.windows(2).position(|w| w == b"\r\n") {
         let size = usize::from_str_radix(
             std::str::from_utf8(&rest[..pos])
                 .unwrap_or("")

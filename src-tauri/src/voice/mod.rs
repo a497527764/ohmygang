@@ -538,7 +538,8 @@ impl Runner {
         let want = self.config.enabled && self.rec.is_none();
         if want && self.monitor.is_none() {
             if self.monitor_retry == 0 {
-                let captured: audio::MicBuffer = Arc::new(Mutex::new(Vec::with_capacity(RATE as usize / 10)));
+                let captured: audio::MicBuffer =
+                    Arc::new(Mutex::new(Vec::with_capacity(RATE as usize / 10)));
                 if let Ok(mic) = audio::open_mic(&self.config.mic, captured.clone()) {
                     self.monitor = Some((mic, captured));
                 } else {
@@ -572,7 +573,6 @@ impl Runner {
             let _ = self.app.emit_to("main", "voice://mic", self.bands.to_vec());
         }
     }
-
 
     fn step(&mut self) {
         self.drain_mic();

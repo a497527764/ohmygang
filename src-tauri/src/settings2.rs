@@ -71,14 +71,20 @@ pub const TEXT_EFFECTS: [&str; 6] = ["outline", "gold", "neon", "bounce", "typew
 /// 文字特效默认霓虹发光（3.0.1）。
 pub const DEFAULT_TEXT_EFFECT: &str = "neon";
 
-/// 首次启动按显示器纵向分辨率定字号 / 表情大小：4K（2160）40 / 300，2K（1440）30 / 250，1080p 25 / 220。
+/// 首次启动按显示器纵向分辨率定表情大小：4K（2160）300，2K（1440）250，1080p 220；字号一律默认 50。
 /// 只在第一次打开（库里还没有设置）时生效，之后以用户调过的为准。
 pub fn first_launch_sizes(screen_h_px: u32) -> (u32, u32) {
     match screen_h_px {
-        h if h >= 2000 => (40, 300),
-        h if h >= 1400 => (30, 250),
-        _ => (25, 220),
+        h if h >= 2000 => (50, 300),
+        h if h >= 1400 => (50, 250),
+        _ => (50, 220),
     }
+}
+
+/// 一次性迁移：旧的自动字号（首启按分辨率给的 25 / 30 / 40，和更早的默认 28）当成没人调过，
+/// 统一挪到新默认 50；库里存的是别的数（用户自己拖过滑杆）就原样不动。返回 None 表示不用迁。
+pub fn migrate_text_size(px: u32) -> Option<u32> {
+    matches!(px, 25 | 28 | 30 | 40).then_some(50)
 }
 /// 文字快捷键的候选：默认 Alt+T，撞了依次换。
 const TEXT_HOTKEYS: [Hotkey; 3] = [
@@ -97,10 +103,19 @@ const TEXT_HOTKEYS: [Hotkey; 3] = [
 ];
 /// 面板快捷键的候选：Alt+`（反引号在 Tab 左边、不带系统语义），然后 Alt+Tab 之外的几个。
 const PANEL_HOTKEYS: [Hotkey; 4] = [
-    Hotkey { mods: MOD_ALT, vk: 0xC0 },
-    Hotkey { mods: MOD_ALT, vk: 0x51 }, // Alt+Q
-    Hotkey { mods: MOD_ALT, vk: 0x45 }, // Alt+E
-    Hotkey { mods: 0, vk: 0xC0 },       // 纯 `（兼容旧行为）
+    Hotkey {
+        mods: MOD_ALT,
+        vk: 0xC0,
+    },
+    Hotkey {
+        mods: MOD_ALT,
+        vk: 0x51,
+    }, // Alt+Q
+    Hotkey {
+        mods: MOD_ALT,
+        vk: 0x45,
+    }, // Alt+E
+    Hotkey { mods: 0, vk: 0xC0 }, // 纯 `（兼容旧行为）
 ];
 /// 说话键的候选：V，撞了依次换。最多 4 个键被占（两个触发键、两个快捷键），所以总有一个空着。
 const TALK_KEYS: [u32; 6] = [0x56, 0x47, 0x5A, 0x58, 0x4E, 0x4D];
@@ -273,7 +288,7 @@ impl Default for Settings {
             team_text: true,
             text_hotkey: TEXT_HOTKEYS[0],
             text_style: TEXT_STYLES[0].into(),
-            text_size_px: 28,
+            text_size_px: 50,
             text_effect: DEFAULT_TEXT_EFFECT.into(),
             team_votes: true,
             team_panel: true,
@@ -490,7 +505,11 @@ fn panel_hotkey(
             }
         }
     }
-    let why = if raw.is_some() || legacy.is_some() { Some(None) } else { None };
+    let why = if raw.is_some() || legacy.is_some() {
+        Some(None)
+    } else {
+        None
+    };
     let free = PANEL_HOTKEYS
         .into_iter()
         .find(|c| owner(c.vk).is_none())

@@ -39,6 +39,8 @@ struct Inner {
     phase: Option<Phase>,
     found: Option<Update>,
     error: Option<String>,
+    /// 灰字提示（比如「还没有发布过版本」），和红色的 `error` 分开。
+    note: Option<String>,
     /// 下载进度 0 到 1；不知道总大小时是 None。
     progress: Option<f64>,
     /// 已经弹过提示的版本。
@@ -60,6 +62,7 @@ pub struct UpdateView {
     pub notes: Option<String>,
     pub progress: Option<f64>,
     pub error: Option<String>,
+    pub note: Option<String>,
 }
 
 fn view(app: &AppHandle) -> UpdateView {
@@ -68,15 +71,16 @@ fn view(app: &AppHandle) -> UpdateView {
     let inner = state
         .as_ref()
         .map(|s| s.updates.inner.lock().expect("更新锁没有中毒"));
-    let (phase, version, notes, progress, error) = match &inner {
+    let (phase, version, notes, progress, error, note) = match &inner {
         Some(i) => (
             i.phase.unwrap_or(Phase::Idle),
             i.found.as_ref().map(|u| u.version.clone()),
             i.found.as_ref().and_then(|u| u.body.clone()),
             i.progress,
             i.error.clone(),
+            i.note.clone(),
         ),
-        None => (Phase::Idle, None, None, None, None),
+        None => (Phase::Idle, None, None, None, None, None),
     };
     UpdateView {
         current,
@@ -85,6 +89,7 @@ fn view(app: &AppHandle) -> UpdateView {
         notes,
         progress,
         error,
+        note,
     }
 }
 
@@ -116,6 +121,7 @@ pub async fn check(app: &AppHandle, quiet: bool) -> UpdateView {
     set(app, |i| {
         i.phase = Some(Phase::Checking);
         i.error = None;
+        i.note = None;
     });
     let result = match app.updater() {
         Ok(u) => u.check().await.map_err(|e| e.to_string()),
@@ -130,11 +136,12 @@ pub async fn check(app: &AppHandle, quiet: bool) -> UpdateView {
                 i.told = Some(version.clone());
                 i.found = Some(update);
                 i.phase = Some(Phase::Available);
+                i.note = None;
             });
             crate::tray::set_update_label(app, Some(&version));
             if first_time && let Some(state) = app.try_state::<AppState>() {
                 state.overlays.send(Msg::Toast {
-                    title: format!("lolGang 有新版本 {version}"),
+                    title: format!("OH-MY-GANG! 有新版本 {version}"),
                     body: "在控制面板的「关于」里更新".into(),
                 });
             }
@@ -143,18 +150,33 @@ pub async fn check(app: &AppHandle, quiet: bool) -> UpdateView {
             set(app, |i| {
                 i.found = None;
                 i.phase = Some(Phase::UpToDate);
+                i.note = None;
             });
             crate::tray::set_update_label(app, None);
         }
         Err(e) => {
-            // 插件对「清单取不到」只给一句英文：说成人话
-            let reason = if e.contains("valid release JSON") {
-                "GitHub 上还没有发布过新版本，或者连不上 GitHub".to_string()
-            } else {
-                e
-            };
+            // GitHub 上还没有发过版（清单 404 / 取不到）不是故障：灰字说一声就好，
+            // 不标红、不弹窗。插件对这种情况只给一句 "Could not fetch a valid release JSON"。
+            let not_published = e.contains("valid release JSON") || e.contains("404");
+            if not_published {
+                set(app, |i| {
+                    i.found = None;
+                    i.phase = Some(Phase::Idle);
+                    i.error = None;
+                    i.note = Some("还没有发布过版本，发布后就能自动更新".into());
+                });
+                crate::tray::set_update_label(app, None);
+                if !quiet {
+                    tray_show_about(app);
+                }
+                return view(app);
+            }
+            // 其余是真故障（断网、证书之类）：说成人话
+            let reason = e;
             set(app, |i| {
                 i.phase = Some(Phase::Failed);
+                i.note = None;
+                // 自动检查不打扰：错误照样记下，「关于」页能看到
                 i.error = Some(format!("检查更新失败：{reason}"));
             });
             if !quiet {
