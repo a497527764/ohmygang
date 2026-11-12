@@ -184,7 +184,7 @@ fn saved_settings_read_back() {
     let c = open_in_memory().unwrap();
     let s = Settings {
         volume: 25,
-        theme: "dark".into(),
+        theme: "dark-carbon".into(),
         ..Settings::default()
     };
     settings::save(&c, &s).unwrap();

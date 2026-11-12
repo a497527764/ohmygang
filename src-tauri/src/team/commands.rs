@@ -2,7 +2,7 @@
 
 use tauri::{AppHandle, Manager};
 
-use super::view::{AvatarInput, TeamView, unbase64, view};
+use super::view::{AvatarInput, RecentTeamDto, TeamView, recent_dto, unbase64, view};
 use super::{refresh_names, refresh_presence};
 use crate::api::AppState;
 use crate::app_core::{AppError, Core};
@@ -37,22 +37,101 @@ pub async fn team_view(app: AppHandle) -> Result<TeamView, String> {
     view(&app).await
 }
 
+/// 主页「加入过的队伍」：按最近活跃倒序，不含当前队伍和已解散的。点击一行直接 `team_join` 它的 code。
+#[tauri::command]
+pub async fn team_recent(app: AppHandle) -> Result<Vec<RecentTeamDto>, String> {
+    let node = app.state::<AppState>().node.clone();
+    let list = node
+        .call(|core, _| core.recent_rooms())
+        .await
+        .ok_or("网络模块停了")?
+        .map_err(|e| e.to_string())?;
+    Ok(list.iter().map(recent_dto).collect())
+}
+
+/// 启动自动回归：当时没在队里、最近一个队伍不是已解散的，就重新 join 它。
+/// 失败（队伍码坏了、网络没起来）不打扰用户：队伍列表里那一行还在，手动点就是。
+pub async fn rejoin_last(app: &AppHandle) {
+    let node = app.state::<AppState>().node.clone();
+    let joined = node
+        .call(
+            |core: &mut Core, _: &mut Outbox| -> Result<bool, AppError> {
+                if core.current_team()?.is_some() {
+                    return Ok(false);
+                }
+                let Some(last) = core.recent_rooms()?.into_iter().next() else {
+                    return Ok(false);
+                };
+                core.join_room(&last.code, now_ms())?;
+                Ok(true)
+            },
+        )
+        .await;
+    if matches!(joined, Some(Ok(true))) {
+        super::refresh_names(app);
+    }
+}
+
+/// 建队：先向云端申请 6 位短码（服务器铸造 GT2 长码），再本地建队、写事件、立刻报心跳。
 #[tauri::command]
 pub async fn team_create(app: AppHandle, title: String) -> Result<TeamView, String> {
-    act(&app, move |core, out| {
-        let c = core.create_room(&title, now_ms())?;
+    let node = app.state::<AppState>().node.clone();
+    let member_hex = node
+        .call(|core, _| crate::crypto::hex(&core.identity().member_id))
+        .await
+        .ok_or("网络模块停了")?;
+    let created = crate::cloud::team_create(&member_hex).await?;
+    let (code, short) = (created.code, created.short_code);
+    let view = act(&app, move |core, out| {
+        let c = core.create_room_with_code(&code, &title, now_ms())?;
+        core.set_short_code(&c.summary.room_id, &short)?;
         out.broadcast(c.summary.room_id, c.events);
         Ok(())
     })
-    .await
+    .await?;
+    kick_heartbeat(&app);
+    Ok(view)
 }
 
+/// 进队：输入 6 位短码就向云端换 GT2 长码；GT2 长码直接用（兼容存量队伍）。
 #[tauri::command]
 pub async fn team_join(app: AppHandle, code: String) -> Result<TeamView, String> {
-    act(&app, move |core, _| {
-        core.join_room(&code, now_ms()).map(|_| ())
+    let (gt2, short) = resolve_code(code).await?;
+    let view = act(&app, move |core, _| {
+        let joined = core.join_room(&gt2, now_ms())?;
+        if let Some(s) = short {
+            core.set_short_code(&joined.room_id, &s)?;
+        }
+        Ok(())
     })
-    .await
+    .await?;
+    kick_heartbeat(&app);
+    Ok(view)
+}
+
+/// 6 位短码 → 向云端换 GT2 长码；GT2 长码原样返回。
+async fn resolve_code(input: String) -> Result<(String, Option<String>), String> {
+    let input = input.trim().to_string();
+    if input.to_ascii_uppercase().starts_with("GT2") {
+        return Ok((input, None));
+    }
+    let normalized: String = input
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if normalized.chars().count() == 6 {
+        let joined = crate::cloud::team_join(&normalized).await?;
+        Ok((joined.code, Some(normalized)))
+    } else {
+        Err("队伍码应为 6 位字母数字（或 GT2- 开头的长码）".to_string())
+    }
+}
+
+/// 建队/进队后立刻给活跃队伍报一次心跳。
+fn kick_heartbeat(app: &AppHandle) {
+    let node = app.state::<AppState>().node.clone();
+    tauri::async_runtime::spawn(async move { crate::cloud::heartbeat_all(&node).await });
 }
 
 /// 正在加入时取消。

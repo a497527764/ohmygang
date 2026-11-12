@@ -2,7 +2,6 @@
 
 pub mod budget;
 pub mod flood;
-pub mod lan;
 pub mod nostr;
 pub mod relay;
 

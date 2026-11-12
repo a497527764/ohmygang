@@ -20,6 +20,9 @@ pub const STILL_SIDE: u32 = 160;
 pub const ANIM_MAX_BYTES: usize = 5 * 1024 * 1024;
 pub const ANIM_MAX_SIDE: u32 = 1024;
 pub const SOUND_MAX_BYTES: usize = 1024 * 1024;
+/// 自定义表情的静态图：用户自己的图，要保真，放宽到 1000 像素、1 MB，比例不限。
+pub const CUSTOM_STILL_MAX_BYTES: usize = 1024 * 1024;
+pub const CUSTOM_STILL_SIDE: u32 = 1000;
 const CACHE_MAX_FILES: usize = 200;
 const CACHE_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -115,7 +118,7 @@ impl std::fmt::Display for ImportError {
         f.write_str(match self {
             ImportError::Type => "文件类型不对",
             ImportError::Size => "文件太大",
-            ImportError::Full => "最多导入 24 个表情",
+            ImportError::Full => "最多导入 20 个表情",
             ImportError::Disk => "写不进数据目录",
         })
     }
@@ -131,6 +134,20 @@ pub fn check_still(b: &[u8]) -> Result<(), ImportError> {
     }
     match webp_size(b) {
         Some((w, h)) if w.max(h) <= STILL_SIDE => Ok(()),
+        _ => Err(ImportError::Type),
+    }
+}
+
+/// 自定义表情的静态图：不动的 WebP，1 MB、1000 像素以内，比例不限（比内置表情松很多）。
+pub fn check_custom_still(b: &[u8]) -> Result<(), ImportError> {
+    if !is_webp(b) || webp_animated(b) {
+        return Err(ImportError::Type);
+    }
+    if b.len() > CUSTOM_STILL_MAX_BYTES {
+        return Err(ImportError::Size);
+    }
+    match webp_size(b) {
+        Some((w, h)) if w.max(h) <= CUSTOM_STILL_SIDE => Ok(()),
         _ => Err(ImportError::Type),
     }
 }
@@ -265,6 +282,37 @@ impl Store {
         sound: Option<&[u8]>,
     ) -> Result<String, ImportError> {
         check_still(still)?;
+        if let Some(a) = anim {
+            check_anim(a)?;
+        }
+        if let Some(s) = sound {
+            check_sound(s)?;
+        }
+        let hash = hash_of(still);
+        std::fs::create_dir_all(&self.library).map_err(|_| ImportError::Disk)?;
+        let write = |part: Part, b: Option<&[u8]>| match b {
+            Some(b) => std::fs::write(self.path(&hash, part), b),
+            None => match std::fs::remove_file(self.path(&hash, part)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            },
+        };
+        write(Part::Still, Some(still))
+            .and_then(|()| write(Part::Anim, anim))
+            .and_then(|()| write(Part::Sound, sound))
+            .map_err(|_| ImportError::Disk)?;
+        Ok(hash)
+    }
+
+    /// 自定义表情：静态图允许到 1000 像素、1 MB（比例不限），动画、音效和内置表情同一套检查。
+    /// 返回值仍是静态图哈希，同一张图再导入一次会换掉它的动画和音效。
+    pub fn import_custom(
+        &self,
+        still: &[u8],
+        anim: Option<&[u8]>,
+        sound: Option<&[u8]>,
+    ) -> Result<String, ImportError> {
+        check_custom_still(still)?;
         if let Some(a) = anim {
             check_anim(a)?;
         }

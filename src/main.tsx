@@ -1,11 +1,16 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { syncUiScale } from "./ui/scale";
 
 // 关掉浏览器自带的右键菜单（返回、刷新、检查之类，对桌面程序没有意义）；输入框里保留，方便剪切、复制、粘贴。
 document.addEventListener("contextmenu", (e) => {
   if (!(e.target as HTMLElement | null)?.closest("input, textarea")) e.preventDefault();
 });
+
+// 整体放大 1.3 倍，并按显示器 DPI 补偿，让窗口在不同分辨率下看起来差不多大。
+syncUiScale();
+window.addEventListener("resize", syncUiScale);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

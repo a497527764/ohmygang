@@ -22,6 +22,8 @@ fn empty_or_broken_input_gives_the_defaults() {
         }
     );
     assert!(d.game_check && !d.click_ping && d.tick_sound && !d.muted);
+    // 3.3：启动行为默认都是开的（上线、回上次的队伍），关掉要显式存。
+    assert!(d.auto_online && d.auto_rejoin);
 }
 
 #[test]
@@ -54,8 +56,8 @@ fn a_saved_file_reads_back_the_same() {
         volume: 30,
         muted: true,
         tick_sound: false,
-        theme: "dark".into(),
-        allow_internet: false,
+        theme: "dark-ice".into(),
+        icon_style: "league".into(),
         relays: vec!["wss://my.relay".into()],
         emote_trigger: None,
         emote_click: true,
@@ -98,6 +100,8 @@ fn a_saved_file_reads_back_the_same() {
         voice_volume: 35,
         mic: "wasapi:{abc}".into(),
         launch_at_startup: true,
+        auto_online: false,
+        auto_rejoin: false,
         auto_update_check: false,
         panel_rect: Some(PanelRect {
             x: -1600,
@@ -236,7 +240,7 @@ fn wheel_must_be_eight_known_pings_each_once() {
 fn unknown_click_ping_and_theme_fall_back() {
     let s = normalize(&json!({ "clickPingId": "nope", "theme": "purple" }));
     assert_eq!(s.click_ping_id, "generic");
-    assert_eq!(s.theme, "system");
+    assert_eq!(s.theme, "dark-ice");
 }
 
 #[test]
@@ -284,9 +288,8 @@ fn relays_keep_valid_unique_wss_addresses() {
     );
     assert_eq!(s.relay_list(), s.relays);
     let d = Settings::default();
-    assert!(d.allow_internet && d.relays.is_empty());
+    assert!(d.relays.is_empty());
     assert_eq!(d.relay_list(), DEFAULT_RELAYS.map(String::from).to_vec());
-    assert!(!normalize(&json!({ "allowInternet": false })).allow_internet);
 }
 
 #[test]
@@ -367,7 +370,7 @@ fn team_keys_reach_the_gesture_only_inside_a_team() {
             vk: 0x54
         }
     );
-    assert_eq!(d.panel_key, 0x09);
+    assert_eq!(d.panel_key, 0xC0);
     assert!(d.team_text && d.team_votes && d.team_panel && !d.launch_at_startup);
     assert!(d.auto_update_check, "默认自动检查更新");
     let out = d.gesture_config(true, false);
@@ -379,7 +382,7 @@ fn team_keys_reach_the_gesture_only_inside_a_team() {
     let inside = d.gesture_config(true, true);
     assert_eq!(
         (inside.text_mods, inside.text_vk, inside.panel_vk),
-        (MOD_ALT, 0x54, 0x09)
+        (MOD_ALT, 0x54, 0xC0)
     );
     let mut off = d.clone();
     off.team_text = false;
@@ -406,15 +409,15 @@ fn team_keys_never_share_a_key() {
         }
     );
     // 面板键：Esc、修饰键、被占的键都换掉
-    assert_eq!(normalize(&json!({ "panelKey": 0x1B })).panel_key, 0x09);
-    assert_eq!(normalize(&json!({ "panelKey": 0xA2 })).panel_key, 0x09);
+    assert_eq!(normalize(&json!({ "panelKey": 0x1B })).panel_key, 0xC0);
+    assert_eq!(normalize(&json!({ "panelKey": 0xA2 })).panel_key, 0xC0);
     assert_eq!(normalize(&json!({ "panelKey": 0x71 })).panel_key, 0x71);
     let s = normalize(&json!({ "toggleHotkey": { "mods": 2, "vk": 0x09 }, "panelKey": 0x09 }));
     assert_eq!(s.panel_key, 0xC0, "Tab 被暂停快捷键占了，换成 `");
     let s = normalize(&json!({ "trigger": { "vk": 0x71 }, "panelKey": 0x71 }));
-    assert_eq!(s.panel_key, 0x09, "F2 被自定义触发键占了");
+    assert_eq!(s.panel_key, 0xC0, "F2 被自定义触发键占了");
     let s = normalize(&json!({ "emoteTrigger": { "vk": 0x72 }, "panelKey": 0x72 }));
-    assert_eq!(s.panel_key, 0x09);
+    assert_eq!(s.panel_key, 0xC0);
     assert_eq!(
         normalize(&json!({ "textStyle": "danmaku" })).text_style,
         "danmaku"
@@ -466,7 +469,7 @@ fn talk_key_is_a_plain_safe_key_that_clashes_with_nothing() {
     assert_eq!(s.talk_key, 0x56, "T 是文字快捷键的键");
     // 面板键排在说话键后面：面板键选了说话键的键，换的是面板键
     let s = normalize(&json!({ "panelKey": 0x56 }));
-    assert_eq!((s.talk_key, s.panel_key), (0x56, 0x09));
+    assert_eq!((s.talk_key, s.panel_key), (0x56, 0xC0));
 }
 
 #[test]
@@ -484,13 +487,13 @@ fn talk_key_reaches_the_gesture_only_in_a_team_with_voice_on() {
 #[test]
 fn overlay_text_is_bigger_by_default_with_a_known_effect() {
     let d = Settings::default();
-    assert_eq!((d.text_size_px, d.text_effect.as_str()), (28, "outline"));
+    assert_eq!((d.text_size_px, d.text_effect.as_str()), (28, "neon"));
     for e in TEXT_EFFECTS {
         assert_eq!(normalize(&json!({ "textEffect": e })).text_effect, e);
     }
     assert_eq!(
         normalize(&json!({ "textEffect": "rainbow" })).text_effect,
-        "outline"
+        "neon"
     );
     assert_eq!(normalize(&json!({ "textSizePx": 200 })).text_size_px, 56);
     assert_eq!(normalize(&json!({ "textSizePx": 3 })).text_size_px, 16);

@@ -2,6 +2,7 @@
 // 移植自 lolPing src/renderer/overlay/pingFx.ts（MIT，© 2026 Danrui Meng），去掉了 AI 队友用的文字。
 import { div } from "../shared/dom";
 import { FALLBACK_TEXTURE, textureUrl, type PingDef } from "../shared/pings";
+import { vectorPingUrl, type IconStyle } from "../shared/vectorAssets";
 
 /** 屏幕上的信号超过这么多就先删最早的，免得一阵刷屏拖慢透明窗口。 */
 export const MAX_PINGS = 60;
@@ -16,15 +17,17 @@ export interface PingFxOptions {
   sizePx: number;
   durationS: number;
   tag?: PingTag;
+  /** 矢量风格下落地动画也用加粗几何图，不再露英雄联盟原图。 */
+  iconStyle?: IconStyle;
 }
 
-function img(name: string, cls = ""): HTMLImageElement {
+function img(name: string, vectorId: string, style: IconStyle, cls = ""): HTMLImageElement {
   const el = document.createElement("img");
   if (cls) el.className = cls;
-  el.src = textureUrl(name);
+  el.src = style === "vector" ? vectorPingUrl(vectorId) : textureUrl(name);
   el.onerror = () => {
     el.onerror = null;
-    el.src = textureUrl(FALLBACK_TEXTURE);
+    el.src = style === "vector" ? vectorPingUrl("generic") : textureUrl(FALLBACK_TEXTURE);
   };
   return el;
 }
@@ -39,13 +42,14 @@ export function spawnPing(layer: HTMLElement, def: PingDef, x: number, y: number
   root.style.setProperty("--dur", `${opts.durationS}s`);
   root.append(div("ground"), div("ring"), div("ring r2"), div("ring r3"));
   const art = div("art");
-  if (def.art.length === 2) {
+  const style = opts.iconStyle ?? "league";
+  if (def.art.length === 2 && style === "league") {
     const clash = div("clash");
-    clash.append(img(def.art[0], "a1"), img(def.art[1], "a2"));
+    clash.append(img(def.art[0], def.id, style, "a1"), img(def.art[1], def.id, style, "a2"));
     art.append(clash, div("flash"));
   } else {
     const pop = div("pop");
-    pop.append(img(def.art[0]));
+    pop.append(img(def.art[0], def.id, style));
     art.append(pop);
   }
   root.append(art);

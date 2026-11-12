@@ -2661,7 +2661,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "lolgang"
-version = "3.2.0"
+version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",
@@ -2675,6 +2675,7 @@ dependencies = [
  "k256",
  "keyring",
  "minisign",
+ "native-tls",
  "opus-rs",
  "rusqlite",
  "serde",
@@ -2688,6 +2689,7 @@ dependencies = [
  "tauri-plugin-updater",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-native-tls",
  "tokio-tungstenite",
  "windows",
 ]

@@ -1,9 +1,9 @@
 //! `gang2.db` 的表结构（2.0 架构第 8 节）。每个元素是一次升级，下标 + 1 就是升级后的版本号，只能在末尾追加，不能改已有的。
 //! 第 1 版（2.0-M1）只有设置；第 2 版（2.0-M2）加入身份、队伍、成员和状态事件；第 3 版（2.0-M3）给成员加被叠次数；
-//! 第 4 版（3.0-M4）加历史记录（文字、语音、信号、表情）。
+//! 第 4 版（3.0-M4）加历史记录（文字、语音、信号、表情）；第 5 版给 rooms 加云端 6 位短码。
 //! 和 1.x 的 `lolgang.db` 相比去掉了聊天要的表和列：已读游标、聊天补齐分界、清空记录、隐藏、心之钢规则、事件的 stream 和显示时间。
 
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
 
 const V1: &str =
     "CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL);";
@@ -71,3 +71,5 @@ CREATE TABLE history (
 );
 CREATE INDEX history_by_room ON history (room_id, id);
 ";
+
+const V5: &str = "ALTER TABLE rooms ADD COLUMN short_code TEXT;";

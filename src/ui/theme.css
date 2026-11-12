@@ -1,0 +1,232 @@
+/* 电竞风 token：硬描边、硬切角、发光、等宽数字。控制面板和四个浮层共用这一套。
+   六套配色（3 深色 + 3 浅色）只换「底 / 表面 / 描边 / 字 / 主强调色」，
+   --orange 始终是队伍相关的第二强调色，不与主色抢位置。
+   html 上的 data-theme 决定当前套；旧值（system / dark / light）在 Rust 侧迁移。 */
+:root,
+[data-theme="dark-ice"] {
+  --bg: #070a11;
+  --bg-2: #090e17;
+  --card: #0b131f;
+  --card-2: #0d1725;
+  --inset: #060910;
+  --bg-nav: #05080e;
+
+  --line: #1b2a44;
+  --line-hi: #33486e;
+
+  --text: #e8f0f8;
+  --text-2: #8fa3bc;
+  --muted: #5a6c85;
+
+  --cyan: #00e7ff;
+  --cyan-dim: #0b3a47;
+  --cyan-ink: #04121a;
+  --pink: #ff2e63;
+  --pink-dim: #3d0f1e;
+  --lime: #c8ff2e;
+  --amber: #ffb020;
+  --amber-dim: #4a3410;
+  --orange: #ff6b1a;
+  --orange-dim: #45220a;
+  --orange-ink: #1a0a02;
+  --danger-bg: #1c1216;
+
+  --glow: 0 0 14px rgba(0, 231, 255, 0.32);
+  --glow-soft: 0 0 10px rgba(0, 231, 255, 0.22);
+  --glow-pink: 0 0 12px rgba(255, 46, 99, 0.38);
+  --glow-orange: 0 0 12px rgba(255, 107, 26, 0.4);
+  color-scheme: dark;
+}
+
+/* 石墨黑 / 酸绿：中性灰黑表面，主色换成荧光酸绿，橙色块对比更强 */
+[data-theme="dark-carbon"] {
+  --bg: #08090b;
+  --bg-2: #0c0e11;
+  --card: #101317;
+  --card-2: #171b20;
+  --inset: #050607;
+  --bg-nav: #060708;
+
+  --line: #272d33;
+  --line-hi: #4a545c;
+
+  --text: #eef2ee;
+  --text-2: #9ba89e;
+  --muted: #68736b;
+
+  --cyan: #b8ff45;
+  --cyan-dim: #26360d;
+  --cyan-ink: #0d1400;
+  --pink: #ff4d6d;
+  --pink-dim: #3a1420;
+  --lime: #ffe45c;
+  --amber: #ffb020;
+  --amber-dim: #4a3410;
+  --orange: #ff7a1a;
+  --orange-dim: #4a2408;
+  --orange-ink: #1a0a02;
+  --danger-bg: #1c1216;
+
+  --glow: 0 0 14px rgba(184, 255, 69, 0.3);
+  --glow-soft: 0 0 10px rgba(184, 255, 69, 0.2);
+  --glow-pink: 0 0 12px rgba(255, 77, 109, 0.38);
+  --glow-orange: 0 0 12px rgba(255, 122, 26, 0.42);
+  color-scheme: dark;
+}
+
+/* 紫黑 / 电紫：偏紫的深底与雾紫描边，主色是亮紫 */
+[data-theme="dark-plum"] {
+  --bg: #0a0710;
+  --bg-2: #0f0a19;
+  --card: #140e22;
+  --card-2: #1b1330;
+  --inset: #080510;
+  --bg-nav: #070410;
+
+  --line: #33224f;
+  --line-hi: #5b3f88;
+
+  --text: #f1eafb;
+  --text-2: #aa97c8;
+  --muted: #776596;
+
+  --cyan: #b98cff;
+  --cyan-dim: #2f1c52;
+  --cyan-ink: #140826;
+  --pink: #ff4d8f;
+  --pink-dim: #42132d;
+  --lime: #c8ff6a;
+  --amber: #ffc247;
+  --amber-dim: #4a3410;
+  --orange: #ff8a3d;
+  --orange-dim: #4a2614;
+  --orange-ink: #1a0a02;
+  --danger-bg: #21101c;
+
+  --glow: 0 0 14px rgba(185, 140, 255, 0.34);
+  --glow-soft: 0 0 10px rgba(185, 140, 255, 0.22);
+  --glow-pink: 0 0 12px rgba(255, 77, 143, 0.4);
+  --glow-orange: 0 0 12px rgba(255, 138, 61, 0.42);
+  color-scheme: dark;
+}
+
+/* 冷白 / 青：原来的浅色主题，白卡片、冷灰描边 */
+[data-theme="light-paper"] {
+  --bg: #e8edf4;
+  --bg-2: #dfe6f0;
+  --card: #ffffff;
+  --card-2: #f2f6fa;
+  --inset: #eef2f7;
+  --bg-nav: #f5f8fb;
+
+  --line: #c9d4e2;
+  --line-hi: #a9b8cc;
+
+  --text: #101823;
+  --text-2: #44566f;
+  --muted: #7c8ba1;
+
+  --cyan: #0093ac;
+  --cyan-dim: #c4e9ef;
+  --cyan-ink: #ffffff;
+  --pink: #cf1c4c;
+  --pink-dim: #f6d3dc;
+  --lime: #5c8f00;
+  --amber: #b06a00;
+  --amber-dim: #f3e0c2;
+  --orange: #d9540a;
+  --orange-dim: #f8dcc9;
+  --orange-ink: #ffffff;
+  --danger-bg: #f6dce2;
+
+  --glow: 0 0 10px rgba(0, 147, 172, 0.25);
+  --glow-soft: 0 0 8px rgba(0, 147, 172, 0.16);
+  --glow-pink: 0 0 10px rgba(207, 28, 76, 0.28);
+  --glow-orange: 0 0 10px rgba(217, 84, 10, 0.28);
+  color-scheme: light;
+}
+
+/* 暖砂 / 陶土：米白暖底，主色是深陶土棕，橙块略偏红 */
+[data-theme="light-sand"] {
+  --bg: #efe7da;
+  --bg-2: #e8ddcc;
+  --card: #fffaf1;
+  --card-2: #f5ecdd;
+  --inset: #f2e7d5;
+  --bg-nav: #f8f1e4;
+
+  --line: #d9c9b0;
+  --line-hi: #b9a184;
+
+  --text: #241a10;
+  --text-2: #5a4632;
+  --muted: #93816c;
+
+  --cyan: #9a4b00;
+  --cyan-dim: #f2ddc4;
+  --cyan-ink: #ffffff;
+  --pink: #bb2145;
+  --pink-dim: #f5d6dc;
+  --lime: #6b7200;
+  --amber: #9a6400;
+  --amber-dim: #f0ddba;
+  --orange: #d2460a;
+  --orange-dim: #f9d9c8;
+  --orange-ink: #ffffff;
+  --danger-bg: #f5dbd9;
+
+  --glow: 0 0 10px rgba(154, 75, 0, 0.22);
+  --glow-soft: 0 0 8px rgba(154, 75, 0, 0.14);
+  --glow-pink: 0 0 10px rgba(187, 33, 69, 0.26);
+  --glow-orange: 0 0 10px rgba(210, 70, 10, 0.28);
+  color-scheme: light;
+}
+
+/* 薄荷 / 松绿：淡青灰底，主色是深松绿，橙色作为互补色格外跳 */
+[data-theme="light-mint"] {
+  --bg: #e3efeb;
+  --bg-2: #d6e8e2;
+  --card: #fbfffd;
+  --card-2: #edf7f3;
+  --inset: #e6f2ee;
+  --bg-nav: #f2faf7;
+
+  --line: #bcd6cd;
+  --line-hi: #8fb8aa;
+
+  --text: #0d211b;
+  --text-2: #3b5e52;
+  --muted: #739488;
+
+  --cyan: #0b7563;
+  --cyan-dim: #c8ece3;
+  --cyan-ink: #ffffff;
+  --pink: #c01f52;
+  --pink-dim: #f6d5e0;
+  --lime: #4f7a00;
+  --amber: #a16500;
+  --amber-dim: #f0e0bd;
+  --orange: #dc5208;
+  --orange-dim: #f9dbc8;
+  --orange-ink: #ffffff;
+  --danger-bg: #f5dade;
+
+  --glow: 0 0 10px rgba(11, 117, 99, 0.24);
+  --glow-soft: 0 0 8px rgba(11, 117, 99, 0.16);
+  --glow-pink: 0 0 10px rgba(192, 31, 82, 0.26);
+  --glow-orange: 0 0 10px rgba(220, 82, 8, 0.3);
+  color-scheme: light;
+}
+
+:root {
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --fast: 140ms;
+  --normal: 180ms;
+  --slow: 300ms;
+  --r-card: 10px;
+  --r-ctl: 6px;
+  --r-chip: 4px;
+
+  --sans: "Noto Sans SC", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  --num: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+}

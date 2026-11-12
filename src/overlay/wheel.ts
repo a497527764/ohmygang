@@ -1,9 +1,10 @@
-// 英雄联盟样式的 8 格轮盘（SVG）。移植自 lolPing src/renderer/overlay/wheel.ts（MIT，© 2026 Danrui Meng）。
-// 选格由 Rust 算好再告诉这里（setHot），这里只负责画；尺寸和 Rust 的 overlay/geometry.rs 一致。
+// 游戏内轮盘 V2 厚重电竞版：10px 荧光青外环、八向粗刻度、加粗扇区分隔、青 + 品红双层中心环、四角切角。
+// 选格仍由 Rust 算好再告诉这里（setHot），这里只负责画；几何尺寸和 Rust 的 overlay/geometry.rs 一致。
+// 中心与八个格子全是图标，不再放 PING / EMOTE / BACK 这类文字。
 
 const NS = "http://www.w3.org/2000/svg";
 /** 设计尺寸（CSS 像素）：中心圆半径 86，环 86–188，正方向的四格延伸到 288，图标在半径 137 处。 */
-export const WHEEL = { size: 600, innerR: 86, outerR: 188, extR: 288, iconR: 137, iconSize: 48 } as const;
+export const WHEEL = { size: 600, innerR: 86, outerR: 188, extR: 288, iconR: 137, iconSize: 56 } as const;
 const SLOTS = 8;
 
 function el<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>, parent: Element): SVGElementTagNameMap[K] {
@@ -32,8 +33,6 @@ export class Wheel {
 
   constructor(
     private readonly svg: SVGSVGElement,
-    /** 中心的字：PING 或 EMOTE。 */
-    private readonly label: string,
     /** 高亮换格时调用（放刻度声）。 */
     private readonly onHover: () => void,
   ) {
@@ -49,7 +48,7 @@ export class Wheel {
     });
   }
 
-  /** 中间的图标：触发键加单击会放的那个信号或表情。 */
+  /** 中心的图标：触发键加单击会放的那个信号或表情。 */
   setCenterIcon(url: string): void {
     this.hub?.setAttribute("href", url);
   }
@@ -101,42 +100,56 @@ export class Wheel {
     const id = `gang-${svg.id}`;
     el("defs", {}, svg).innerHTML = `
       <radialGradient id="${id}-ext" cx="0" cy="0" r="${extR}" gradientUnits="userSpaceOnUse">
-        <stop offset="${outerR / extR}" stop-color="#5c6066" stop-opacity=".55"/><stop offset="1" stop-color="#5c6066" stop-opacity="0"/></radialGradient>
+        <stop offset="${outerR / extR}" stop-color="#0E3A4C" stop-opacity=".78"/><stop offset="1" stop-color="#0E3A4C" stop-opacity="0"/></radialGradient>
       <radialGradient id="${id}-ring" cx="0" cy="0" r="${outerR}" gradientUnits="userSpaceOnUse">
-        <stop offset="${innerR / outerR}" stop-color="#2a2d31"/><stop offset="1" stop-color="#4a4e54"/></radialGradient>
+        <stop offset="${innerR / outerR}" stop-color="#0A111C"/><stop offset="1" stop-color="#16283A"/></radialGradient>
       <radialGradient id="${id}-hot" cx="0" cy="0" r="${extR}" gradientUnits="userSpaceOnUse">
-        <stop offset="${innerR / extR}" stop-color="#8a8f96"/><stop offset="${outerR / extR}" stop-color="#9aa0a8"/>
-        <stop offset="1" stop-color="#9aa0a8" stop-opacity="0"/></radialGradient>
-      <radialGradient id="${id}-core" cx="0" cy="-10" r="${innerR}" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#2c5d60"/><stop offset="1" stop-color="#11292c"/></radialGradient>`;
+        <stop offset="${innerR / extR}" stop-color="#00E7FF" stop-opacity=".3"/><stop offset="${outerR / extR}" stop-color="#00E7FF" stop-opacity=".16"/>
+        <stop offset="1" stop-color="#00E7FF" stop-opacity="0"/></radialGradient>`;
 
     const slots = [...Array(SLOTS).keys()];
+    // 正方向四格的延伸区
     slots.forEach((i) => {
-      const mid = -90 + i * 45;
-      if (i % 2 === 0) el("path", { d: sector(outerR, extR, mid - 22.5, mid + 22.5), fill: `url(#${id}-ext)` }, svg);
+      if (i % 2 === 0) {
+        const mid = -90 + i * 45;
+        el("path", { d: sector(outerR, extR, mid - 22.5, mid + 22.5), fill: `url(#${id}-ext)` }, svg);
+      }
     });
-    el("circle", { r: (innerR + outerR) / 2, fill: "none", stroke: `url(#${id}-ring)`, "stroke-width": outerR - innerR, opacity: 0.92 }, svg);
+    // 环本体 + 10px 粗荧光青外环 + 深青内圈
+    el("circle", { r: (innerR + outerR) / 2, fill: "none", stroke: `url(#${id}-ring)`, "stroke-width": outerR - innerR, opacity: 0.98 }, svg);
+    el("circle", { r: outerR, fill: "none", stroke: "#00E7FF", "stroke-width": 10 }, svg);
+    el("circle", { r: outerR - 14, fill: "none", stroke: "#0B3A47", "stroke-width": 4 }, svg);
+
     slots.forEach((i) => {
       const mid = -90 + i * 45;
       const reach = i % 2 === 0 ? extR : outerR;
       this.wedges.push(el("path", { d: sector(innerR, reach, mid - 22.5, mid + 22.5), fill: `url(#${id}-hot)`, "fill-opacity": 0, class: "wedge" }, svg));
       const [x0, y0] = polar(innerR, mid - 22.5);
       const [x1, y1] = polar(outerR, mid - 22.5);
-      el("line", { x1: x0, y1: y0, x2: x1, y2: y1, stroke: "#a08a5c", "stroke-opacity": 0.45, "stroke-width": 1.2 }, svg);
+      el("line", { x1: x0, y1: y0, x2: x1, y2: y1, stroke: "#1B6E7D", "stroke-width": 5 }, svg);
     });
     slots.forEach((i) => {
       const [ix, iy] = polar(iconR, -90 + i * 45);
       this.icons.push(el("image", { x: ix - iconSize / 2, y: iy - iconSize / 2, width: iconSize, height: iconSize, class: "icon" }, svg));
     });
 
-    el("circle", { r: innerR + 4, fill: "none", stroke: "#1a1a1a", "stroke-width": 6, opacity: 0.6 }, svg);
-    el("circle", { r: innerR, fill: `url(#${id}-core)`, stroke: "#c8aa6e", "stroke-width": 3, class: "core" }, svg);
-    el("circle", { r: innerR - 7, fill: "none", stroke: "#8a7448", "stroke-width": 1, opacity: 0.6 }, svg);
-    this.hub = el("image", { x: -20, y: -58, width: 40, height: 40, class: "hub" }, svg);
-    el("text", { x: 0, y: 6, "text-anchor": "middle", class: "centerTxt" }, svg).textContent = this.label;
-    el("text", { x: 6, y: 50, "text-anchor": "middle", class: "backTxt" }, svg).textContent = "BACK";
-    const mouse = el("g", { opacity: 0.55, transform: "translate(-26,40)" }, svg);
-    el("rect", { x: 0, y: 0, width: 11, height: 16, rx: 5.5, fill: "none", stroke: "#6c7a7c", "stroke-width": 1.3 }, mouse);
-    el("path", { d: "M5.5,0 V7 H11 V5.5 A5.5,5.5 0 0 0 5.5,0Z", fill: "#6c7a7c" }, mouse);
+    // 八向粗刻度
+    slots.forEach((i) => {
+      const a = -90 + i * 45;
+      const [x0, y0] = polar(outerR + 2, a);
+      const [x1, y1] = polar(outerR + 18, a);
+      el("line", { x1: x0, y1: y0, x2: x1, y2: y1, stroke: "#00E7FF", "stroke-width": 8, "stroke-linecap": "round" }, svg);
+    });
+    // 四角赛事 HUD 切角
+    el("path", { d: "M-290 -246 V-290 H-246", fill: "none", stroke: "#FF2E63", "stroke-width": 9 }, svg);
+    el("path", { d: "M290 246 V290 H246", fill: "none", stroke: "#FF2E63", "stroke-width": 9 }, svg);
+    el("path", { d: "M246 -290 H290 V-246", fill: "none", stroke: "#C8FF2E", "stroke-width": 6 }, svg);
+    el("path", { d: "M-290 246 V290 H-246", fill: "none", stroke: "#C8FF2E", "stroke-width": 6 }, svg);
+
+    // 中心：黑色厚边 + 粗青环 + 品红内环，只放图标
+    el("circle", { r: innerR + 5, fill: "none", stroke: "#080B12", "stroke-width": 10 }, svg);
+    el("circle", { r: innerR, fill: "#080B12", stroke: "#00E7FF", "stroke-width": 6, class: "core" }, svg);
+    el("circle", { r: innerR - 18, fill: "none", stroke: "#FF2E63", "stroke-width": 3 }, svg);
+    this.hub = el("image", { x: -28, y: -28, width: 56, height: 56, class: "hub" }, svg);
   }
 }

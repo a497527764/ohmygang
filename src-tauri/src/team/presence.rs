@@ -21,7 +21,6 @@ pub fn watch(app: &AppHandle) {
     let net = tauri::async_runtime::block_on(node.inspect(move |n| {
         (
             room.map(|r| n.member_paths(&r)).unwrap_or_default(),
-            n.lan_status().degraded,
             n.relay_status()
                 .map(|l| l.iter().filter(|r| r.state == RelayState::Ok).count())
                 .unwrap_or(0),

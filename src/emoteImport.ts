@@ -140,6 +140,22 @@ async function encodeStill(frame: VideoFrame): Promise<Uint8Array | null> {
   return null;
 }
 
+/** 自定义表情：保真，最大 1000 像素、1 MB（比例不限）。 */
+async function encodeCustomStill(frame: VideoFrame): Promise<Uint8Array | null> {
+  const side = 1000;
+  const size = fitSize(frame.displayWidth, frame.displayHeight, side);
+  const canvas = new OffscreenCanvas(size.width, size.height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(frame, 0, 0, size.width, size.height);
+  for (const quality of [0.92, 0.85, 0.78, 0.7, 0.6, 0.5]) {
+    const blob = await canvas.convertToBlob({ type: "image/webp", quality });
+    if (blob.type === "image/webp" && blob.size <= 1024 * 1024) return new Uint8Array(await blob.arrayBuffer());
+  }
+  return null;
+}
+
 /** 选来的图片 → 静态图（和动画）。 */
 export async function prepareEmote(file: File): Promise<Result<PreparedEmote>> {
   if (file.size > INPUT_MAX_BYTES) return fail("图片太大了，最多 8 MB");
@@ -176,6 +192,37 @@ export function sniffAudio(b: Uint8Array): boolean {
   if (ascii(b, 0, 4) === "OggS") return true;
   if (b.length >= 12 && ascii(b, 0, 4) === "RIFF" && ascii(b, 8, 12) === "WAVE") return true;
   return ascii(b, 0, 3) === "ID3" || (b.length >= 2 && b[0] === 0xff && (b[1] & 0xe0) === 0xe0);
+}
+
+/** 选来的图片 → 自定义表情（保留到 1000 像素、1 MB 的 WebP）。 */
+export async function prepareCustomEmote(file: File): Promise<Result<PreparedEmote>> {
+  if (file.size > INPUT_MAX_BYTES) return fail("图片太大了，最多 8 MB");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const type = sniffImage(bytes);
+  if (!type) return fail("只能导入 PNG、JPEG、GIF 或 WebP 图片");
+  const declared = imageSize(bytes);
+  if (!declared) return fail("这张图打不开");
+  if (Math.max(declared.width, declared.height) > INPUT_MAX_SIDE) return fail("图片太大了，边长最多 8192 像素");
+  let decoder: ImageDecoder | null = null;
+  let frame: VideoFrame | null = null;
+  try {
+    decoder = new ImageDecoder({ data: bytes, type: MIME[type] });
+    await Promise.all([decoder.tracks.ready, decoder.completed]);
+    const frames = decoder.tracks.selectedTrack?.frameCount ?? 1;
+    frame = (await decoder.decode({ frameIndex: 0 })).image;
+    const animated = (type === "gif" || type === "webp") && frames > 1;
+    if (animated && (bytes.length > ANIM_MAX_BYTES || Math.max(frame.displayWidth, frame.displayHeight) > ANIM_MAX_SIDE)) {
+      return fail("动图太大了：最多 5 MB、边长 1024 像素");
+    }
+    const still = await encodeCustomStill(frame);
+    if (!still) return fail("这张图压不到 1 MB，换一张简单点的");
+    return { ok: true, value: { name: nameFromFile(file.name), still, anim: animated ? bytes : null } };
+  } catch {
+    return fail("这张图打不开");
+  } finally {
+    frame?.close();
+    decoder?.close();
+  }
 }
 
 /** 选来的音效：OGG、MP3 或 WAV，1 MB、5 秒以内。 */

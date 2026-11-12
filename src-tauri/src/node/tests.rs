@@ -1,6 +1,5 @@
-//! 多节点集成测试：在 127.0.0.1 上用真实 UDP 互连，定时器缩短到几十毫秒。
+//! 多节点集成测试：经本地假中继互连，定时器缩短到几十毫秒。局域网已去掉，中继是唯一路径。
 
-use std::net::{SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,32 +9,34 @@ use crate::app_core::{CoreEvent, RoomStatus};
 use crate::keystore::MemoryKeyStore;
 use crate::protocol::live::Status;
 use crate::storage;
+use crate::transport::budget::Priority;
+use crate::transport::fake_relay::{Behavior, FakeRelay};
+use crate::transport::relay::{RelayConfig, RelayPool, RelayState};
 
-/// 先占几个空闲端口再释放，让每个节点事先知道彼此的地址。
-pub(super) fn free_ports(n: usize) -> Vec<SocketAddr> {
-    let socks: Vec<UdpSocket> = (0..n)
-        .map(|_| UdpSocket::bind("127.0.0.1:0").unwrap())
-        .collect();
-    socks.iter().map(|s| s.local_addr().unwrap()).collect()
-}
-
-pub(super) fn fast_config(me: SocketAddr, all: &[SocketAddr]) -> NodeConfig {
+/// 测试用的快速配置：定时器缩短，指向给定中继。
+pub(super) fn fast_config(relay: &str) -> NodeConfig {
     NodeConfig {
-        lan: LanConfig {
-            bind: me,
-            fixed_targets: Some(all.iter().copied().filter(|a| *a != me).collect()),
-            ..LanConfig::default()
+        relay: RelayConfig {
+            echo_timeout: Duration::from_secs(2),
+            backoff: (Duration::from_millis(50), Duration::from_millis(200)),
+            cooldown: Duration::from_millis(300),
+            connect_timeout: Duration::from_secs(1),
+            ..RelayConfig::default()
         },
-        have_period: Duration::from_millis(200),
-        presence_period: Duration::from_millis(100),
+        relay_urls: vec![relay.to_string()],
+        relay_have_period: Duration::from_millis(200),
         relay_presence_period: Duration::from_millis(200),
         live_have_delay: (Duration::from_millis(10), Duration::from_millis(50)),
         new_peer_have_delay: (Duration::from_millis(0), Duration::from_millis(20)),
         want_timeout: Duration::from_millis(300),
         want_max_tries: 3,
-        backfill_per_sec: 1000,
+        relay_backfill_per_sec: 1000,
         tick: Duration::from_millis(20),
-        relay_urls: Vec::new(),
+        resend_after: [
+            Duration::from_millis(300),
+            Duration::from_millis(600),
+            Duration::from_millis(1200),
+        ],
         ..NodeConfig::default()
     }
 }
@@ -75,8 +76,8 @@ pub(super) fn remove_db(path: &Path) {
     }
 }
 
-async fn start(db: &Path, key: u8, me: SocketAddr, all: &[SocketAddr]) -> TestNode {
-    start_with(db, key, fast_config(me, all)).await
+async fn start(db: &Path, key: u8, relay: &str) -> TestNode {
+    start_with(db, key, fast_config(relay)).await
 }
 
 pub(super) async fn start_with(db: &Path, key: u8, cfg: NodeConfig) -> TestNode {
@@ -175,10 +176,15 @@ fn presence(status: Status) -> LiveBody {
     }
 }
 
+/// 等一条裸中继连接就绪。
+async fn wait_connected(relay: &RelayHandle) -> bool {
+    wait_for(|| relay.status().iter().any(|r| r.state == RelayState::Ok)).await
+}
+
 /// 甲建队、乙进队，等两边都看到对方。
-async fn pair(da: &Path, db: &Path, addrs: &[SocketAddr]) -> (TestNode, TestNode, RoomId) {
-    let a = start(da, 1, addrs[0], addrs).await;
-    let b = start(db, 2, addrs[1], addrs).await;
+async fn pair(da: &Path, db: &Path, relay: &str) -> (TestNode, TestNode, RoomId) {
+    let a = start(da, 1, relay).await;
+    let b = start(db, 2, relay).await;
     let (room, code) = create(&a).await;
     join(&b, &code).await;
     assert!(
@@ -191,9 +197,9 @@ async fn pair(da: &Path, db: &Path, addrs: &[SocketAddr]) -> (TestNode, TestNode
 
 #[tokio::test(flavor = "multi_thread")]
 async fn two_nodes_form_a_team_and_ping_each_other() {
-    let addrs = free_ports(2);
+    let relay = FakeRelay::start(Behavior::default()).await;
     let (da, db) = (temp_db(), temp_db());
-    let (a, b, _room) = pair(&da, &db, &addrs).await;
+    let (a, b, _room) = pair(&da, &db, &relay.url).await;
     let (a_id, b_id) = (member_id(&a).await, member_id(&b).await);
     // 乙要先知道甲是队员（甲的事件早就补齐了）
     a.handle.send_live(ping("danger"));
@@ -210,7 +216,7 @@ async fn two_nodes_form_a_team_and_ping_each_other() {
         wait_for(|| a
             .lives_from(b_id)
             .iter()
-            .any(|(body, via)| *body == ping("omw") && *via == Via::Lan))
+            .any(|(body, via)| *body == ping("omw") && *via == Via::Relay))
         .await
     );
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -231,9 +237,9 @@ async fn two_nodes_form_a_team_and_ping_each_other() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn presence_repeats_and_follows_changes() {
-    let addrs = free_ports(2);
+    let relay = FakeRelay::start(Behavior::default()).await;
     let (da, db) = (temp_db(), temp_db());
-    let (a, b, _room) = pair(&da, &db, &addrs).await;
+    let (a, b, _room) = pair(&da, &db, &relay.url).await;
     let a_id = member_id(&a).await;
     a.handle.set_presence(presence(Status::Online));
     assert!(
@@ -262,57 +268,76 @@ async fn presence_repeats_and_follows_changes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn live_frames_from_non_members_and_replays_are_dropped() {
-    let addrs = free_ports(3);
+    let relay = FakeRelay::start(Behavior::default()).await;
     let (da, db) = (temp_db(), temp_db());
-    let (a, b, room) = pair(&da, &db, &addrs[..2]).await;
+    let (a, b, room) = pair(&da, &db, &relay.url).await;
     let key = a
         .handle
         .call(move |c, _| c.room_key(&room).unwrap())
         .await
         .unwrap();
-    let sock = UdpSocket::bind(addrs[2]).unwrap();
-    let send = |frame: &Frame| {
-        for p in seal_packets(&key, &room, frame).unwrap() {
-            sock.send_to(&p, addrs[0]).unwrap();
-        }
-    };
+
+    // 裸中继连接：模拟拿到了队伍码、却没进队（或录包重发）的人
+    let (inject, _inbox) = RelayPool::start(
+        vec![relay.url.clone()],
+        vec![room],
+        fast_config(&relay.url).relay,
+    );
+    assert!(wait_connected(&inject).await, "注入连接应就绪");
+
     // 拿到了队伍码、却没进队的人：签名没问题，但不是队员
     let outsider = crate::crypto::Identity::from_secret(&[42u8; 32]);
-    send(&Frame::Live(crate::protocol::live::sign_live(
+    let frame = Frame::Live(crate::protocol::live::sign_live(
         &outsider,
         &room,
         1,
         now_ms(),
         &ping("danger"),
-    )));
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    ));
+    for p in seal_packets(&key, &room, &frame).unwrap() {
+        inject.publish(room, p, Priority::Live);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         a.lives_from(outsider.member_id()).is_empty(),
         "不是队员的帧不要"
     );
-    // 队员的帧被人录下来重发：同一个序号只交一次
-    let b_id = member_id(&b).await;
-    b.handle.send_live(ping("omw"));
-    assert!(wait_for(|| a.lives_from(b_id).len() == 1).await);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(a.lives_from(b_id).len(), 1);
 
-    drop((a, b));
+    // 队员的帧被人录下来重发：同一个序号只交一次（让乙自己签一帧，再经裸连接发两遍）
+    let b_id = member_id(&b).await;
+    let wire = b
+        .handle
+        .call(move |c, _| c.sign_live(&room, 7, now_ms(), &ping("omw")))
+        .await
+        .unwrap();
+    let frame = Frame::Live(wire);
+    let packets = seal_packets(&key, &room, &frame).unwrap();
+    for p in &packets {
+        inject.publish(room, p.clone(), Priority::Live);
+    }
+    for p in &packets {
+        inject.publish(room, p.clone(), Priority::Live); // 录下来重发
+    }
+    assert!(wait_for(|| a.lives_from(b_id).len() == 1).await);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(a.lives_from(b_id).len(), 1, "同一帧只交一次");
+
+    drop((a, b, inject));
     remove_db(&da);
     remove_db(&db);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn late_joiner_catches_up_and_activates() {
-    let addrs = free_ports(3);
+    let relay = FakeRelay::start(Behavior::default()).await;
     let dbs = [temp_db(), temp_db(), temp_db()];
-    let a = start(&dbs[0], 1, addrs[0], &addrs).await;
-    let b = start(&dbs[1], 2, addrs[1], &addrs).await;
+    let a = start(&dbs[0], 1, &relay.url).await;
+    let b = start(&dbs[1], 2, &relay.url).await;
     let (room, code) = create(&a).await;
     join(&b, &code).await;
     assert!(eventually(&a, in_room(room, 2)).await);
 
-    let c = start(&dbs[2], 3, addrs[2], &addrs).await;
+    let c = start(&dbs[2], 3, &relay.url).await;
     join(&c, &code).await;
     assert!(
         eventually(&c, status_is(room, RoomStatus::Active)).await,
@@ -330,14 +355,14 @@ async fn late_joiner_catches_up_and_activates() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn restarted_node_reconnects_and_keeps_pinging() {
-    let addrs = free_ports(2);
+    let relay = FakeRelay::start(Behavior::default()).await;
     let (da, db) = (temp_db(), temp_db());
-    let (a, b, room) = pair(&da, &db, &addrs).await;
+    let (a, b, room) = pair(&da, &db, &relay.url).await;
     let b_id = member_id(&b).await;
 
     drop(b);
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let b = start(&db, 2, addrs[1], &addrs).await;
+    let b = start(&db, 2, &relay.url).await;
     assert_eq!(
         b.handle
             .call(move |c, _| c.room_status(&room).unwrap())
@@ -361,9 +386,9 @@ async fn restarted_node_reconnects_and_keeps_pinging() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn member_offline_during_dissolve_learns_it_later() {
-    let addrs = free_ports(2);
+    let relay = FakeRelay::start(Behavior::default()).await;
     let (da, db) = (temp_db(), temp_db());
-    let (a, b, room) = pair(&da, &db, &addrs).await;
+    let (a, b, room) = pair(&da, &db, &relay.url).await;
 
     drop(b);
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -374,7 +399,7 @@ async fn member_offline_during_dissolve_learns_it_later() {
         })
         .await
         .unwrap();
-    let b = start(&db, 2, addrs[1], &addrs).await;
+    let b = start(&db, 2, &relay.url).await;
     assert!(
         eventually(&b, status_is(room, RoomStatus::Dissolved)).await,
         "乙上线后应从甲的回应得知解散"
@@ -386,44 +411,16 @@ async fn member_offline_during_dissolve_learns_it_later() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn busy_lan_port_falls_back_to_a_random_port() {
-    let taken = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let busy = taken.local_addr().unwrap();
-    let free = free_ports(1)[0];
-    let (d1, d2) = (temp_db(), temp_db());
-    let degraded = start(&d1, 1, busy, &[busy]).await;
-    let normal = start(&d2, 2, free, &[free]).await;
-
-    let s = degraded.handle.inspect(|n| n.lan_status()).await.unwrap();
-    assert!(s.degraded, "端口被占时照常启动，但报告降级");
-    assert_ne!(s.port, busy.port());
-    let s = normal.handle.inspect(|n| n.lan_status()).await.unwrap();
-    assert_eq!((s.port, s.degraded), (free.port(), false));
-
-    drop((degraded, normal, taken));
-    remove_db(&d1);
-    remove_db(&d2);
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn unconfirmed_event_is_resent_and_then_marked_sent() {
-    let addrs = free_ports(2);
+    let relay = FakeRelay::start(Behavior::default()).await;
     let (da, db) = (temp_db(), temp_db());
-    let quick_resend = NodeConfig {
-        resend_after: [
-            Duration::from_millis(300),
-            Duration::from_millis(600),
-            Duration::from_millis(1200),
-        ],
-        ..fast_config(addrs[0], &addrs)
-    };
-    let a = start_with(&da, 1, quick_resend).await;
-    let b = start(&db, 2, addrs[1], &addrs).await;
+    let a = start(&da, 1, &relay.url).await;
+    let b = start(&db, 2, &relay.url).await;
     let (room, code) = create(&a).await;
     join(&b, &code).await;
     assert!(eventually(&a, in_room(room, 2)).await);
 
-    // 乙掉线期间甲改队名，第一次广播乙收不到
+    // 乙掉线期间甲改队名，第一次广播乙收不到（fast_config 的重发计划会补上）
     drop(b);
     tokio::time::sleep(Duration::from_millis(100)).await;
     let id = a
@@ -436,7 +433,7 @@ async fn unconfirmed_event_is_resent_and_then_marked_sent() {
         })
         .await
         .unwrap();
-    let b = start(&db, 2, addrs[1], &addrs).await;
+    let b = start(&db, 2, &relay.url).await;
     assert!(
         eventually(&b, move |c| c.summary(&room).unwrap().title.as_deref()
             == Some("五黑"))
@@ -459,9 +456,9 @@ async fn unconfirmed_event_is_resent_and_then_marked_sent() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn bye_and_leave_go_out_before_the_team_goes_quiet() {
-    let addrs = free_ports(2);
+    let relay = FakeRelay::start(Behavior::default()).await;
     let (da, db) = (temp_db(), temp_db());
-    let (a, b, room) = pair(&da, &db, &addrs).await;
+    let (a, b, room) = pair(&da, &db, &relay.url).await;
     let b_id = member_id(&b).await;
 
     b.handle

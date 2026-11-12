@@ -5,7 +5,7 @@
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, Window, Wry,
 };
 
@@ -69,12 +69,11 @@ pub fn show_page(app: &AppHandle, page: Option<&'static str>) {
 }
 
 /// 控制面板建好时是藏着的（tauri.conf.json 里 visible 是 false）：上次关掉时的位置还在某块显示器上，
-/// 就挪回那儿、还原大小，再显示出来（3.1.1；3.0-M6 起每次打开都是新建的，以前总回到屏幕中间）。
-/// 先挪位置再定大小：挪到缩放不同的显示器上时系统会按比例改大小，最后再按记下的定一次。
+/// 就挪回那儿再显示出来（3.1.1；3.0-M6 起每次打开都是新建的，以前总回到屏幕中间）。
+/// 窗口尺寸固定不可缩放，所以只还原位置、不还原旧大小——否则早先记下的宽窗口会把窄高布局拉回去。
 pub fn reveal_main(app: &AppHandle, w: &WebviewWindow, rect: Option<PanelRect>) {
     if let Some(r) = rect.filter(|r| on_screen(app, r)) {
         let _ = w.set_position(PhysicalPosition::new(r.x, r.y));
-        let _ = w.set_size(PhysicalSize::new(r.width, r.height));
     }
     let _ = w.show();
     let _ = w.set_focus();

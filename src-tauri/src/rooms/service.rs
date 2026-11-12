@@ -13,7 +13,7 @@ use crate::error::{AppError, AppResult};
 use crate::keystore::{PURPOSE_ROOM_CODE, decrypt_local, encrypt_local};
 use crate::protocol::body::{self, Avatar, ProfileBody, RoomCreateBody, TITLE_MAX_CHARS};
 use crate::protocol::event::{SignedEvent, kind};
-use crate::protocol::room_code::{RoomCode, owner_tag_of};
+use crate::protocol::room_code::{RoomCode, RoomCodeError, owner_tag_of};
 use crate::rooms::state::{RoomState, derive_room_state};
 use crate::storage::Connection;
 use crate::storage::events;
@@ -67,14 +67,43 @@ pub fn create_room(
     title: &str,
     now_ms: u64,
 ) -> AppResult<(RoomId, String, Vec<SignedEvent>)> {
-    let title = title.trim();
-    if title.is_empty() || title.chars().count() > TITLE_MAX_CHARS {
-        return Err(AppError::InvalidTitle);
-    }
     let code = RoomCode {
         room_secret: crypto::random_bytes()?,
         owner_tag: owner_tag_of(&me.member_id()),
     };
+    create_room_inner(conn, me, master, profile, title, code, now_ms)
+}
+
+/// 用云端铸造的队伍码建队（server/README.md）：校验 owner_tag 是本人的，再和本地建队一样落库、写事件。
+pub fn create_room_with_code(
+    conn: &Connection,
+    me: &Identity,
+    master: &[u8; 32],
+    profile: &ProfileBody,
+    title: &str,
+    code_str: &str,
+    now_ms: u64,
+) -> AppResult<(RoomId, String, Vec<SignedEvent>)> {
+    let code = RoomCode::parse(code_str)?;
+    if code.owner_tag != owner_tag_of(&me.member_id()) {
+        return Err(AppError::InvalidRoomCode(RoomCodeError::BadCheck));
+    }
+    create_room_inner(conn, me, master, profile, title, code, now_ms)
+}
+
+fn create_room_inner(
+    conn: &Connection,
+    me: &Identity,
+    master: &[u8; 32],
+    profile: &ProfileBody,
+    title: &str,
+    code: RoomCode,
+    now_ms: u64,
+) -> AppResult<(RoomId, String, Vec<SignedEvent>)> {
+    let title = title.trim();
+    if title.is_empty() || title.chars().count() > TITLE_MAX_CHARS {
+        return Err(AppError::InvalidTitle);
+    }
     let (_, room) = code.keys();
     let cipher = encrypt_local(master, PURPOSE_ROOM_CODE, &code_bytes(&code))?;
     room_store::insert_room(

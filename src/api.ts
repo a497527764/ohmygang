@@ -3,14 +3,19 @@
 // 设置的合法性（范围、触发键、快捷键、轮盘）由 Rust 的 settings2::normalize 把关，这里只做类型声明和转发。
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { Theme } from "./ui/themes";
 import type { CustomEmote } from "./shared/emotes";
 import type { Hotkey } from "./shared/keys";
 import type { PingId } from "./shared/pings";
 
 export type NamedTrigger = "alt" | "ctrl" | "shift" | "win" | "capslock" | "mouse4" | "mouse5";
 export type TriggerKey = NamedTrigger | { vk: number };
-export type Theme = "system" | "light" | "dark";
+/** 六套主题（3 深 + 3 浅），见 ui/themes.ts。 */
+export type { Theme } from "./ui/themes";
+export { THEME_PRESETS, DEFAULT_THEME, isLightTheme } from "./ui/themes";
 export type TextEffect = "outline" | "gold" | "neon" | "bounce" | "typewriter" | "shake";
+/** 和 Rust 的 settings2::ICON_STYLES 对应：项目内置英雄联盟原图 / 加粗矢量图。 */
+export type IconStyle = "league" | "vector";
 
 /** 和 Rust 的 settings2::Settings 对应。 */
 /** 控制面板的位置和大小（物理像素），和 Rust 的 settings2::PanelRect 对应。 */
@@ -36,9 +41,9 @@ export interface Settings {
   muted: boolean;
   tickSound: boolean;
   theme: Theme;
-  /** 不在同一局域网时经公共中继转发。 */
-  allowInternet: boolean;
-  /** 自己填的中继；空表示用默认列表。 */
+  /** 一处切换，控制面板 / 浮层 / 聊天记录全窗口生效。 */
+  iconStyle: IconStyle;
+  /** 自己填的中继；空表示用默认的云端（部署见 server/README.md）。 */
   relays: string[];
   /** 按住它拖动开表情轮盘；"off" 表示不用表情。和信号触发键、快捷键的键撞了时 Rust 会改成 "off"。 */
   emoteTrigger: TriggerKey | "off";
@@ -74,6 +79,10 @@ export interface Settings {
   /** 麦克风的设备 id；空表示跟随系统。 */
   mic: string;
   launchAtStartup: boolean;
+  /** 启动后自动开始拦手势；false 就停在「已暂停」。 */
+  autoOnline: boolean;
+  /** 启动时自动回到上一次的队伍（当时没在队里才会动）。 */
+  autoRejoin: boolean;
   /** 启动后和每 6 小时查一次新版本。 */
   autoUpdateCheck: boolean;
   /** 控制面板上次关掉时的位置和大小；只有 Rust 写，页面存设置时带过去的会被忽略。 */
@@ -134,6 +143,7 @@ export interface TeamInfo {
   title: string | null;
   status: "joining" | "active";
   isOwner: boolean;
+  /** 显示/分享用：云端 6 位短码；老队伍是 GT2 长码。 */
   code: string;
 }
 
@@ -145,7 +155,7 @@ export interface Member {
   isMe: boolean;
   avatar: AvatarData | null;
   /** 自己是 null。 */
-  path: "lan" | "relay" | "offline" | null;
+  path: "relay" | "offline" | null;
   status: "online" | "paused" | "away" | null;
   platform: string | null;
 }
@@ -154,7 +164,6 @@ export interface TeamView {
   me: Me;
   team: TeamInfo | null;
   members: Member[];
-  lanDegraded: boolean;
   relaysOk: number;
   relaysTotal: number;
   relays: Relay[];
@@ -173,6 +182,20 @@ export interface Relay {
 }
 
 export const teamView = (): Promise<TeamView> => invoke("team_view");
+/** 主页「加入过的队伍」，最近活跃在前，不含当前队伍和已解散的。点击一行用它的 code 直接进队。 */
+export interface RecentTeam {
+  /** GT2 长码（点击直接进队用，离线也能用）。 */
+  code: string;
+  /** 云端分配的 6 位短码（显示用）；老队伍没有。 */
+  shortCode: string | null;
+  title: string | null;
+  isOwner: boolean;
+  /** joining、active、left。 */
+  status: "joining" | "active" | "left";
+  /** 推导出还在队里的人数（不是实时在线数）。 */
+  members: number;
+}
+export const teamRecent = (): Promise<RecentTeam[]> => invoke("team_recent");
 export const teamCreate = (title: string): Promise<TeamView> => invoke("team_create", { title });
 export const teamJoin = (code: string): Promise<TeamView> => invoke("team_join", { code });
 export const teamCancel = (): Promise<TeamView> => invoke("team_cancel");

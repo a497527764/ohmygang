@@ -1,30 +1,38 @@
-/* 透明窗口的画面。轮盘、信号动画移植自 lolPing src/renderer/overlay/overlay.css（MIT，© 2026 Danrui Meng）。 */
+/* 游戏内透明浮层。轮盘是产品唯一的高光瞬间，保留细青环与八向刻度；
+   标签、语音条、提示这些 chrome 走中性面板 + hairline，不发光、不切角。
+   信号/表情的出场动画、以及 fx-* 字幕特效是用户可选的产品功能，保持原样可用。
+   原始动画移植自 lolPing src/renderer/overlay/overlay.css（MIT，© 2026 Danrui Meng）。 */
 :root {
-  /* 按平台挑系统字体：Windows、macOS、Linux 各自有的排在前面，没有的跳过。 */
-  --sans: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", -apple-system, "PingFang SC",
-    "Noto Sans CJK SC", "Noto Sans", sans-serif;
+  --sans: "Noto Sans SC", "Microsoft YaHei UI", -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --cyan: #00e7ff;
+  --pink: #ff2e63;
+  --lime: #c8ff2e;
+  --amber: #ffb020;
+  --panel: rgba(10, 17, 28, 0.94);
+  --panel-solid: #0c1522;
+  --line: rgba(36, 48, 74, 0.9);
+  --text: #e8f0f8;
+  --text-2: #8fa3bc;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; user-select: none; }
 #pings, #emotes, #toasts { position: fixed; inset: 0; pointer-events: none; }
 
-/* ---------- 轮盘 ---------- */
+/* ---------- 轮盘（唯一高光） ---------- */
 #wheel, #emoteWheel {
   position: absolute; left: 0; top: 0; width: 600px; height: 600px; margin: -300px 0 0 -300px;
-  pointer-events: none; opacity: 0; transform: scale(.85); transition: opacity .12s ease-out, transform .12s ease-out;
+  pointer-events: none; opacity: 0; transform: scale(.96);
+  transition: opacity 140ms var(--ease), transform 140ms var(--ease);
 }
 #wheel.open, #emoteWheel.open { opacity: 1; transform: scale(1); }
-#wheel .wedge, #emoteWheel .wedge { transition: fill-opacity .08s; }
+#wheel .wedge, #emoteWheel .wedge { transition: fill-opacity 80ms var(--ease); }
+/* 图标保持素材原色，高亮放大 + 青色辉光 */
 #wheel .icon, #emoteWheel .icon {
-  transition: filter .1s, transform .1s; transform-box: fill-box; transform-origin: center;
-  filter: grayscale(1) sepia(.75) saturate(1.3) brightness(1.15);
+  transition: transform 100ms var(--ease); transform-box: fill-box; transform-origin: center;
 }
-#wheel .icon.hot, #emoteWheel .icon.hot { filter: none; transform: scale(1.18); }
-#wheel .centerTxt, #emoteWheel .centerTxt { font: 600 15px var(--sans); letter-spacing: 1px; fill: #1fa9e0; }
-#wheel .backTxt, #emoteWheel .backTxt { font: 600 9px var(--sans); fill: #6c7a7c; letter-spacing: .5px; }
-/* 表情图是方的：像游戏里的表情轮盘一样画成圆的，而且保持原色（只有信号图标染成金色）。 */
+#wheel .icon.hot, #emoteWheel .icon.hot { transform: scale(1.12); filter: drop-shadow(0 0 10px rgba(0, 231, 255, 0.85)); }
 #emoteWheel .icon, #emoteWheel .hub { clip-path: circle(50%); }
-#emoteWheel .icon { filter: none; }
 
 /* ---------- 信号（大小跟 --size，时长跟 --dur） ---------- */
 .ping { position: absolute; width: 0; height: 0; pointer-events: none; --size: 110px; --dur: 3.2s; }
@@ -36,7 +44,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 .ping .ring {
   position: absolute; left: calc(var(--size) * -0.545); top: calc(var(--size) * -0.545);
   width: calc(var(--size) * 1.09); height: calc(var(--size) * 1.09); box-sizing: border-box; border-radius: 50%;
-  border: 3px solid var(--c); box-shadow: 0 0 18px var(--c), inset 0 0 12px var(--c); opacity: 0; animation: ring .65s ease-out forwards;
+  border: 3px solid var(--c); opacity: 0; animation: ring .65s ease-out forwards;
 }
 .ping .ring.r2 { animation-delay: .22s; }
 .ping .ring.r3 { animation-delay: 1.4s; }
@@ -44,77 +52,82 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
   position: absolute; left: calc(var(--size) * -0.5); top: calc(var(--size) * -0.73);
   width: var(--size); height: var(--size); animation: life var(--dur) linear forwards;
 }
-.ping .art img { position: absolute; inset: 0; width: 100%; height: 100%; filter: drop-shadow(0 0 10px var(--c)); }
-.ping .pop { position: absolute; inset: 0; animation: pop .28s cubic-bezier(.2,1.6,.4,1) both, bob 1.6s ease-in-out .3s infinite; }
-.ping .clash { position: absolute; inset: 0; animation: shake .25s linear .22s both, bob 1.6s ease-in-out .5s infinite; }
-.ping .a1 { animation: slide1 .22s cubic-bezier(.5,0,.9,.5) both; }
-.ping .a2 { animation: slide2 .22s cubic-bezier(.5,0,.9,.5) both; }
+.ping .art img { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ping .pop { position: absolute; inset: 0; animation: pop .2s var(--ease) both; }
+.ping .clash { position: absolute; inset: 0; animation: shake .25s linear .22s both; }
+.ping .a1 { animation: slide1 .22s var(--ease) both; }
+.ping .a2 { animation: slide2 .22s var(--ease) both; }
 .ping .flash {
   position: absolute; left: 25%; top: 25%; width: 50%; height: 50%; border-radius: 50%;
   background: radial-gradient(closest-side, #fff, var(--c) 40%, transparent); opacity: 0; animation: flash .35s ease-out .2s forwards;
 }
-/* 队友信号下面的名字，颜色按人固定 */
+/* 队友名字：中性面板 + 一条按人固定的色条，不发光、不切角 */
 .ping .tag {
   position: absolute; left: 0; top: calc(var(--size) * 0.5); transform: translateX(-50%); white-space: nowrap;
   max-width: 220px; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box;
-  padding: 1px 7px; border-radius: 4px; background: rgba(8, 12, 16, .62); color: var(--tag);
-  font: 600 13px/18px var(--sans); letter-spacing: .2px; text-shadow: 0 1px 2px #000;
-  animation: tagIn .25s ease-out both, life var(--dur) linear forwards;
+  padding: 4px 10px; border: 1px solid var(--line); border-left: 3px solid var(--tag, var(--cyan));
+  border-radius: 4px; background: var(--panel); color: var(--text);
+  font: 400 12px/18px var(--sans); letter-spacing: 0;
+  animation: tagIn .2s var(--ease) both, life var(--dur) linear forwards;
 }
-@keyframes tagIn { from { transform: translate(-50%, 4px) } }
-@keyframes pop { 0% { transform: scale(.4); opacity: 0 } 60% { transform: scale(1.15); opacity: 1 } 100% { transform: scale(1) } }
-@keyframes bob { 0%, 100% { translate: 0 0 } 50% { translate: 0 -5px } }
+@keyframes tagIn { from { transform: translate(-50%, 4px); opacity: 0 } }
+@keyframes pop { 0% { transform: scale(.5); opacity: 0 } 100% { transform: scale(1); opacity: 1 } }
 @keyframes ring { 0% { transform: scale(.25); opacity: .95 } 100% { transform: scale(1.35); opacity: 0 } }
-@keyframes ground { 0% { opacity: 0 } 10% { opacity: .75 } 85% { opacity: .55 } 100% { opacity: 0 } }
+@keyframes ground { 0% { opacity: 0 } 10% { opacity: .6 } 85% { opacity: .45 } 100% { opacity: 0 } }
 @keyframes life { 0%, 87% { opacity: 1 } 100% { opacity: 0 } }
 @keyframes slide1 { 0% { transform: translate(calc(var(--size) * .64), calc(var(--size) * -.64)); opacity: 0 } 100% { transform: none; opacity: 1 } }
 @keyframes slide2 { 0% { transform: translate(calc(var(--size) * -.64), calc(var(--size) * -.64)); opacity: 0 } 100% { transform: none; opacity: 1 } }
 @keyframes shake { 0%, 100% { transform: none } 25% { transform: translate(-3px, 2px) } 50% { transform: translate(3px, -2px) } 75% { transform: translate(-2px, -1px) } }
 @keyframes flash { 0% { opacity: 0; transform: scale(.3) } 30% { opacity: 1 } 100% { opacity: 0; transform: scale(2.2) } }
 
-/* ---------- 语音（右下角，提示的上面）：谁在说、自己在录 ---------- */
+/* ---------- 语音（右下角） ---------- */
 #voice {
   position: fixed; right: 24px; bottom: 150px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
   pointer-events: none;
 }
 .voice-pill {
-  display: flex; align-items: center; gap: 8px; max-width: 260px; padding: 5px 12px 5px 10px; border-radius: 2px;
-  background: rgba(1, 10, 19, .86); border: 1px solid rgba(200, 170, 110, .55); color: var(--tag, #f0e6d2);
-  font: 600 14px/20px var(--sans); text-shadow: 0 1px 2px #000; filter: drop-shadow(0 8px 14px rgba(0, 0, 0, .45));
+  display: flex; align-items: center; gap: 10px; max-width: 260px; padding: 6px 12px;
+  background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--tag, var(--cyan));
+  border-radius: 6px; color: var(--text);
+  font: 400 13px/20px var(--sans);
 }
 .voice-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 话筒：一个发光的菱形，说话时轻轻跳动 */
-.voice-pill i { flex: none; width: 9px; height: 9px; background: currentColor; transform: rotate(45deg); box-shadow: 0 0 8px currentColor; animation: talk .7s ease-in-out infinite alternate; }
-.voice-pill.me { color: #ff8a9a; border-color: rgba(190, 30, 55, .75); }
-@keyframes talk { to { opacity: .35; } }
+/* 说话状态是实时的，只做轻微透明度反馈，不发光、不跳动 */
+.voice-pill i {
+  flex: none; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--tag, var(--cyan)); animation: talk .7s ease-in-out infinite alternate;
+}
+.voice-pill.me { border-left-color: var(--pink); }
+.voice-pill.me i { background: var(--pink); }
+@keyframes talk { to { opacity: .4; } }
 @media (prefers-reduced-motion: reduce) { .voice-pill i { animation: none; } }
 
 /* ---------- 提示（右下角，几秒后消失） ---------- */
 .toast {
-  position: absolute; right: 24px; bottom: 72px; min-width: 220px; max-width: 420px; padding: 10px 14px;
-  border-radius: 10px; background: rgba(8, 18, 24, .88); border: 1px solid rgba(200, 170, 110, .55); color: #f0e6d2;
-  font: 14px/20px var(--sans); filter: drop-shadow(0 12px 18px rgba(0, 0, 0, .45)); animation: toastIn .3s cubic-bezier(.1,.9,.2,1) both;
+  position: absolute; right: 24px; bottom: 72px; min-width: 220px; max-width: 420px; padding: 12px 16px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--text);
+  font: 14px/20px var(--sans); animation: toastIn .24s var(--ease) both;
 }
-.toast b { display: block; font-weight: 600; }
-.toast small { display: block; color: #a09b8c; font-size: 12px; }
+.toast b { display: block; font-weight: 500; color: var(--text); }
+.toast small { display: block; color: var(--text-2); font-size: 12px; }
 .toast.out { animation: toastOut .2s ease-in forwards; }
-@keyframes toastIn { from { transform: translateY(24px); opacity: 0 } to { transform: none; opacity: 1 } }
-@keyframes toastOut { to { transform: translateY(12px); opacity: 0 } }
+@keyframes toastIn { from { transform: translateY(8px); opacity: 0 } to { transform: none; opacity: 1 } }
+@keyframes toastOut { to { transform: translateY(8px); opacity: 0 } }
 
 @media (prefers-reduced-motion: reduce) {
   #wheel, #emoteWheel { transition: none; }
 }
 
-/* ---------- 表情（盒子和 6 种出场效果移植自 lolPing src/renderer/shared/emoteFx.css；--size 是图的宽，--dur 是停留 3 秒） ---------- */
+/* ---------- 表情（出场效果是可选项，保留功能，只收敛 chrome 与循环动画） ---------- */
 .emote { position: absolute; width: 0; height: 0; pointer-events: none; --size: 150px; --dur: 3s; }
 .emote .tag {
   position: absolute; left: 0; top: calc(var(--size) * 0.5 + 8px); transform: translateX(-50%); white-space: nowrap;
   max-width: 220px; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box;
-  padding: 1px 7px; border-radius: 4px; background: rgba(8, 12, 16, .62); color: var(--tag);
-  font: 600 13px/18px var(--sans); letter-spacing: .2px; text-shadow: 0 1px 2px #000;
-  animation: tagIn .25s ease-out both, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards;
+  padding: 4px 10px; border: 1px solid var(--line); border-left: 3px solid var(--tag, var(--cyan));
+  border-radius: 4px; background: var(--panel); color: var(--text);
+  font: 400 12px/18px var(--sans); letter-spacing: 0;
+  animation: tagIn .2s var(--ease) both, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards;
 }
-/* 内置表情是做好的动画：320 像素的画布里画着 256 像素的图，所以画成图宽的 1.25 倍。 */
 .emote .sheet {
   position: absolute; left: calc(var(--size) * -0.625); top: calc(var(--size) * -0.625);
   width: calc(var(--size) * 1.25); height: calc(var(--size) * 1.25);
@@ -122,39 +135,37 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 .emote .bubble {
   position: absolute; left: 8%; top: 8%; width: 84%; height: 68%; box-sizing: border-box; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  background: #f4efe2; border: 3px solid #c8aa6e; color: #1f2a30; filter: drop-shadow(0 0 8px #fff8);
-  font: 700 calc(var(--size) * .4)/1 var(--sans);
+  background: var(--panel-solid); border: 1px solid var(--line); color: var(--text);
+  font: 500 calc(var(--size) * .4)/1 var(--sans);
 }
 .emote .bubble::after {
   content: ''; position: absolute; left: 24%; bottom: -7px; width: 14px; height: 14px; box-sizing: border-box;
-  background: #f4efe2; border: solid #c8aa6e; border-width: 0 3px 3px 0; transform: rotate(45deg) skew(8deg, 8deg);
+  background: var(--panel-solid); border: solid var(--line); border-width: 0 1px 1px 0; transform: rotate(45deg) skew(8deg, 8deg);
 }
-/* 导入的图（或占位）：弹出、轻轻上下浮、最后 0.35 秒缩小淡出 */
 .emote .fx {
   position: absolute; left: calc(var(--size) * -0.5); top: calc(var(--size) * -0.5); width: var(--size); height: var(--size);
-  animation: emoteIn .25s ease-out both, emoteBob 1.4s ease-in-out infinite, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards;
+  animation: emoteIn .24s var(--ease) both, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards;
 }
-.emote .fx img { display: block; width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 0 8px #fff8); }
-@keyframes emoteIn { 0% { transform: scale(0) } 60% { transform: scale(1.15) } 100% { transform: scale(1) } }
-@keyframes emoteBob { 0%, 100% { translate: 0 0 } 25% { translate: 0 -4px } 75% { translate: 0 4px } }
-@keyframes emoteOut { from { transform: scale(1); opacity: 1 } to { transform: scale(.85); opacity: 0 } }
+.emote .fx img { display: block; width: 100%; height: 100%; object-fit: contain; }
+@keyframes emoteIn { 0% { transform: scale(.6); opacity: 0 } 100% { transform: scale(1); opacity: 1 } }
+@keyframes emoteOut { from { transform: scale(1); opacity: 1 } to { transform: scale(.9); opacity: 0 } }
 /* v1 旋转进来、左右轻摆 */
-.emote .fx.v1 { animation: fxSpinIn .55s cubic-bezier(.25,.8,.3,1.15) both, fxSway 2.2s ease-in-out .55s infinite, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards; }
+.emote .fx.v1 { animation: fxSpinIn .55s var(--ease) both, fxSway 2.2s ease-in-out .55s infinite, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards; }
 @keyframes fxSpinIn { 0% { transform: rotate(-220deg) scale(.2); opacity: 0 } 70% { transform: rotate(14deg) scale(1.06); opacity: 1 } 100% { transform: none } }
 @keyframes fxSway { 0%, 100% { transform: rotate(-2.5deg) } 50% { transform: rotate(2.5deg) } }
 /* v2 落下来弹两下，最后跳走 */
-.emote .fx.v2 { animation: fxDrop .6s cubic-bezier(.3,.6,.4,1) both, fxMiniBounce 1.9s ease-in-out .6s infinite, fxBounceOut .4s ease-in calc(var(--dur) - .4s) forwards; }
+.emote .fx.v2 { animation: fxDrop .6s var(--ease) both, fxMiniBounce 1.9s ease-in-out .6s infinite, fxBounceOut .4s ease-in calc(var(--dur) - .4s) forwards; }
 @keyframes fxDrop { 0% { transform: translateY(calc(var(--size) * -1.2)) scaleY(1.15); opacity: 0 } 40% { transform: none; opacity: 1 } 55% { transform: translateY(calc(var(--size) * -.24)) } 70% { transform: translateY(0) scale(1.06, .94) } 84% { transform: translateY(calc(var(--size) * -.07)) } 100% { transform: none } }
 @keyframes fxMiniBounce { 0%, 100% { translate: 0 0 } 50% { translate: 0 -7px } }
 @keyframes fxBounceOut { 0% { transform: none; opacity: 1 } 25% { transform: translateY(calc(var(--size) * .09)) scale(1.05, .93) } 100% { transform: translateY(calc(var(--size) * -1)); opacity: 0 } }
 /* v3 从一团模糊的闪光里聚焦出来，然后呼吸 */
-.emote .fx.v3 { animation: fxFlashIn .32s cubic-bezier(.2,1.3,.4,1) both, fxBreathe 2.4s ease-in-out .35s infinite, fxFlashOut .3s ease-in calc(var(--dur) - .3s) forwards; }
+.emote .fx.v3 { animation: fxFlashIn .32s var(--ease) both, fxBreathe 2.4s ease-in-out .35s infinite, fxFlashOut .3s ease-in calc(var(--dur) - .3s) forwards; }
 .emote .fx.v3 img { filter: drop-shadow(0 0 12px #ffffffb0); }
 @keyframes fxFlashIn { 0% { transform: scale(1.55); filter: blur(7px) brightness(2); opacity: 0 } 55% { opacity: 1 } 100% { transform: none; filter: none } }
 @keyframes fxBreathe { 0%, 100% { transform: scale(1) } 50% { transform: scale(1.04) } }
 @keyframes fxFlashOut { from { transform: none; filter: none; opacity: 1 } to { transform: scale(1.3); filter: blur(6px); opacity: 0 } }
 /* v4 从上方的支点荡进来，像钟摆一样摆 */
-.emote .fx.v4 { transform-origin: 50% -20%; animation: fxSwingIn .75s cubic-bezier(.35,.85,.35,1) both, fxPendulum 2.1s ease-in-out .75s infinite, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards; }
+.emote .fx.v4 { transform-origin: 50% -20%; animation: fxSwingIn .75s var(--ease) both, fxPendulum 2.1s ease-in-out .75s infinite, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards; }
 @keyframes fxSwingIn { 0% { transform: rotate(80deg); opacity: 0 } 22% { opacity: 1 } 55% { transform: rotate(-17deg) } 78% { transform: rotate(9deg) } 100% { transform: none } }
 @keyframes fxPendulum { 0%, 100% { transform: rotate(-3deg) } 50% { transform: rotate(3deg) } }
 /* v5 轻轻落下，然后像心跳一样带着暖光跳动 */
@@ -163,60 +174,53 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 @keyframes fxHeartIn { 0% { transform: scale(.3); opacity: 0 } 100% { transform: none; opacity: 1 } }
 @keyframes fxHeart { 0%, 28%, 55%, 100% { transform: scale(1) } 10% { transform: scale(1.1) } 22% { transform: scale(1.01) } 40% { transform: scale(1.08) } }
 
-/* ---------- 队伍文字：原处冒出来，或者弹幕；字号和字幕特效（3.0）---------- */
+/* ---------- 队伍文字：原处冒出来，或者弹幕 ---------- */
 #texts { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
 .text-pop {
-  --tag: #c8aa6e; --lift: 0; --size: 28px; position: absolute; width: max-content; max-width: min(560px, calc(100vw - 32px));
+  --tag: var(--cyan); --lift: 0; --size: 28px; position: absolute; width: max-content; max-width: min(560px, calc(100vw - 32px));
   transform: translate(-50%, calc(-100% - 14px - var(--lift) * var(--size) * 1.4)); text-align: center;
-  transition: transform .2s ease-out;
-  animation: textIn .2s cubic-bezier(.2, 1.5, .4, 1) both, textOut .35s ease-in calc(var(--dur) - .35s) forwards;
+  transition: transform .2s var(--ease);
+  animation: textIn .2s var(--ease) both, textOut .35s ease-in calc(var(--dur) - .35s) forwards;
 }
-/* 说话人的名字：颜色和他的信号标签一样，大小跟着字号走 */
 .text-name {
-  display: inline-block; margin: 0 0 2px; padding: 0 8px; border-radius: 2px; background: rgba(1, 10, 19, .72);
-  color: var(--tag); font: 700 max(12px, calc(var(--size) * .46))/1.5 var(--sans); text-shadow: 0 1px 2px #000;
+  display: inline-block; margin: 0 0 4px; padding: 2px 10px;
+  border: 1px solid var(--line); border-left: 3px solid var(--tag, var(--cyan)); border-radius: 4px;
+  background: var(--panel); color: var(--text); font: 400 max(12px, calc(var(--size) * .46))/1.5 var(--sans);
 }
 .text-body { overflow-wrap: anywhere; white-space: pre-wrap; }
-@keyframes textIn { from { opacity: 0; scale: .8 } }
+@keyframes textIn { from { opacity: 0; scale: .9 } }
 @keyframes textOut { to { opacity: 0 } }
-/* 弹幕：从右边外面开始飘过整个屏幕；--travel 和 --dur 在分到一行时设好 */
 .danmaku {
-  --tag: #c8aa6e; --size: 28px; position: absolute; left: 100%; display: flex; align-items: center; gap: 10px; white-space: nowrap;
+  --tag: var(--cyan); --size: 28px; position: absolute; left: 100%; display: flex; align-items: center; gap: 10px; white-space: nowrap;
   animation: danmaku var(--dur) linear forwards;
 }
-.dm-name { color: var(--tag); font: 700 max(13px, calc(var(--size) * .55))/1.2 var(--sans); text-shadow: 0 0 3px #000, 0 1px 3px #000; }
+.dm-name { color: var(--tag); font: 500 max(13px, calc(var(--size) * .55))/1.2 var(--sans); text-shadow: 0 1px 3px #000; }
 @keyframes danmaku { to { transform: translateX(var(--travel)) } }
 
-/* 一句话本身（两种出场共用） */
-.text-body, .dm-text { font: 800 var(--size)/1.3 var(--sans); letter-spacing: .02em; }
-/* 逐字的特效：每个字单独出场 */
+/* 一句话本身（叠在游戏画面上，需要足够可读） */
+.text-body, .dm-text { font: 500 var(--size)/1.3 var(--sans); letter-spacing: 0; }
 .ch { display: inline-block; white-space: pre; }
 
-/* 描边大字：白字粗黑边（像视频字幕） */
+/* 以下 fx-* 是用户在设置里选的字幕特效，属于产品功能，保持可用 */
 .fx-outline, .fx-bounce, .fx-typewriter {
   color: #fff; -webkit-text-stroke: calc(var(--size) * .14) #000; paint-order: stroke fill;
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .55));
 }
-/* 金色渐变：客户端的金，深色描边和投影 */
 .fx-gold {
   background: linear-gradient(180deg, #fff8df 0%, #f4dc95 38%, #c8aa6e 58%, #8a6a30 100%);
   -webkit-background-clip: text; background-clip: text; color: transparent;
   -webkit-text-stroke: calc(var(--size) * .03) rgba(40, 26, 6, .9);
   filter: drop-shadow(0 2px 1px rgba(0, 0, 0, .95)) drop-shadow(0 0 8px rgba(0, 0, 0, .55));
 }
-/* 霓虹发光：说话人信号标签的颜色发光，出来时闪两下像灯管点亮 */
 .fx-neon {
   color: #f6fffe; text-shadow: 0 0 2px #fff, 0 0 calc(var(--size) * .3) var(--tag), 0 0 calc(var(--size) * .7) var(--tag), 0 0 calc(var(--size) * 1.3) var(--tag);
   animation: neonOn .9s linear both;
 }
 @keyframes neonOn { 0% { opacity: .15 } 8% { opacity: 1 } 16% { opacity: .35 } 26% { opacity: 1 } 40% { opacity: .6 } 50%, 100% { opacity: 1 } }
-/* 逐字弹跳：每个字从上面掉下来弹一下 */
-.fx-bounce .ch { animation: chBounce .5s cubic-bezier(.3, 1.8, .5, 1) both; }
+.fx-bounce .ch { animation: chBounce .5s var(--ease) both; }
 @keyframes chBounce { 0% { transform: translateY(-.9em) scale(.5); opacity: 0 } 60% { transform: translateY(.06em); opacity: 1 } 100% { transform: none; opacity: 1 } }
-/* 打字机：一个字一个字出来 */
 .fx-typewriter .ch { animation: chType .12s ease-out both; }
 @keyframes chType { from { opacity: 0; transform: translateY(.15em) } to { opacity: 1; transform: none } }
-/* 抖动强调：黄字黑边，砸下来再抖几下 */
 .fx-shake {
   color: #ffe14d; -webkit-text-stroke: calc(var(--size) * .14) #000; paint-order: stroke fill;
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .6)); animation: shakeHit .7s ease-out both;
@@ -228,3 +232,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 @media (prefers-reduced-motion: reduce) {
   .text-pop, .fx-neon, .fx-bounce .ch, .fx-typewriter .ch, .fx-shake { animation: none; }
 }
+
+/* 全局禁用文字拖动选中进复制态（3.0.1）：输入框 / 文本域除外 */
+*, *::before, *::after { -webkit-user-select: none; user-select: none; }
+input, textarea { -webkit-user-select: text; user-select: text; }

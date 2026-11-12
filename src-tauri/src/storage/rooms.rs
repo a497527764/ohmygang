@@ -46,6 +46,8 @@ pub struct RoomRow {
     pub owner_id: Option<MemberId>,
     pub dissolve_ts: Option<u64>,
     pub last_active: u64,
+    /// 云端分配的 6 位短码；老队伍或离线建的队没有。
+    pub short_code: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,7 +59,7 @@ pub struct MemberRow {
     pub avatar: Option<Vec<u8>>,
 }
 
-const SELECT_ROOM: &str = "SELECT room_id, code_cipher, owner_tag, status, title, owner_id, dissolve_ts, last_active FROM rooms";
+const SELECT_ROOM: &str = "SELECT room_id, code_cipher, owner_tag, status, title, owner_id, dissolve_ts, last_active, short_code FROM rooms";
 
 fn read_room(r: &rusqlite::Row) -> rusqlite::Result<RoomRow> {
     Ok(RoomRow {
@@ -69,6 +71,7 @@ fn read_room(r: &rusqlite::Row) -> rusqlite::Result<RoomRow> {
         owner_id: r.get(5)?,
         dissolve_ts: r.get(6)?,
         last_active: r.get(7)?,
+        short_code: r.get(8)?,
     })
 }
 
@@ -109,6 +112,15 @@ pub fn set_status(conn: &Connection, room: &RoomId, status: RoomStatus) -> AppRe
     conn.execute(
         "UPDATE rooms SET status = ?2 WHERE room_id = ?1",
         params![room, status.to_db()],
+    )?;
+    Ok(())
+}
+
+/// 记下云端分配的 6 位短码（建队/进队时写）。
+pub fn set_short_code(conn: &Connection, room: &RoomId, code: &str) -> AppResult<()> {
+    conn.execute(
+        "UPDATE rooms SET short_code = ?2 WHERE room_id = ?1",
+        params![room, code],
     )?;
     Ok(())
 }

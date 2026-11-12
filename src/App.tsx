@@ -1,73 +1,69 @@
-// 控制面板（3.0）：左边是分页，右边是当前页：「队伍」「信号」「表情」「语音」「快捷键」「功能」「关于」。
-// 数据流：启动时读设置和状态 → 改设置时先更新界面，停手 300 毫秒后把最新的整份设置交给 Rust 存（Rust 修正后的值再回填）；
-// 导入、删除表情由 Rust 直接存，返回的设置换上（还有没存的改动时只换表情那几项，改动随后一起存）；
-// 信号开关在托盘或暂停快捷键那边变了，Rust 推送过来，这里跟着变。
-// 关掉控制面板时网页会被销毁，下次打开重新加载：从托盘「检查更新」打开时地址带 #about，直接到那一页。
+// 控制面板 3.3：单主页 + 设置页两态。侧栏取消，其余一切设置收进设置页；
+// 设置入口是主页右上角的齿轮（页面内 Ctrl+E 也能切，托盘的旧页面名照旧能跳）。
+// 数据流沿用旧版：启动读设置和状态 → 改设置先更新界面，停手 300ms 后整份写回 Rust（Rust 修正的值回填）；
+// 信号开关在托盘或快捷键处变化时由 "pings://enabled" 推过来。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getStatus, onEnabled, onNavigate, readSettings, setEnabled, writeSettings, type KeyClash, type Settings, type Status } from "./api";
-import { AboutPage } from "./components/AboutPage";
-import { EmotesPage } from "./components/EmotesPage";
-import { FeaturesPage } from "./components/FeaturesPage";
-import { Icon, type IconName } from "./components/Icon";
+import { DEFAULT_THEME, getStatus, onEnabled, onNavigate, readSettings, setEnabled, writeSettings, type KeyClash, type Settings, type Status } from "./api";
 import { PermissionCard } from "./components/PermissionCard";
-import { PingsPage } from "./components/PingsPage";
-import { ShortcutsPage } from "./components/ShortcutsPage";
-import { TeamPage } from "./components/TeamPage";
-import { VoicePage } from "./components/VoicePage";
-import logo from "./assets/logo.svg";
+import { Home } from "./ui/Home";
+import { SettingsView, type SettingsTab } from "./ui/Settings";
+import "./ui/theme.css";
 import "./app.css";
 
-type Page = "team" | "pings" | "emotes" | "voice" | "shortcuts" | "features" | "about";
-const PAGES: { id: Page; label: string; icon: IconName }[] = [
-  { id: "team", label: "队伍", icon: "users" },
-  { id: "pings", label: "信号", icon: "target" },
-  { id: "emotes", label: "表情", icon: "smile" },
-  { id: "voice", label: "语音", icon: "mic" },
-  { id: "shortcuts", label: "快捷键", icon: "keyboard" },
-  { id: "features", label: "功能", icon: "toggle" },
-  { id: "about", label: "关于", icon: "info" },
-];
+type Page = "home" | "settings";
+
+/** 托盘里的老页面名照旧能跳：队伍类回主页，其余进设置页的对应分区。 */
+const NAV_FALLBACK: Record<string, { page: Page; tab: SettingsTab }> = {
+  home: { page: "home", tab: "common" },
+  settings: { page: "settings", tab: "common" },
+  team: { page: "home", tab: "common" },
+  pings: { page: "settings", tab: "pings" },
+  signals: { page: "settings", tab: "pings" },
+  emotes: { page: "settings", tab: "emotes" },
+  shortcuts: { page: "settings", tab: "keys" },
+  features: { page: "settings", tab: "team" },
+  voice: { page: "settings", tab: "voice" },
+  about: { page: "settings", tab: "about" },
+};
 
 const SAVE_DELAY_MS = 300;
 
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
-  /** 最近一次保存时被 Rust 换掉的按键，交给快捷键页说明。 */
   const [clashes, setClashes] = useState<KeyClash[]>([]);
-  const [page, setPage] = useState<Page>(() => {
-    const hash = window.location.hash.slice(1);
-    return PAGES.some((p) => p.id === hash) ? (hash as Page) : "team";
-  });
+  const [page, setPage] = useState<Page>("home");
+  const [tab, setTab] = useState<SettingsTab>("common");
   const [error, setError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** 最新的设置（包括还没存的改动），定时保存时存它。 */
   const latest = useRef<Settings | null>(null);
 
   useEffect(() => {
-    readSettings().then(
-      (s) => {
-        latest.current = s;
-        setSettings(s);
-      },
-      (e) => setError(String(e)),
-    );
+    readSettings().then((s) => { latest.current = s; setSettings(s); }, (e) => setError(String(e)));
     getStatus().then(setStatus, (e) => setError(String(e)));
     const off = onEnabled((on) => setStatus((s) => (s ? { ...s, enabled: on } : s)));
     const offNav = onNavigate((p) => {
-      if (PAGES.some((x) => x.id === p)) setPage(p as Page);
+      const to = NAV_FALLBACK[p];
+      if (to) { setPage(to.page); setTab(to.tab); }
     });
-    return () => {
-      void off.then((f) => f());
-      void offNav.then((f) => f());
-    };
+    return () => { void off.then((f) => f()); void offNav.then((f) => f()); };
   }, []);
 
-  // 主题：选了浅色或深色就写到 <html data-theme>，跟随系统时去掉，由 CSS 按系统设置切换。
+  // Ctrl+E：主页 ↔ 设置。窗口有焦点时有效（和页面里的输入框互不打架）。
   useEffect(() => {
-    const root = document.documentElement;
-    if (!settings || settings.theme === "system") delete root.dataset.theme;
-    else root.dataset.theme = settings.theme;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === "e" || e.key === "E")) {
+        e.preventDefault();
+        setPage((p) => (p === "settings" ? "home" : "settings"));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // 主题：六套配色由用户明确选择，不再跟随系统；切主题只改 html 上的 data-theme。
+  useEffect(() => {
+    document.documentElement.dataset.theme = settings?.theme ?? DEFAULT_THEME;
   }, [settings?.theme]);
 
   const change = useCallback((patch: Partial<Settings>) => {
@@ -78,16 +74,13 @@ export default function App() {
     saveTimer.current = setTimeout(() => {
       saveTimer.current = null;
       if (!latest.current) return;
-      writeSettings(latest.current).then(
-        (saved) => {
-          if (saveTimer.current) return; // 又改了，等下一次保存的结果
-          latest.current = saved.settings;
-          setSettings(saved.settings);
-          setClashes(saved.clashes);
-          setError(null);
-        },
-        (e) => setError(`设置没存上：${String(e)}`),
-      );
+      writeSettings(latest.current).then((saved) => {
+        if (saveTimer.current) return;
+        latest.current = saved.settings;
+        setSettings(saved.settings);
+        setClashes(saved.clashes);
+        setError(null);
+      }, (e) => setError(String(e)));
     }, SAVE_DELAY_MS);
   }, []);
 
@@ -105,50 +98,31 @@ export default function App() {
   };
 
   return (
-    <div className="shell">
-      <nav className="side">
-        <div className="brand">
-          <img src={logo} alt="" width={28} height={28} />
-          <span>lolGang</span>
-        </div>
-        {PAGES.map((p) => (
-          <button
-            key={p.id}
-            className={`nav-item${page === p.id ? " active" : ""}`}
-            onClick={() => setPage(p.id)}
-            aria-current={page === p.id ? "page" : undefined}
-          >
-            <Icon name={p.icon} />
-            {p.label}
-          </button>
-        ))}
-        {status && (
-          <p className={`side-status${status.enabled && !status.inputError ? " on" : ""}`}>
-            <span className="dot" />
-            {status.inputError ? "信号不可用" : status.enabled ? "信号开启中" : "信号已暂停"}
-          </p>
-        )}
-      </nav>
-      <main className="content">
-        {error && <p className="banner error">{error}</p>}
+    <div className="v-shell">
+      <main className="v-main">
+        {error && <p className="v-error">{error}</p>}
         {status?.needsPermission && status.inputError && <PermissionCard reason={status.inputError} />}
         {settings && status ? (
-          <>
-            {page === "team" && <TeamPage settings={settings} onSettings={change} />}
-            {page === "pings" && (
-              <PingsPage settings={settings} status={status} onChange={change} onToggle={toggle} />
-            )}
-            {page === "emotes" && (
-              <EmotesPage settings={settings} onChange={change} onSaved={saved} onShortcuts={() => setPage("shortcuts")} />
-            )}
-            {page === "voice" && <VoicePage settings={settings} onChange={change} onShortcuts={() => setPage("shortcuts")} />}
-            {page === "shortcuts" && <ShortcutsPage settings={settings} clashes={clashes} onChange={change} />}
-            {page === "features" && <FeaturesPage settings={settings} onChange={change} />}
-            {page === "about" && <AboutPage settings={settings} onChange={change} />}
-          </>
-        ) : (
-          !error && <p className="loading">正在读取设置…</p>
-        )}
+          page === "home" ? (
+            <Home
+              settings={settings}
+              status={status}
+              onToggle={toggle}
+              onOpenSettings={(t) => { setPage("settings"); setTab(t); }}
+            />
+          ) : (
+            <SettingsView
+              settings={settings}
+              status={status}
+              clashes={clashes}
+              onChange={change}
+              onSaved={saved}
+              tab={tab}
+              onTab={setTab}
+              onBack={() => setPage("home")}
+            />
+          )
+        ) : !error ? <p className="v-note">…</p> : null}
       </main>
     </div>
   );

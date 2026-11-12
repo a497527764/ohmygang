@@ -18,6 +18,10 @@ dist-ssr/
 
 # Tauri 打包产物（src-tauri 下的 target 与仓库根目录的 /target/ 不是同一处）
 src-tauri/target/
+src-tauri/target-check/
+
+# 云端服务端的编译产物（server/ 是独立 Rust crate）
+server/target/
 src-tauri/gen/
 
 # IDE 与系统文件

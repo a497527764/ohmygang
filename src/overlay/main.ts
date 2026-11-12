@@ -2,8 +2,9 @@
 // 它在空闲时报告一声，让 Rust 把窗口挪开。
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { FALLBACK_TEXTURE, TICK_SOUND, allSoundNames, pingById, soundUrl, textureUrl } from "../shared/pings";
-import { bundledSoundUrl, customHash, customUrl, emoteIcon, isBundled, type CustomEmote } from "../shared/emotes";
+import { TICK_SOUND, allSoundNames, pingById, soundUrl } from "../shared/pings";
+import { bundledSoundUrl, customHash, customUrl, isBundled, type CustomEmote } from "../shared/emotes";
+import { emoteIconStyled, pingIcon, type IconStyle } from "../shared/vectorAssets";
 import { EmoteStage, type EmoteArt } from "./emoteStage";
 import { IdleWatch } from "./idleWatch";
 import { spawnPing, type PingTag } from "./pingFx";
@@ -27,6 +28,8 @@ interface OverlaySettings {
   emoteSound: boolean;
   customEmotes: CustomEmote[];
   friendEmotes: boolean;
+  /** league / vector：和设置页一致，一处切换全窗口生效。 */
+  iconStyle: string;
   textStyle: "spot" | "danmaku";
 }
 
@@ -55,23 +58,25 @@ const texts = new TextStage(textLayer);
 const sounds = new SoundBank();
 let settings: OverlaySettings | null = null;
 
-const iconOf = (id: string): string => textureUrl(pingById(id)?.icon ?? FALLBACK_TEXTURE);
+const styleOf = (s: OverlaySettings | null): IconStyle => (s?.iconStyle === "vector" ? "vector" : "league");
+const iconOf = (id: string, s: OverlaySettings | null): string => pingIcon(id, styleOf(s));
 const tick = (): void => {
   if (settings?.tickSound) sounds.play(TICK_SOUND, settings.volume * 0.5);
 };
-const pingWheel = new Wheel(wheelSvg, "PING", tick);
-const emoteWheel = new Wheel(emoteSvg, "EMOTE", tick);
+const pingWheel = new Wheel(wheelSvg, tick);
+const emoteWheel = new Wheel(emoteSvg, tick);
 /** 正开着（或最近开过）的那个轮盘，wheel:hot 和 wheel:close 都对它。 */
 let wheel = pingWheel;
 
 function apply(s: OverlaySettings): void {
   settings = s;
+  const style = styleOf(s);
   pingWheel.setSize(s.wheelSizePx);
-  pingWheel.setIcons(s.wheel.map(iconOf));
-  pingWheel.setCenterIcon(iconOf(s.clickPingId));
+  pingWheel.setIcons(s.wheel.map((id) => pingIcon(id, style)));
+  pingWheel.setCenterIcon(iconOf(s.clickPingId, s));
   emoteWheel.setSize(s.wheelSizePx);
-  emoteWheel.setIcons(s.emoteWheel.map(emoteIcon));
-  emoteWheel.setCenterIcon(emoteIcon(s.clickEmote));
+  emoteWheel.setIcons(s.emoteWheel.map((ref) => emoteIconStyled(ref, style)));
+  emoteWheel.setCenterIcon(emoteIconStyled(s.clickEmote, style));
   sounds.forget((key) => key.startsWith("custom:")); // 导入表情的音效可能换了，下次放时重新读
 }
 
@@ -126,7 +131,7 @@ void listen("wheel:close", () => wheel.close());
 void listen<{ id: string; x: number; y: number; tag?: PingTag }>("ping:spawn", ({ payload: p }) => {
   const def = pingById(p.id);
   if (!def || !settings) return;
-  spawnPing(pingLayer, def, p.x, p.y, { sizePx: settings.pingSizePx, durationS: settings.pingDurationS, tag: p.tag });
+  spawnPing(pingLayer, def, p.x, p.y, { sizePx: settings.pingSizePx, durationS: settings.pingDurationS, tag: p.tag, iconStyle: styleOf(settings) });
   sounds.play(def.sound, settings.volume);
 });
 void listen<EmoteSpawn>("emote:spawn", ({ payload: p }) => {

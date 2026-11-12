@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "lolGang",
+  "productName": "OH-MY-GANG!",
   "mainBinaryName": "lolgang",
-  "version": "3.2.0",
+  "version": "0.1.0",
   "identifier": "com.lijia.lolgang",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -14,11 +14,11 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "lolGang",
-        "width": 1000,
-        "height": 700,
-        "minWidth": 720,
-        "minHeight": 480,
+        "title": "OH-MY-GANG!",
+        "width": 650,
+        "height": 1118,
+        "resizable": false,
+        "maximizable": false,
         "visible": false,
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --disable-component-update --disable-background-networking"
       }

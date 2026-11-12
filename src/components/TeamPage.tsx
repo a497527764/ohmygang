@@ -1,5 +1,5 @@
 // 「队伍」页：我的资料、建队或进队、队伍码、队员和他们的状态、退出和解散、网络。
-// 数据流：打开时取一次整份 TeamView；Rust 推 "team://changed" 时重取（走局域网还是中继、掉线这些，
+// 数据流：打开时取一次整份 TeamView；Rust 推 "team://changed" 时重取（中继连接、掉线这些，
 // Rust 每 5 秒看一次，变了才推）。所有改动都返回新的 TeamView，直接换上。
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -18,12 +18,12 @@ import {
   type TeamView,
 } from "../api";
 import { Avatar } from "./Avatar";
-import { Row, Switch, Tip } from "./controls";
+import { Tip } from "./controls";
 import { Icon } from "./Icon";
 import { ProfileCard } from "./ProfileCard";
 
 const STATUS_TEXT: Record<NonNullable<Member["status"]>, string> = { online: "在线", paused: "信号暂停", away: "离开电脑" };
-const PATH_TEXT: Record<NonNullable<Member["path"]>, string> = { lan: "局域网", relay: "中继", offline: "离线" };
+const PATH_TEXT: Record<NonNullable<Member["path"]>, string> = { relay: "中继", offline: "离线" };
 const PLATFORM_TEXT: Record<string, string> = { win: "Windows", mac: "macOS", linux: "Linux" };
 
 function memberLine(m: Member): string {
@@ -45,7 +45,7 @@ interface Props {
   onSettings: (patch: Partial<Settings>) => void;
 }
 
-export function TeamPage({ settings, onSettings }: Props) {
+export function TeamPage(_props: Props) {
   const [view, setView] = useState<TeamView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -91,7 +91,7 @@ export function TeamPage({ settings, onSettings }: Props) {
         <section className="card">
           <h2>
             正在加入队伍…
-            <Tip text="要等至少一位队友在线，同步完队伍信息才算进队。队友在同一个局域网里，或者大家都开着「允许互联网」就行" />
+            <Tip text="要等至少一位队友在线，同步完队伍信息才算进队。大家都连着云端服务就行" />
           </h2>
           <div className="actions">
             <button className="soft" disabled={busy} onClick={() => run(teamCancel())}>
@@ -104,19 +104,9 @@ export function TeamPage({ settings, onSettings }: Props) {
 
       <section className="card">
         <h2>网络</h2>
-        <Row label="允许互联网" tip="不在同一个局域网时经公共中继转发，内容加密，中继看不到">
-          <Switch label="允许互联网" checked={settings.allowInternet} onChange={(allowInternet) => onSettings({ allowInternet })} />
-        </Row>
         <p className="net-status">
-          {settings.allowInternet ? (
-            <>
-              {`中继：${view.relaysOk} / ${view.relaysTotal} 个已连接`}
-              {view.relays.length > 0 && <Tip text={relayLines(view.relays)} />}
-            </>
-          ) : (
-            "只用局域网"
-          )}
-          {view.lanDegraded && <span className="warn-text">　局域网端口被别的程序占了，只能经中继联系</span>}
+          {`云端连接：${view.relaysOk} / ${view.relaysTotal} 个中继已连接`}
+          {view.relays.length > 0 && <Tip text={relayLines(view.relays)} />}
         </p>
       </section>
     </div>
@@ -160,7 +150,7 @@ function NoTeam({ busy, onCreate, onJoin }: { busy: boolean; onCreate: (t: strin
       <section className="card">
         <h2>
           进队
-          <Tip text="队伍码以 GT2 开头，向队长要" />
+          <Tip text="队伍码是 6 位字母数字，向队长要" />
         </h2>
         <form
           className="inline-form"
@@ -169,7 +159,7 @@ function NoTeam({ busy, onCreate, onJoin }: { busy: boolean; onCreate: (t: strin
             onJoin(code);
           }}
         >
-          <input value={code} onChange={(e) => setCode(e.target.value)} aria-label="队伍码" placeholder="GT2-…" spellCheck={false} />
+          <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^0-9A-Z-]/g, ""))} aria-label="队伍码" placeholder="6 位队伍码" spellCheck={false} />
           <button className="primary" disabled={busy || !code.trim()}>
             进队
           </button>

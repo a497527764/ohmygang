@@ -1,0 +1,6 @@
+# 不进构建上下文的文件
+target
+.git
+.gitignore
+*.rs.bk
+Cargo.lock.bak

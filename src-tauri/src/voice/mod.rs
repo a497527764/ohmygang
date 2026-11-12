@@ -23,6 +23,7 @@ pub mod audio;
 pub mod jitter;
 pub mod packet;
 pub mod resample;
+pub mod spectrum;
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -44,6 +45,7 @@ use crate::panel::PanelMsg;
 use jitter::{Jitter, Pull};
 use packet::Packer;
 use resample::Resampler;
+use spectrum::{BANDS, analyze};
 
 /// 语音编码的采样率（单声道）。
 pub const RATE: u32 = 16_000;
@@ -61,6 +63,10 @@ const SPEAKER_IDLE: Duration = Duration::from_secs(3);
 /// 同时最多放这么多段话（队伍最多 16 人，留余量）。
 const MAX_STREAMS: usize = 32;
 const TICK: Duration = Duration::from_millis(10);
+/// 音量波形的衰减（每 10 毫秒一跳）：快上慢下，松了口波形是落下去的，不是断掉的。
+const LEVEL_DECAY: f32 = 0.86;
+/// 每几跳给主页发一次音量（10 毫秒 × 6 = 60 毫秒）。
+const LEVEL_EVERY: u32 = 6;
 /// 本机放的声音（试音、回放历史记录）的「说话人」：不会和真正的公钥撞。
 const LOCAL: MemberId = [0; 32];
 const TEST_KEY: (MemberId, u32) = (LOCAL, 0);
@@ -137,6 +143,11 @@ impl Voice {
             mixed: vec![0.0; FRAME],
             decoded: vec![0.0; FRAME],
             resampled: Vec::new(),
+            monitor: None,
+            spectrum_samples: Vec::with_capacity(1024),
+            bands: [0.0; BANDS],
+            level_ticks: 0,
+            monitor_retry: 0,
         };
         std::thread::Builder::new()
             .name("voice".into())
@@ -205,12 +216,28 @@ struct Runner {
     mixed: Vec<f32>,
     decoded: Vec<f32>,
     resampled: Vec<f32>,
+    /// 麦克风监听（只算音量、不录音）：语音开着、没在录音时打开，主页的波形跟着麦克风跳。
+    /// 录音（说话/试音）时关掉，音量直接从录音的缓冲里算，同一个麦克风不开两次。
+    monitor: Option<(cpal::Stream, audio::MicBuffer)>,
+    /// 最近一窗麦克风采样（录音缓冲或监听缓冲来的），供 FFT 取最后 512 个。
+    spectrum_samples: Vec<f32>,
+    /// 平滑后的各频段幅度（0..1）和距上次发给主页的跳数。
+    bands: [f32; BANDS],
+    level_ticks: u32,
+    /// 麦克风监听打开失败后的重试倒计时（10 毫秒一跳，约 1 秒再试一次）。
+    monitor_retry: u32,
 }
 
 impl Runner {
     fn run(mut self, rx: Receiver<VoiceMsg>) {
         loop {
-            let busy = self.rec.is_some() || !self.streams.is_empty() || self.speaker.is_some();
+            // 语音开着就按 10 毫秒一跳跑：否则线程会阻塞在 recv()，主页的电平监听
+            // 永远等不到第一次 step()，波形就一直贴在基线上。
+            let busy = self.config.enabled
+                || self.rec.is_some()
+                || !self.streams.is_empty()
+                || self.speaker.is_some()
+                || self.monitor.is_some();
             let msg = if busy {
                 match rx.recv_timeout(TICK) {
                     Ok(m) => Some(m),
@@ -426,6 +453,7 @@ impl Runner {
         };
         {
             let mut captured = rec.captured.lock().unwrap_or_else(|e| e.into_inner());
+            push_spectrum(&mut self.spectrum_samples, &captured);
             rec.pcm.extend_from_slice(&captured);
             captured.clear();
         }
@@ -502,6 +530,50 @@ impl Runner {
         self.set_status(|s| s.test = (count > 0).then_some("playing"));
     }
 
+    /// 主页的麦克风波形：语音开着、没在录音时开一条只测音量的监听流；音量每 60 毫秒发给主页。
+    /// 监听打不开就隔一秒再试——真要用麦（说话）时还会再开一次，错在那边报。
+    fn meter(&mut self) {
+        // 麦克风电平只跟「语音开关」有关：信号暂停、刚启动时也应该能看见自己在说话。
+        // 之前把「信号上线」当前置条件，离线时监听关掉后线程又阻塞，波形就永远不动了。
+        let want = self.config.enabled && self.rec.is_none();
+        if want && self.monitor.is_none() {
+            if self.monitor_retry == 0 {
+                let captured: audio::MicBuffer = Arc::new(Mutex::new(Vec::with_capacity(RATE as usize / 10)));
+                if let Ok(mic) = audio::open_mic(&self.config.mic, captured.clone()) {
+                    self.monitor = Some((mic, captured));
+                } else {
+                    self.monitor_retry = 100;
+                }
+            } else {
+                self.monitor_retry -= 1;
+            }
+        } else if !want {
+            self.monitor = None;
+            self.monitor_retry = 0;
+        }
+        if let Some((_, captured)) = &self.monitor {
+            let mut c = captured.lock().unwrap_or_else(|e| e.into_inner());
+            push_spectrum(&mut self.spectrum_samples, &c);
+            c.clear();
+        }
+        // 每 60 毫秒算一次频谱：各频段独立快上慢下，静音时全部收回基线
+        let fresh = analyze(&self.spectrum_samples);
+        for (i, &v) in fresh.iter().enumerate() {
+            self.bands[i] = if v > self.bands[i] {
+                v
+            } else {
+                let d = self.bands[i] * LEVEL_DECAY;
+                if d < 0.01 { 0.0 } else { d }
+            };
+        }
+        self.level_ticks += 1;
+        if self.level_ticks >= LEVEL_EVERY {
+            self.level_ticks = 0;
+            let _ = self.app.emit_to("main", "voice://mic", self.bands.to_vec());
+        }
+    }
+
+
     fn step(&mut self) {
         self.drain_mic();
         if let Some(rec) = &self.rec {
@@ -515,6 +587,7 @@ impl Runner {
             }
         }
         self.play();
+        self.meter();
         self.show();
     }
 
@@ -656,6 +729,21 @@ fn frames_in_range(first: u32, count: usize) -> bool {
 fn add(sum: &mut [f32], pcm: &[f32], volume: f32) {
     for (s, p) in sum.iter_mut().zip(pcm) {
         *s += p * volume;
+    }
+}
+
+/// 只留最近一窗样本，避免录音很久之后缓冲无限涨。写成自由函数是为了在
+/// `self.rec` 已被可变借用时，仍能只借用 `self.spectrum_samples` 这一个字段。
+fn push_spectrum(buf: &mut Vec<f32>, samples: &[f32]) {
+    const WINDOW: usize = 512;
+    if samples.is_empty() {
+        return;
+    }
+    let from = samples.len().saturating_sub(WINDOW);
+    buf.extend_from_slice(&samples[from..]);
+    if buf.len() > WINDOW {
+        let drop = buf.len() - WINDOW;
+        buf.drain(..drop);
     }
 }
 

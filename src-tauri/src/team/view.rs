@@ -90,7 +90,7 @@ pub struct MemberDto {
     pub is_owner: bool,
     pub is_me: bool,
     pub avatar: Option<AvatarDto>,
-    /// lan、relay、offline；自己是 null。
+    /// relay、offline；自己是 null。
     pub path: Option<&'static str>,
     /// online、paused、away；没收到在线状态时是 null。
     pub status: Option<&'static str>,
@@ -103,13 +103,41 @@ pub struct TeamView {
     pub me: MeDto,
     pub team: Option<TeamDto>,
     pub members: Vec<MemberDto>,
-    /// 局域网端口被占，只能经中继联系。
-    pub lan_degraded: bool,
     /// 连着几个中继、一共几个；关了互联网时都是 0。
     pub relays_ok: usize,
     pub relays_total: usize,
     /// 每个中继的连接状态和回显统计（3.2.0），队伍页「中继」那一行的说明里显示。
     pub relays: Vec<RelayDto>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentTeamDto {
+    pub code: String,
+    /// 云端分配的 6 位短码（显示用）；老队伍没有。
+    pub short_code: Option<String>,
+    pub title: Option<String>,
+    pub is_owner: bool,
+    /// joining、active、left。
+    pub status: &'static str,
+    /// 推导出还在队里的人数（不是实时在线数）。
+    pub members: usize,
+}
+
+/// 主页历史队伍列表：明文队伍码只在内存和这一层出现，落盘的仍是密文。
+pub(super) fn recent_dto(r: &crate::app_core::RecentRoom) -> RecentTeamDto {
+    RecentTeamDto {
+        code: r.code.clone(),
+        short_code: r.short_code.clone(),
+        title: r.title.clone(),
+        is_owner: r.is_owner,
+        status: match r.status {
+            crate::app_core::RoomStatus::Joining => "joining",
+            crate::app_core::RoomStatus::Active => "active",
+            _ => "left",
+        },
+        members: r.members,
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -167,7 +195,7 @@ fn snapshot(core: &mut Core, _: &mut Outbox) -> Result<CoreSnapshot, AppError> {
     let Some(team) = core.current_team()? else {
         return Ok((me, None, Vec::new()));
     };
-    let code = core.room_code(&team.room_id)?;
+    let code = core.display_code(&team.room_id)?;
     let members = core
         .list_members(&team.room_id)?
         .into_iter()
@@ -186,11 +214,10 @@ pub async fn view(app: &AppHandle) -> Result<TeamView, String> {
         .ok_or("网络模块停了")?
         .map_err(|e| e.to_string())?;
     let room = team.as_ref().map(|(t, _)| t.room_id);
-    let (paths, lan, relays) = node
+    let (paths, relays) = node
         .inspect(move |n| {
             (
                 room.map(|r| n.member_paths(&r)).unwrap_or_default(),
-                n.lan_status(),
                 n.relay_status(),
             )
         })
@@ -216,7 +243,6 @@ pub async fn view(app: &AppHandle) -> Result<TeamView, String> {
                 is_me,
                 avatar: avatar_dto(&m.avatar),
                 path: (!is_me).then_some(match path {
-                    Some(PathKind::Lan) => "lan",
                     Some(PathKind::Relay) => "relay",
                     _ => "offline",
                 }),
@@ -239,7 +265,6 @@ pub async fn view(app: &AppHandle) -> Result<TeamView, String> {
             code,
         }),
         members,
-        lan_degraded: lan.degraded,
         relays_ok: relays.iter().filter(|r| r.state == RelayState::Ok).count(),
         relays_total: relays.len(),
         relays: relays.iter().map(relay_dto).collect(),

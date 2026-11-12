@@ -5,7 +5,7 @@ import { EMOTE_CATALOG } from "./emoteCatalog";
 
 /** 表情在屏幕上停留的秒数。 */
 export const EMOTE_DURATION_S = 3;
-export const MAX_CUSTOM_EMOTES = 24;
+export const MAX_CUSTOM_EMOTES = 20;
 
 /** 和 Rust 的 emotes::CustomEmote 对应。 */
 export interface CustomEmote {

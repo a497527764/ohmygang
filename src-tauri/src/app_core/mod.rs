@@ -50,6 +50,20 @@ pub struct CreatedRoom {
     pub events: Vec<SignedEvent>,
 }
 
+/// 主页「加入过的队伍」的一行：明文队伍码（点击直接重进）、缓存标题、状态、在队人数。
+/// 由 `Core::recent_rooms` 组装；解密队伍码用的还是建房时的主密钥，不明文落盘。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentRoom {
+    pub code: String,
+    /// 云端分配的 6 位短码（显示用）；老队伍没有。
+    pub short_code: Option<String>,
+    pub title: Option<String>,
+    pub is_owner: bool,
+    pub status: RoomStatus,
+    /// 现在还在队里的人数（从事件推导的缓存，不是实时在线数）。
+    pub members: usize,
+}
+
 /// 队伍 → （算的时候最新一条事件的本地序号，持有情况）。见文件头第 7 条。
 type HoldingsCache = HashMap<RoomId, (Option<i64>, Arc<Holdings>)>;
 
@@ -149,6 +163,34 @@ impl Core {
         })
     }
 
+    /// 用云端铸造的队伍码建队（server/README.md 的短码流程）。
+    pub fn create_room_with_code(
+        &mut self,
+        code_str: &str,
+        title: &str,
+        now_ms: u64,
+    ) -> AppResult<CreatedRoom> {
+        self.require_no_team()?;
+        let profile = self.my_profile();
+        let tx = self.conn.transaction()?;
+        let (room, code, written) = rooms::create_room_with_code(
+            &tx,
+            &self.me,
+            &self.master,
+            &profile,
+            title,
+            code_str,
+            now_ms,
+        )?;
+        let summary = rooms::summary(&self.view.member_id, &rooms::get(&tx, &room)?);
+        tx.commit()?;
+        Ok(CreatedRoom {
+            summary,
+            code,
+            events: written,
+        })
+    }
+
     pub fn join_room(&mut self, code: &str, now_ms: u64) -> AppResult<RoomSummary> {
         self.require_no_team()?;
         let tx = self.conn.transaction()?;
@@ -167,6 +209,47 @@ impl Core {
 
     pub fn room_code(&self, room: &RoomId) -> AppResult<String> {
         rooms::room_code(&self.conn, &self.master, room)
+    }
+
+    /// 界面显示/分享用的码：有云端 6 位短码用短码，否则退回 GT2 长码。
+    pub fn display_code(&self, room: &RoomId) -> AppResult<String> {
+        let row = rooms::get(&self.conn, room)?;
+        if let Some(s) = row.short_code.as_ref().filter(|s| !s.is_empty()) {
+            return Ok(s.clone());
+        }
+        rooms::room_code(&self.conn, &self.master, room)
+    }
+
+    /// 记下云端分配的 6 位短码。
+    pub fn set_short_code(&mut self, room: &RoomId, code: &str) -> AppResult<()> {
+        room_store::set_short_code(&self.conn, room, code)
+    }
+
+    /// 加入过的队伍，按最近活跃倒序：不含当前队伍（加入中或已在）和已解散的。
+    /// 「上一次的队伍」就是第一行，启动自动回归和主页历史列表都用它。
+    pub fn recent_rooms(&self) -> AppResult<Vec<RecentRoom>> {
+        let me = self.view.member_id;
+        let current = self.current_team()?.map(|t| t.room_id);
+        Ok(room_store::list_rooms(&self.conn)?
+            .into_iter()
+            .filter(|r| !matches!(r.status, RoomStatus::Dissolved))
+            .filter(|r| current.is_none_or(|c| c != r.room_id))
+            .map(|r| {
+                let code = rooms::room_code(&self.conn, &self.master, &r.room_id)?;
+                let members = room_store::members(&self.conn, &r.room_id)?
+                    .iter()
+                    .filter(|m| m.in_room)
+                    .count();
+                Ok(RecentRoom {
+                    code,
+                    short_code: r.short_code.clone(),
+                    title: r.title,
+                    is_owner: crate::protocol::room_code::owner_tag_of(&me) == r.owner_tag,
+                    status: r.status,
+                    members,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?)
     }
 
     pub fn list_members(&self, room: &RoomId) -> AppResult<Vec<MemberView>> {

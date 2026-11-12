@@ -29,7 +29,7 @@ pub const DEFAULT_WHEEL: [&str; 8] = [
     "bee_mad",
 ];
 pub const DEFAULT_CLICK: &str = "facepalm";
-pub const MAX_CUSTOM: usize = 24;
+pub const MAX_CUSTOM: usize = 20;
 pub const NAME_MAX_CHARS: usize = 24;
 /// 出场效果的种数：0 是普通弹出，另外 5 种。
 pub const FX_VARIANTS: u8 = 6;

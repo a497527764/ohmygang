@@ -1,6 +1,7 @@
 pub mod api;
 pub mod app_core;
 pub mod base32;
+pub mod cloud;
 pub mod crypto;
 pub mod emotes;
 pub mod error;
@@ -131,6 +132,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            api::ui_sync_window,
             api::settings_read,
             api::settings_write,
             api::status_get,
@@ -159,6 +161,7 @@ pub fn run() {
             update::update_check,
             update::update_install,
             team::commands::team_view,
+            team::commands::team_recent,
             team::commands::team_create,
             team::commands::team_join,
             team::commands::team_cancel,
@@ -196,13 +199,22 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     }
     std::fs::create_dir_all(&dir)?;
     let db = storage::open(&dir.join("gang2.db"))?;
-    let settings = storage::settings::load(&db)?;
+    let mut settings = storage::settings::load(&db)?;
+    // 第一次打开（还没存过设置）：按主显示器分辨率定字号和表情大小（4K 40/300、2K 30/250、1080p 25/220）。
+    if storage::settings::is_fresh(&db)? {
+        if let Some(m) = app.primary_monitor().ok().flatten() {
+            let (text, emote) = settings2::first_launch_sizes(m.size().height);
+            settings.text_size_px = text;
+            settings.emote_size_px = emote;
+        }
+    }
     // 控制面板建好时藏着：开机启动就一直不显示（后面销毁），否则回到上次关掉时的位置再显示
     let autostart = std::env::args().any(|a| a == AUTOSTART_ARG);
     if !autostart && let Some(w) = app.get_webview_window("main") {
         tray::reveal_main(app.handle(), &w, settings.panel_rect);
     }
     let node = start_node(app.handle(), &dir, &settings)?;
+    cloud::spawn_heartbeat(node.clone());
     let me = tauri::async_runtime::block_on(node.call(|core, _| core.identity().member_id))
         .ok_or("网络模块没起来")?;
     let history = history::History::start(app.handle(), storage::open(&dir.join("gang2.db"))?, me);
@@ -244,20 +256,24 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     };
     let overlays = Overlays::start(app.handle(), settings.overlay(), hooks);
     let sink_to = overlays.clone();
+    // 3.3：启动是否自动上线由设置决定（默认开）。false 时键鼠监听带着 enabled=false 起来，
+    // 托盘勾选和状态也从这里同步，开关/快捷键恢复的路径不变。
+    let auto_online = settings.auto_online;
     let (input, input_error) = match input::start(
-        settings.gesture_config(true, false),
+        settings.gesture_config(auto_online, false),
         Box::new(move |e| sink_to.send(Msg::Input(e))),
     ) {
         Ok(h) => (Some(h), None),
         Err(e) => (None, Some(e)),
     };
     let theme = settings.theme.clone();
+    let auto_rejoin = settings.auto_rejoin;
     let emote_store = Arc::new(emotes::store::Store::open(&dir));
     let emote_net = emotes::net::EmoteNet::start(app.handle(), emote_store.clone());
     app.manage(AppState {
         db: Mutex::new(db),
         settings: Mutex::new(settings),
-        enabled: AtomicBool::new(true),
+        enabled: AtomicBool::new(auto_online),
         input,
         input_error,
         overlays,
@@ -270,7 +286,7 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         voice,
         history,
     });
-    tray::setup(app, true)?;
+    tray::setup(app, auto_online)?;
     api::apply_window_theme(app.handle(), &theme);
     team::refresh_names(app.handle());
     update::start_schedule(app.handle());
@@ -291,6 +307,15 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 std::thread::sleep(Duration::from_secs(5));
             }
         })?;
+    // 3.3：启动自动回到上一次的队伍（设置里可关）。等几秒让节点把中继连上；
+    // join 只是本地记一笔加等发现，队伍不在了就停在「加入中」，主页历史里那一行还能手动重试。
+    if auto_rejoin {
+        let handle = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            team::commands::rejoin_last(&handle).await;
+        });
+    }
     Ok(())
 }
 
@@ -310,16 +335,10 @@ fn start_node(
         None => keystore::APP_KEYSTORE,
     };
     let core = app_core::Core::open(storage::open(&dir.join("gang2.db"))?, &keystore)?;
-    let mut cfg = node::NodeConfig {
-        relay_urls: settings.active_relays(),
+    let cfg = node::NodeConfig {
+        relay_urls: settings.relay_list(),
         ..node::NodeConfig::default()
     };
-    if let Some(n) = instance {
-        cfg.lan.bind.set_port(transport::lan::LAN_PORT + n - 1);
-    }
-    if cfg!(debug_assertions) {
-        cfg.lan.broadcast_ports = (0..3).map(|i| transport::lan::LAN_PORT + i).collect();
-    }
     let handle = app.clone();
     let sink: node::Sink = Arc::new(move |e| team::on_node_event(&handle, e));
     Ok(tauri::async_runtime::block_on(node::Node::spawn(

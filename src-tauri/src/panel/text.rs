@@ -26,15 +26,9 @@ impl Runner {
                 (d.rect.x + d.rect.width / 2, d.rect.y + d.rect.height / 2)
             })
         });
-        let Some(i) = displays::display_at(&list, cx, cy) else {
-            return;
-        };
+        // 光标不在任何显示器里（极少见）：退回第 1 块，别让热键静默失效。
+        let i = displays::display_at(&list, cx, cy).unwrap_or(0);
         let d = &list[i];
-        self.text_at = Some((
-            u8::try_from(i + 1).unwrap_or(u8::MAX),
-            to_ratio(f64::from(cx - d.rect.x), f64::from(d.rect.width)),
-            to_ratio(f64::from(cy - d.rect.y), f64::from(d.rect.height)),
-        ));
         // 聊天框在这块显示器的左下角（和英雄联盟的聊天框一个位置），放不下就挪进显示器里。
         let (w_px, h_px) = physical(d, CHAT_SIZE);
         let (mx, my) = physical(d, CHAT_MARGIN);
@@ -42,9 +36,16 @@ impl Runner {
             .min(d.rect.x + d.rect.width - w_px)
             .max(d.rect.x);
         let y = (d.rect.y + d.rect.height - h_px - my).max(d.rect.y);
+        // 窗口建得起来才算打开。text_at 要等拿到窗口再置上：提前置会让下一次热键变成「收起」，
+        // 窗口一直建不起来时连按多少次都看不见聊天框。
         let Some(w) = self.window(Which::Text) else {
             return;
         };
+        self.text_at = Some((
+            u8::try_from(i + 1).unwrap_or(u8::MAX),
+            to_ratio(f64::from(cx - d.rect.x), f64::from(d.rect.width)),
+            to_ratio(f64::from(cy - d.rect.y), f64::from(d.rect.height)),
+        ));
         place(&w, (x, y, w_px, h_px));
         reveal(&w);
         let _ = w.set_focus();

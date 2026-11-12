@@ -8,18 +8,20 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Settings, TeamView } from "../api";
 import { el } from "../shared/dom";
-import { emoteIcon, emoteName, type CustomEmote } from "../shared/emotes";
-import { pingById, textureUrl } from "../shared/pings";
+import { emoteName, type CustomEmote } from "../shared/emotes";
+import { pingById } from "../shared/pings";
+import { emoteIconStyled, pingIcon, type IconStyle } from "../shared/vectorAssets";
 import "./text.css";
 
 const MAX = 120;
 /** 剩最后 20 个字时显示计数。 */
 const COUNT_FROM = MAX - 20;
-const HINT = "回车发送，Esc 收起。/ff 投降　/noff 反对投降　/ready 准备确认";
+/** V2：默认不显示任何说明；指令放在输入框的 title 里，只有出错时才亮一条反馈。 */
+const HINT = "";
 const ANSWERS: Record<string, string> = {
-  unknown: "不认识这个指令。可以用 /ff、/noff、/ready",
-  votesOff: "投票关着，在控制面板的「功能」页打开",
-  busy: "已经有一个投票在进行",
+  unknown: "未知指令",
+  votesOff: "投票未开启",
+  busy: "已有投票",
 };
 
 /** 和 Rust 的 history::EntryDto 对应。 */
@@ -44,6 +46,7 @@ const tabs = [...document.querySelectorAll<HTMLButtonElement>(".tabs button")];
 let entries: Entry[] = [];
 let names = new Map<string, string>();
 let custom: CustomEmote[] = [];
+let iconStyle: IconStyle = "league";
 let filter: Filter = "all";
 let playing: number | null = null;
 
@@ -91,8 +94,9 @@ function voiceButton(e: Entry): HTMLButtonElement {
 function row(e: Entry): HTMLLIElement {
   // 行的类名带 k- 前缀，免得和里面的按钮（.voice）撞名
   const li = el("li", `entry k-${e.kind}${e.me ? " me" : ""}`);
+  // 队友身份色只落在行首细色条上，名字保持中性，避免一屏高饱和文字
+  li.style.setProperty("--who", e.me ? "var(--cyan)" : e.color);
   const who = el("b", "who", e.me ? "我" : (names.get(e.memberId) ?? "队友"));
-  who.style.color = e.color;
   const head = el("div", "head");
   head.append(who, el("time", "", time(e.ts)));
   li.append(head);
@@ -100,8 +104,8 @@ function row(e: Entry): HTMLLIElement {
   else if (e.kind === "voice") li.append(voiceButton(e));
   else if (e.kind === "ping") {
     const def = pingById(e.text);
-    li.append(signal(textureUrl(def?.icon ?? "pingwheel_basicpingrender"), `发了「${def?.name ?? e.text}」`));
-  } else li.append(signal(emoteIcon(e.text), `发了表情「${emoteName(e.text, custom)}」`));
+    li.append(signal(pingIcon(e.text, iconStyle), def?.name ?? e.text));
+  } else li.append(signal(emoteIconStyled(e.text, iconStyle), emoteName(e.text, custom)));
   return li;
 }
 
@@ -124,6 +128,7 @@ async function reload(): Promise<void> {
   entries = list;
   names = new Map(view.members.map((m) => [m.memberId, m.nickname || m.fingerprint]));
   custom = settings.customEmotes;
+  iconStyle = settings.iconStyle === "vector" ? "vector" : "league";
   render();
 }
 
@@ -180,7 +185,7 @@ async function send(): Promise<void> {
       showHint(HINT, false);
       return;
     }
-    showHint(ANSWERS[answer] ?? HINT, true);
+    showHint(ANSWERS[answer] ?? "未生效", true);
   } catch (e) {
     showHint(String(e), true);
   } finally {
@@ -217,8 +222,23 @@ window.addEventListener("keydown", (e) => {
   }
 });
 document.getElementById("close")?.addEventListener("click", close);
+document.getElementById("send")?.addEventListener("click", () => void send());
 // 点了别处（聊天框失去焦点）就收起，免得一直挡在屏幕上。
-window.addEventListener("blur", () => void invoke("text_cancel"));
+// 但刚弹出来时全屏游戏常把前台抢回去（Windows 不让后台进程久占焦点）：还没拿到过焦点、
+// 或拿到不到 0.3 秒就被抢走的 blur 不算「点走」，不收起——否则盒子弹出即被关掉，
+// 看上去就是打字快捷键按了没反应（3.0.1）。
+let focusedAt = 0;
+window.addEventListener("focus", () => {
+  focusedAt = performance.now();
+  input.focus();
+});
+window.addEventListener("blur", () => {
+  if (!focusedAt || performance.now() - focusedAt < 300) {
+    focusedAt = 0;
+    return;
+  }
+  void invoke("text_cancel");
+});
 
 void listen("text:open", () => {
   showHint(HINT, false);
@@ -226,7 +246,6 @@ void listen("text:open", () => {
   requestAnimationFrame(() => input.focus());
 });
 // 第一次打开时页面还没加载完，"text:open" 已经发过了：加载完时取一次记录，窗口拿到焦点时把光标放进输入框。
-window.addEventListener("focus", () => input.focus());
 showHint(HINT, false);
 clamp();
 void reload();

@@ -135,14 +135,40 @@ pub fn push_gesture_config(app: &AppHandle) {
 
 /// 主窗口标题栏跟着主题走（跟随系统时交给系统）。
 pub fn apply_window_theme(app: &AppHandle, theme: &str) {
-    let t = match theme {
-        "light" => Some(tauri::Theme::Light),
-        "dark" => Some(tauri::Theme::Dark),
-        _ => None,
+    // 六套主题按前缀决定原生窗口的明暗（标题栏、系统菜单），具体配色由前端 CSS 负责。
+    let t = if theme.starts_with("light-") {
+        Some(tauri::Theme::Light)
+    } else if theme.starts_with("dark-") {
+        Some(tauri::Theme::Dark)
+    } else {
+        None
     };
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_theme(t);
     }
+}
+
+/// 控制面板整体缩放：前端按 500×860 排版再整体 zoom=k，窗口逻辑尺寸同步变成 500k×860k。
+/// k = 1.3 × 基准显示器缩放 / 当前显示器缩放 —— 窗口的物理大小不随显示器 DPI 变化；
+/// 再按当前显示器的可用区域收口，1080P 这类小屏上等比缩小，窗口不会顶出屏幕。
+#[tauri::command]
+pub fn ui_sync_window(app: AppHandle, dpr: f64, w: f64, h: f64) -> f64 {
+    const UI_SCALE: f64 = 1.3;
+    let (w, h) = (w.max(1.0), h.max(1.0));
+    let Some(win) = app.get_webview_window("main") else {
+        return UI_SCALE;
+    };
+    let scale = win.scale_factor().unwrap_or(dpr).max(0.5);
+    let mut k = UI_SCALE * dpr.clamp(0.5, 4.0) / scale;
+    if let Ok(Some(m)) = win.current_monitor() {
+        let s = m.size();
+        k = k
+            .min(s.height as f64 * 0.90 / scale / h)
+            .min(s.width as f64 * 0.94 / scale / w);
+    }
+    k = k.clamp(0.7, 2.6);
+    let _ = win.set_size(tauri::LogicalSize::new(w * k, h * k));
+    k
 }
 
 #[tauri::command]
@@ -201,7 +227,7 @@ fn apply_normalized(
     if s.launch_at_startup != old.launch_at_startup {
         set_autostart(app, s.launch_at_startup)?;
     }
-    let old_relays = old.active_relays();
+    let old_relays = old.relay_list();
     storage::settings::save(&state.db.lock().expect("数据库锁没有中毒"), &s)
         .map_err(|e| e.to_string())?;
     *state.settings.lock().expect("设置锁没有中毒") = s.clone();
@@ -217,7 +243,7 @@ fn apply_normalized(
         .send(crate::voice::VoiceMsg::Config(s.voice_config()));
     apply_window_theme(app, &s.theme);
     team::refresh_presence(app); // 轮盘上的导入表情变了，报的哈希跟着变
-    let relays = s.active_relays();
+    let relays = s.relay_list();
     if relays != old_relays {
         let node = state.node.clone();
         tauri::async_runtime::spawn(async move { node.set_relays(relays).await });
@@ -317,7 +343,7 @@ pub fn emote_import(
     }
     state
         .emotes
-        .import(&still, anim.as_deref(), sound.as_deref())
+        .import_custom(&still, anim.as_deref(), sound.as_deref())
         .map_err(|e| e.to_string())?;
     let entry = emotes::CustomEmote {
         id: id.clone(),

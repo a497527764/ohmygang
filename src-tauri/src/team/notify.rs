@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::{PRESENCE_STALE, Seen};
 use crate::api::AppState;
-use crate::app_core::{AppError, RoomStatus};
+use crate::app_core::AppError;
 use crate::crypto::{MemberId, RoomId, hex};
 use crate::emotes::{self, net::NetMsg};
 use crate::history::{Kind, NewEntry};
@@ -18,7 +18,7 @@ use crate::protocol::live::LiveBody;
 use crate::voice::VoiceMsg;
 use crate::votes::VoteKind;
 
-/// 现在所在的队伍（加入中或已加入）、是不是已加入、队员名字。
+/// 现在所在的队伍（加入中或已加入）、在不在队伍里、队员名字。
 type TeamNames = (Option<RoomId>, bool, Vec<(MemberId, String)>);
 
 /// 把队员名字交给透明窗口（信号下面的标签用），并通知控制面板刷新；告诉历史记录现在是哪个队伍。不在节点任务里等。
@@ -34,10 +34,11 @@ pub fn refresh_names(app: &AppHandle) {
                 let Some(team) = core.current_team()? else {
                     return Ok((None, false, Vec::new()));
                 };
-                let active = team.status == RoomStatus::Active;
+                // 「在队伍里」按加入中或已加入算（3.0.1）：只认已加入的话，单独进队等激活时
+                // 文字快捷键、面板键、说话键全没反应，看着像快捷键坏了。
                 Ok((
                     Some(team.room_id),
-                    active,
+                    true,
                     core.list_members(&team.room_id)?
                         .into_iter()
                         .map(|m| {

@@ -17,7 +17,7 @@ let current: { v: VoteDto; bar: HTMLElement } | null = null;
 /** 正在说话的队员（公钥的十六进制），那一行亮起。 */
 let speaking = new Set<string>();
 
-const PATH: Record<string, string> = { lan: "局域网", relay: "中继", offline: "离线" };
+const PATH: Record<string, string> = { relay: "中继", offline: "离线" };
 const STATUS: Record<string, string> = { online: "在线", paused: "信号暂停", away: "离开电脑" };
 
 function portrait(m: Member): HTMLElement {
@@ -62,7 +62,7 @@ function memberRow(m: Member): HTMLElement {
   who.append(el("span", "name", m.nickname || m.fingerprint), el("span", "path", line(m)));
   row.append(portrait(m), who);
   if (!m.isMe) {
-    const kick = el("button", "kick", "✕");
+    const kick = el("button", "kick", "");
     kick.title = `投票踢出 ${m.nickname || m.fingerprint}`;
     kick.setAttribute("aria-label", kick.title);
     kick.addEventListener("click", () => void act(invoke("vote_start", { kind: "kick", target: m.memberId })));

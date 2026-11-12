@@ -1,37 +1,70 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- lolGang 图标（原创）：金色菱形外框、深蓝底、海克斯蓝的信号波纹和发光的中心。
+  <!-- OH-MY-GANG! 图标（原创）：深色切角金属牌，中央荧光橙的「!」（队名结尾），
+       两侧青色信号弧（发信号 + 语音这两件事）。
        改了这张图后重新生成程序图标：pnpm tauri icon src/assets/logo.svg -o <临时目录>，
        再把 src-tauri/icons 里已有的那些文件换掉（不要安卓、iOS 的）。 -->
   <defs>
-    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#f0e6d2" />
-      <stop offset="0.45" stop-color="#c8aa6e" />
-      <stop offset="1" stop-color="#785a28" />
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0e1928"/>
+      <stop offset="0.55" stop-color="#0a111c"/>
+      <stop offset="1" stop-color="#060910"/>
     </linearGradient>
-    <linearGradient id="navy" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#0f2a44" />
-      <stop offset="1" stop-color="#010a13" />
+    <linearGradient id="org" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff9a4d"/>
+      <stop offset="0.5" stop-color="#ff6b1a"/>
+      <stop offset="1" stop-color="#f24e00"/>
     </linearGradient>
-    <radialGradient id="core" cx="0.5" cy="0.42" r="0.6">
-      <stop offset="0" stop-color="#e6fffd" />
-      <stop offset="0.45" stop-color="#0ac8b9" />
-      <stop offset="1" stop-color="#005a82" />
-    </radialGradient>
-    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="22" result="blur" />
+    <linearGradient id="cyn" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6ff3ff"/>
+      <stop offset="1" stop-color="#00c2dd"/>
+    </linearGradient>
+    <filter id="orgGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="13" result="b"/>
       <feMerge>
-        <feMergeNode in="blur" />
-        <feMergeNode in="SourceGraphic" />
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="cynGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="9" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
       </feMerge>
     </filter>
   </defs>
-  <!-- 金色外框 -->
-  <polygon points="512,62 962,512 512,962 62,512" fill="url(#gold)" stroke="url(#gold)" stroke-width="56" stroke-linejoin="round" />
-  <!-- 深蓝底 -->
-  <polygon points="512,152 872,512 512,872 152,512" fill="url(#navy)" stroke="#010a13" stroke-width="20" stroke-linejoin="round" />
-  <!-- 信号波纹：外淡内亮 -->
-  <polygon points="512,262 762,512 512,762 262,512" fill="none" stroke="#0ac8b9" stroke-opacity="0.45" stroke-width="30" stroke-linejoin="round" />
-  <polygon points="512,342 682,512 512,682 342,512" fill="none" stroke="#0ac8b9" stroke-opacity="0.8" stroke-width="30" stroke-linejoin="round" />
-  <!-- 发光的中心 -->
-  <polygon points="512,414 610,512 512,610 414,512" fill="url(#core)" stroke="#cdfafa" stroke-width="12" stroke-linejoin="round" filter="url(#glow)" />
+
+  <!-- 牌面：四角斜切的金属板 -->
+  <path d="M128 24 H896 L1000 128 V896 L896 1000 H128 L24 896 V128 Z" fill="url(#bg)"/>
+  <path d="M128 24 H896 L1000 128 V896 L896 1000 H128 L24 896 V128 Z"
+        fill="none" stroke="#33486e" stroke-width="10"/>
+  <path d="M136 44 H888 L980 136 V888 L888 980 H136 L44 888 V136 Z"
+        fill="none" stroke="#1b2a44" stroke-width="4"/>
+
+  <!-- 牌面细节：四个铆点 -->
+  <g fill="#33486e">
+    <rect x="150" y="150" width="26" height="26" transform="rotate(45 163 163)"/>
+    <rect x="848" y="150" width="26" height="26" transform="rotate(45 861 163)"/>
+    <rect x="150" y="848" width="26" height="26" transform="rotate(45 163 861)"/>
+    <rect x="848" y="848" width="26" height="26" transform="rotate(45 861 861)"/>
+  </g>
+
+  <!-- 中央：荧光橙的「!」，上窄下略宽的硬边柱 + 菱形点 -->
+  <g filter="url(#orgGlow)">
+    <path d="M474 250 H550 L562 622 H462 Z" fill="url(#org)"/>
+    <path d="M512 686 L579 753 L512 820 L445 753 Z" fill="url(#org)"/>
+  </g>
+  <!-- 「!」的高光棱线 -->
+  <path d="M486 274 H512 V602 H496 Z" fill="#ffc79a" opacity="0.5"/>
+
+  <!-- 两侧信号弧（右侧一组，左侧镜像） -->
+  <g fill="none" stroke="url(#cyn)" stroke-linecap="square" filter="url(#cynGlow)">
+    <path d="M621 340 A170 170 0 0 1 621 600" stroke-width="38"/>
+    <path d="M673 278 A250 250 0 0 1 673 662" stroke-width="34" opacity="0.85"/>
+  </g>
+  <g fill="none" stroke="url(#cyn)" stroke-linecap="square" filter="url(#cynGlow)"
+     transform="translate(1024 0) scale(-1 1)">
+    <path d="M621 340 A170 170 0 0 1 621 600" stroke-width="38"/>
+    <path d="M673 278 A250 250 0 0 1 673 662" stroke-width="34" opacity="0.85"/>
+  </g>
 </svg>

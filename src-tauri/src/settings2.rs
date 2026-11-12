@@ -44,11 +44,42 @@ pub const DEFAULT_WHEEL: [&str; 8] = [
     "enemyvision",
 ];
 pub const DEFAULT_CLICK_PING: &str = "generic";
-pub const THEMES: [&str; 3] = ["system", "light", "dark"];
+/// 六套主题：3 深色 + 3 浅色，由用户明确选择，不再跟随系统。和前端 ui/themes.ts、theme.css 同步。
+pub const THEMES: [&str; 6] = [
+    "dark-ice",
+    "dark-carbon",
+    "dark-plum",
+    "light-paper",
+    "light-sand",
+    "light-mint",
+];
+/// 老版本设置里的 theme 值迁移到六套主题里最接近的一套。
+pub fn legacy_theme(old: &str) -> &'static str {
+    match old {
+        "light" => "light-paper",
+        "dark" | "system" => "dark-ice",
+        _ => THEMES[0],
+    }
+}
+/// 信号与表情的图标风格（V2）：league 用项目内置的英雄联盟原图，vector 用加粗几何矢量图。
+/// 一处切换，控制面板、游戏内浮层、聊天记录三个窗口同时生效。
+pub const ICON_STYLES: [&str; 2] = ["league", "vector"];
 /// 队友文字的显示方式：在说话的位置冒出来，或者弹幕从右往左飘过。
 pub const TEXT_STYLES: [&str; 2] = ["spot", "danmaku"];
 /// 屏幕上的字的字幕特效（3.0）：描边大字、金色渐变、霓虹发光、逐字弹跳、打字机、抖动强调。
 pub const TEXT_EFFECTS: [&str; 6] = ["outline", "gold", "neon", "bounce", "typewriter", "shake"];
+/// 文字特效默认霓虹发光（3.0.1）。
+pub const DEFAULT_TEXT_EFFECT: &str = "neon";
+
+/// 首次启动按显示器纵向分辨率定字号 / 表情大小：4K（2160）40 / 300，2K（1440）30 / 250，1080p 25 / 220。
+/// 只在第一次打开（库里还没有设置）时生效，之后以用户调过的为准。
+pub fn first_launch_sizes(screen_h_px: u32) -> (u32, u32) {
+    match screen_h_px {
+        h if h >= 2000 => (40, 300),
+        h if h >= 1400 => (30, 250),
+        _ => (25, 220),
+    }
+}
 /// 文字快捷键的候选：默认 Alt+T，撞了依次换。
 const TEXT_HOTKEYS: [Hotkey; 3] = [
     Hotkey {
@@ -64,23 +95,16 @@ const TEXT_HOTKEYS: [Hotkey; 3] = [
         vk: 0x54,
     },
 ];
-/// 面板键的候选：Tab，然后 `、F2、F3、F4、F5。最多 5 个键被占（两个触发键、两个快捷键、说话键），所以总有一个空着。
-const PANEL_KEYS: [u32; 6] = [0x09, 0xC0, 0x71, 0x72, 0x73, 0x74];
+/// 面板键的候选：反引号 `，然后 Tab、F2、F3、F4、F5。反引号在 Tab 左边、不带系统语义，不会和 Alt+Tab 抢。
+/// 最多 5 个键被占（两个触发键、两个快捷键、说话键），所以总有一个空着。
+const PANEL_KEYS: [u32; 6] = [0xC0, 0x09, 0x71, 0x72, 0x73, 0x74];
 /// 说话键的候选：V，撞了依次换。最多 4 个键被占（两个触发键、两个快捷键），所以总有一个空着。
 const TALK_KEYS: [u32; 6] = [0x56, 0x47, 0x5A, 0x58, 0x4E, 0x4D];
 /// 麦克风设备 id 的长度上限（cpal 的 id 像 "wasapi:{0.0.1.00000000}.{guid}"）。
 const MIC_ID_MAX: usize = 512;
-/// 默认中继（1.x 架构 6.4，2026-11-02 实测选定）。
-pub const DEFAULT_RELAYS: [&str; 8] = [
-    "wss://relay.nostrfeed.com",
-    "wss://relay.ditto.pub",
-    "wss://purplerelay.com",
-    "wss://relay.mostro.network",
-    "wss://relay.wisp.talk",
-    "wss://data-space.world/r/relais-public-2",
-    "wss://relay.dreamith.to",
-    "wss://relay.gulugulu.moe",
-];
+/// 默认中继：自有云端（部署方法见 server/README.md，地址在 `cloud.rs` 顶部改）。
+/// 局域网已去掉，所有通信经云端中继转发。自己填了 `relays` 就用自己填的。
+pub const DEFAULT_RELAYS: [&str; 1] = [crate::cloud::CLOUD_RELAY];
 /// 自己填的中继最多这么多个。
 const MAX_RELAYS: usize = 16;
 
@@ -158,9 +182,9 @@ pub struct Settings {
     pub muted: bool,
     pub tick_sound: bool,
     pub theme: String,
-    /// 不在同一局域网时经公共中继转发；关掉就只用局域网。
-    pub allow_internet: bool,
-    /// 自己填的中继；空表示用默认列表（以后默认列表更新了，没改过的人自动用上新的）。
+    /// league（英雄联盟原图）或 vector（加粗矢量图）；见 ICON_STYLES。
+    pub icon_style: String,
+    /// 自己填的中继；空表示用默认的云端（部署方法见 server/README.md）。
     pub relays: Vec<String>,
     /// 按住它拖动开表情轮盘；None（存成 "off"）表示不用表情。不会和信号触发键、暂停快捷键的键相同。
     #[serde(with = "emote_key")]
@@ -201,6 +225,10 @@ pub struct Settings {
     pub mic: String,
     /// 开机时自动启动（只在改动时去改系统设置）。
     pub launch_at_startup: bool,
+    /// 启动后自动开始拦手势（false 就停在「已暂停」，开关或快捷键再开）。
+    pub auto_online: bool,
+    /// 启动时自动回到上一次的队伍（当时没在队里才会动）。
+    pub auto_rejoin: bool,
     /// 启动后和每 6 小时查一次新版本（只提示，不自己装）。
     pub auto_update_check: bool,
     /// 控制面板上次关掉时的位置和大小（3.1.1）；没有就按默认的居中打开。
@@ -228,7 +256,7 @@ impl Default for Settings {
             muted: false,
             tick_sound: true,
             theme: THEMES[0].into(),
-            allow_internet: true,
+            icon_style: ICON_STYLES[0].into(),
             relays: Vec::new(),
             emote_trigger: Some(TriggerKey::Named(NamedTrigger::Ctrl)),
             emote_click: false,
@@ -242,7 +270,7 @@ impl Default for Settings {
             text_hotkey: TEXT_HOTKEYS[0],
             text_style: TEXT_STYLES[0].into(),
             text_size_px: 28,
-            text_effect: TEXT_EFFECTS[0].into(),
+            text_effect: DEFAULT_TEXT_EFFECT.into(),
             team_votes: true,
             team_panel: true,
             panel_key: PANEL_KEYS[0],
@@ -251,6 +279,8 @@ impl Default for Settings {
             voice_volume: 80,
             mic: String::new(),
             launch_at_startup: false,
+            auto_online: true,
+            auto_rejoin: true,
             auto_update_check: true,
             panel_rect: None,
         }
@@ -275,6 +305,8 @@ pub struct OverlaySettings {
     pub emote_sound: bool,
     pub custom_emotes: Vec<CustomEmote>,
     pub friend_emotes: bool,
+    /// 和 Settings::icon_style 一致，浮层据此挑原图还是矢量图。
+    pub icon_style: String,
     pub text_style: String,
     pub text_size_px: u32,
     pub text_effect: String,
@@ -514,6 +546,16 @@ fn one_of(raw: Option<&Value>, ok: impl Fn(&str) -> bool, default: &str) -> Stri
         .to_string()
 }
 
+/// 主题：只认六套新 id；老值按明暗迁到对应默认套，其余给深空蓝。
+fn normalize_theme(raw: Option<&Value>) -> String {
+    let t = raw.and_then(Value::as_str).unwrap_or(THEMES[0]);
+    if THEMES.contains(&t) {
+        t.to_string()
+    } else {
+        legacy_theme(t).to_string()
+    }
+}
+
 /// 任何 JSON → 合法设置。
 pub fn normalize(raw: &Value) -> Settings {
     normalize_keys(raw).0
@@ -581,8 +623,12 @@ pub fn normalize_keys(raw: &Value) -> (Settings, Vec<KeyClash>) {
         volume: num(get("volume"), &VOLUME, f64::from(d.volume)) as u32,
         muted: bool_or(get("muted"), d.muted),
         tick_sound: bool_or(get("tickSound"), d.tick_sound),
-        theme: one_of(get("theme"), |t| THEMES.contains(&t), THEMES[0]),
-        allow_internet: bool_or(get("allowInternet"), d.allow_internet),
+        theme: normalize_theme(get("theme")),
+        icon_style: one_of(
+            get("iconStyle"),
+            |t| ICON_STYLES.contains(&t),
+            ICON_STYLES[0],
+        ),
         relays: relays(get("relays")),
         emote_trigger,
         emote_click: bool_or(get("emoteClick"), d.emote_click),
@@ -603,7 +649,7 @@ pub fn normalize_keys(raw: &Value) -> (Settings, Vec<KeyClash>) {
         text_effect: one_of(
             get("textEffect"),
             |t| TEXT_EFFECTS.contains(&t),
-            TEXT_EFFECTS[0],
+            DEFAULT_TEXT_EFFECT,
         ),
         team_votes: bool_or(get("teamVotes"), d.team_votes),
         team_panel: bool_or(get("teamPanel"), d.team_panel),
@@ -613,6 +659,8 @@ pub fn normalize_keys(raw: &Value) -> (Settings, Vec<KeyClash>) {
         voice_volume: num(get("voiceVolume"), &VOLUME, f64::from(d.voice_volume)) as u32,
         mic,
         launch_at_startup: bool_or(get("launchAtStartup"), d.launch_at_startup),
+        auto_online: bool_or(get("autoOnline"), d.auto_online),
+        auto_rejoin: bool_or(get("autoRejoin"), d.auto_rejoin),
         auto_update_check: bool_or(get("autoUpdateCheck"), d.auto_update_check),
         panel_rect: get("panelRect")
             .and_then(|v| serde_json::from_value::<PanelRect>(v.clone()).ok())
@@ -622,16 +670,7 @@ pub fn normalize_keys(raw: &Value) -> (Settings, Vec<KeyClash>) {
 }
 
 impl Settings {
-    /// 节点实际要连的中继：关了「允许互联网」就一个都不连。
-    pub fn active_relays(&self) -> Vec<String> {
-        if self.allow_internet {
-            self.relay_list()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// 自己填了就用自己的，否则用默认列表。
+    /// 节点要连的中继：自己填了就用自己的，否则用默认的云端。
     pub fn relay_list(&self) -> Vec<String> {
         if self.relays.is_empty() {
             DEFAULT_RELAYS.map(String::from).to_vec()
@@ -641,7 +680,7 @@ impl Settings {
     }
 
     /// 手势状态机的配置。`enabled` 是当前的信号开关（托盘、暂停快捷键），不存在设置里；
-    /// `in_team` 是现在在不在一个已加入的队伍里（文字快捷键和面板键只在队伍里拦）。
+    /// `in_team` 是现在在不在队伍里（加入中或已加入；文字快捷键和面板键只在队伍里拦）。
     pub fn gesture_config(&self, enabled: bool, in_team: bool) -> gesture::Config {
         gesture::Config {
             trigger: gesture_trigger(self.trigger),
@@ -693,6 +732,7 @@ impl Settings {
             emote_sound: self.emote_sound,
             custom_emotes: self.custom_emotes.clone(),
             friend_emotes: self.friend_emotes,
+            icon_style: self.icon_style.clone(),
             text_style: self.text_style.clone(),
             text_size_px: self.text_size_px,
             text_effect: self.text_effect.clone(),

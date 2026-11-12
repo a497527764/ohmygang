@@ -16,6 +16,14 @@ pub fn load(conn: &Connection) -> AppResult<Settings> {
     Ok(settings2::normalize(&raw))
 }
 
+/// 库里还没有设置行 = 第一次打开（首启按显示器分辨率定字号 / 表情大小要用）。
+pub fn is_fresh(conn: &Connection) -> AppResult<bool> {
+    let json: Option<String> = conn
+        .query_row("SELECT json FROM settings WHERE id = 1", [], |r| r.get(0))
+        .optional()?;
+    Ok(json.is_none())
+}
+
 pub fn save(conn: &Connection, s: &Settings) -> AppResult<()> {
     let json = serde_json::to_string(s).expect("设置总能写成 JSON");
     conn.execute(
