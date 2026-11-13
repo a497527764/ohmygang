@@ -109,8 +109,11 @@ jobs:
       - name: 同步更新包到国内中继
         env:
           RELAY_UPLOAD_TOKEN: ${{ secrets.RELAY_UPLOAD_TOKEN }}
+        continue-on-error: true
         run: |
-          # 没配置凭证就跳过（首次发版或不想启用中继时），不影响发版本身
+          # 没配置凭证就跳过（首次发版或不想启用中继时），不影响发版本身。
+          # 海外 runner 向国内中继传大包可能超时——这一步失败只告警不拦截发版，
+          # 之后在国内本机补跑即可：RELAY_UPLOAD_TOKEN=… GH_MIRROR=https://ghfast.top/ node scripts/release.mjs mirror <标签>
           if [ -z "$RELAY_UPLOAD_TOKEN" ]; then
             echo "::notice::未配置 RELAY_UPLOAD_TOKEN，跳过国内中继同步"
           else
