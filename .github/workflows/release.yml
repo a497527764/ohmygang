@@ -55,10 +55,20 @@ jobs:
           if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" ]; then echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD secret 未配置"; exit 1; fi
           echo "签名密钥已配置"
       - name: 打包并签名
-        run: pnpm tauri build --config src-tauri/tauri.release.conf.json --bundles ${{ matrix.bundles }}
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm tauri build --config src-tauri/tauri.release.conf.json --bundles ${{ matrix.bundles }} 2>&1 | tee build.log
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: 上传构建日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.platform }}
+          path: build.log
+          if-no-files-found: ignore
 
       - run: node scripts/release.mjs collect ${{ matrix.platform }} out
       - uses: actions/upload-artifact@v4
