@@ -768,7 +768,7 @@ mod tests {
             let (status, _v) = api::handle_json(
                 "POST",
                 "/api/admin/login",
-                serde_json::to_vec(&json!({ "username": "zhaopeng", "password": "000000" }))
+                serde_json::to_vec(&json!({ "username": "zhaopeng", "password": api::admin_pass() }))
                     .unwrap()
                     .as_slice(),
                 &server,
@@ -812,7 +812,7 @@ mod tests {
         let (status, v) = api::handle_json(
             "POST",
             "/api/admin/login",
-            serde_json::to_vec(&json!({ "username": "zhaopeng", "password": "000000" }))
+            serde_json::to_vec(&json!({ "username": "zhaopeng", "password": api::admin_pass() }))
                 .unwrap()
                 .as_slice(),
             &server,

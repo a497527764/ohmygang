@@ -117,9 +117,31 @@ const CODE_REUSE_COOLDOWN: i64 = 7 * 86400;
 
 /// 管理后台登录凭证（自用后台，硬编码即可）。
 const ADMIN_USER: &str = "zhaopeng";
-const ADMIN_PASS: &str = "000000";
 /// 管理会话 token：启动时随机生成，登录成功后发给前端。
 static ADMIN_TOKEN: OnceLock<String> = OnceLock::new();
+
+/// 后台密码。
+///
+/// 密码不能硬编码在源码里：这个仓库是公开的，硬编码的密码等于把后台敞开给所有人
+/// （后台能删队伍、看所有成员机器码）。所以密码从环境变量 ADMIN_PASS 读；
+/// 万一没配，就随机生成一个并打进启动日志，好歹比留个固定弱密码强。
+pub(crate) fn admin_pass() -> &'static str {
+    static PASS: OnceLock<String> = OnceLock::new();
+    PASS.get_or_init(|| {
+        match std::env::var("ADMIN_PASS") {
+            Ok(p) if !p.trim().is_empty() => p,
+            _ => {
+                let b: [u8; 9] = rand::random();
+                let p: String = b.iter().map(|x| format!("{x:02x}")).collect();
+                eprintln!(
+                    "后台密码（未设置 ADMIN_PASS，已自动生成，登录时用它）：{p}\n\
+                     生产环境请设 ADMIN_PASS 环境变量，别用这个一次性的。"
+                );
+                p
+            }
+        }
+    })
+}
 
 fn admin_token() -> &'static str {
     ADMIN_TOKEN.get_or_init(|| {
@@ -607,7 +629,7 @@ fn admin_login(body: &[u8]) -> (u16, Value) {
     };
     let user = v.get("username").and_then(|x| x.as_str()).unwrap_or("");
     let pass = v.get("password").and_then(|x| x.as_str()).unwrap_or("");
-    if user == ADMIN_USER && pass == ADMIN_PASS {
+    if user == ADMIN_USER && pass == admin_pass() {
         (200, json!({ "token": admin_token() }))
     } else {
         (401, json!({ "error": "账号或密码错误" }))
