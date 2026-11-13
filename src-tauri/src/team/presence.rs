@@ -59,14 +59,15 @@ pub fn refresh_presence(app: &AppHandle) {
         let s = state.settings.lock().expect("设置锁没有中毒");
         (s.announced_emotes(), s.features_off())
     };
-    // 大头像的哈希报在在线状态里：本机有这张图（文件在）才报，队友没有就会来要
-    let avatar = tauri::async_runtime::block_on(
-        state
-            .node
-            .call(|core, _| core.identity().avatar_hash.clone()),
-    )
-    .flatten()
-    .filter(|h| state.emotes.has_avatar(h));
+    // 大头像的哈希报在在线状态里：本机有这张图（文件在）才报，队友没有就会来要。
+    // 只读缓存（启动和改资料时更新）：这个函数在异步命令里也会被调，不能在这里等节点。
+    let avatar = state
+        .team
+        .avatar_hash
+        .lock()
+        .expect("头像哈希锁没有中毒")
+        .clone()
+        .filter(|h| state.emotes.has_avatar(h));
     let body = LiveBody::Presence {
         status,
         laning: false,

@@ -304,6 +304,15 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(target_os = "macos")]
         app.handle().set_dock_visibility(false)?;
     }
+    // 本人头像的哈希读进缓存（`refresh_presence` 只读缓存，改资料时 `profile_set` 再写）
+    if let Some(state) = app.try_state::<AppState>() {
+        let node = state.node.clone();
+        let hash = tauri::async_runtime::block_on(
+            node.call(|core, _| core.identity().avatar_hash.clone()),
+        )
+        .flatten();
+        *state.team.avatar_hash.lock().expect("头像哈希锁没有中毒") = hash;
+    }
     let presence = app.handle().clone();
     std::thread::Builder::new()
         .name("presence".into())

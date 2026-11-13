@@ -122,12 +122,14 @@ impl Runner {
     /// 我的大头像哈希（报在在线状态里，队友没有这张就会来要）。
     fn my_avatar(&self) -> Option<String> {
         let state = self.app.try_state::<AppState>()?;
-        let node = state.node.clone();
-        let hash = tauri::async_runtime::block_on(node.call(|core, _| {
-            core.identity().avatar_hash.clone()
-        }))
-        .flatten();
-        hash.filter(|h| self.store.has_avatar(h))
+        // 读缓存（启动和改资料时更新）：不在传输线程上等节点
+        state
+            .team
+            .avatar_hash
+            .lock()
+            .expect("头像哈希锁没有中毒")
+            .clone()
+            .filter(|h| self.store.has_avatar(h))
     }
 
     fn me(&mut self) -> Option<MemberId> {

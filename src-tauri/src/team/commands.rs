@@ -208,7 +208,10 @@ pub async fn profile_set(
         }
         None => None,
     };
-    act(&app, move |core, out| {
+    // 不走 act：这里要先把新哈希写进缓存、再刷在线状态（act 的顺序做不到）
+    let new_hash = avatar_hash.clone();
+    let node = app.state::<AppState>().node.clone();
+    node.call(move |core, out| {
         let written =
             core.set_profile(nickname.trim(), avatar, avatar_hash.as_deref(), now_ms())?;
         if let Some(room) = core.current_team()?.map(|t| t.room_id) {
@@ -217,4 +220,12 @@ pub async fn profile_set(
         Ok(())
     })
     .await
+    .ok_or("网络模块停了")?
+    .map_err(|e: AppError| e.to_string())?;
+    if let Some(state) = app.try_state::<AppState>() {
+        *state.team.avatar_hash.lock().expect("头像哈希锁没有中毒") = new_hash;
+    }
+    refresh_names(&app);
+    refresh_presence(&app);
+    view(&app).await
 }
