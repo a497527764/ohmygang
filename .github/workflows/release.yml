@@ -14,7 +14,7 @@ permissions:
 jobs:
   build:
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -48,6 +48,12 @@ jobs:
           workspaces: src-tauri
 
       # tauri.release.conf.json 打开 createUpdaterArtifacts：用私钥给更新包签名（本机 pnpm release 不签）
+      - name: 检查签名密钥
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then echo "::error::TAURI_SIGNING_PRIVATE_KEY secret 未配置"; exit 1; fi
+          if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" ]; then echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD secret 未配置"; exit 1; fi
+          echo "签名密钥已配置"
       - name: 打包并签名
         run: pnpm tauri build --config src-tauri/tauri.release.conf.json --bundles ${{ matrix.bundles }}
         env:
