@@ -55,8 +55,10 @@ pub struct MemberRow {
     pub member_id: MemberId,
     pub nickname: Option<String>,
     pub in_room: bool,
-    /// CBOR 编码的头像。
+    /// CBOR 编码的头像（内置 Preset）。
     pub avatar: Option<Vec<u8>>,
+    /// 200×200 大头像的哈希；图片在数据目录 `avatars/`。
+    pub avatar_hash: Option<String>,
 }
 
 const SELECT_ROOM: &str = "SELECT room_id, code_cipher, owner_tag, status, title, owner_id, dissolve_ts, last_active, short_code FROM rooms";
@@ -155,6 +157,7 @@ pub fn set_members(
     in_room: &BTreeSet<MemberId>,
     nicknames: &BTreeMap<MemberId, String>,
     avatars: &BTreeMap<MemberId, Vec<u8>>,
+    avatar_hashes: &BTreeMap<MemberId, String>,
 ) -> AppResult<()> {
     conn.execute("UPDATE members SET in_room = 0 WHERE room_id = ?1", [room])?;
     for m in in_room {
@@ -166,9 +169,9 @@ pub fn set_members(
     }
     for (m, nick) in nicknames {
         conn.execute(
-            "INSERT INTO members (room_id, member_id, nickname, avatar) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (room_id, member_id) DO UPDATE SET nickname = excluded.nickname, avatar = excluded.avatar",
-            params![room, m, nick, avatars.get(m)],
+            "INSERT INTO members (room_id, member_id, nickname, avatar, avatar_hash) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (room_id, member_id) DO UPDATE SET nickname = excluded.nickname, avatar = excluded.avatar, avatar_hash = excluded.avatar_hash",
+            params![room, m, nick, avatars.get(m), avatar_hashes.get(m)],
         )?;
     }
     Ok(())
@@ -176,7 +179,7 @@ pub fn set_members(
 
 pub fn members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberRow>> {
     let mut stmt = conn.prepare(
-        "SELECT member_id, nickname, in_room, avatar FROM members WHERE room_id = ?1 ORDER BY member_id",
+        "SELECT member_id, nickname, in_room, avatar, avatar_hash FROM members WHERE room_id = ?1 ORDER BY member_id",
     )?;
     let rows = stmt.query_map([room], |r| {
         Ok(MemberRow {
@@ -184,6 +187,7 @@ pub fn members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberRow>> {
             nickname: r.get(1)?,
             in_room: r.get(2)?,
             avatar: r.get(3)?,
+            avatar_hash: r.get(4)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)

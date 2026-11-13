@@ -93,17 +93,20 @@ impl Core {
     }
 
     /// 改昵称和头像，并在当前队伍写一条 Profile 事件。头像为 None 表示用自动生成的头像。
+    /// `avatar_hash`：200×200 大头像的哈希（None 表示不用大图，图片文件由命令层先放进 `avatars/`）。
     pub fn set_profile(
         &mut self,
         nickname: &str,
         avatar: Option<Avatar>,
+        avatar_hash: Option<&str>,
         now_ms: u64,
     ) -> AppResult<Vec<SignedEvent>> {
         let tx = self.conn.transaction()?;
-        identity::set_profile(&tx, nickname, avatar.as_ref())?;
+        identity::set_profile(&tx, nickname, avatar.as_ref(), avatar_hash)?;
         let profile = body::encode(&ProfileBody {
             nickname: nickname.to_string(),
             avatar: avatar.clone(),
+            avatar_hash: avatar_hash.map(str::to_string),
         });
         let mut written = Vec::new();
         for row in room_store::list_rooms(&tx)? {
@@ -123,6 +126,7 @@ impl Core {
         tx.commit()?;
         self.view.nickname = nickname.to_string();
         self.view.avatar = avatar;
+        self.view.avatar_hash = avatar_hash.map(str::to_string);
         Ok(written)
     }
 
@@ -130,6 +134,7 @@ impl Core {
         ProfileBody {
             nickname: self.view.nickname.clone(),
             avatar: self.view.avatar.clone(),
+            avatar_hash: self.view.avatar_hash.clone(),
         }
     }
 

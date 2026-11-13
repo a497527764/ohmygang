@@ -2,11 +2,14 @@
 // 轮盘编辑器（信号、表情各一个）从旧独立页搬进来；说明文字只保留在 title 里。
 import { useCallback, useEffect, useState } from "react";
 import {
-  importEmote, onUpdate, onVoice, previewEmote, previewPing, removeEmote, textPreview,
-  updateCheck, updateInstall, updateView, voiceTest, voiceView,
-  type KeyClash, type Settings, type Status, type TextEffect, type UpdateView, type VoiceStatus,
+  importEmote, onUpdate, onVoice, previewEmote, previewPing, profileSet, removeEmote, teamView,
+  textPreview, updateCheck, updateInstall, updateView, voiceTest, voiceView,
+  type AvatarInput, type KeyClash, type Me, type Settings, type Status, type TextEffect,
+  type UpdateView, type VoiceStatus,
 } from "../api";
+import { base64OfDataUrl, prepareAvatar, randomPreset } from "../avatarImport";
 import { prepareCustomEmote, toBase64 } from "../emoteImport";
+import { Avatar } from "../components/Avatar";
 import { KeyCapture } from "../components/KeyCapture";
 import { vkLabel } from "../shared/keys";
 import { ALL_PINGS, pingById, type PingId } from "../shared/pings";
@@ -19,8 +22,9 @@ import { MicWave } from "./MicWave";
 import { THEME_PRESETS, type Theme } from "./themes";
 import { Action, Choice, Fold, Range, Row, Toggle } from "./controls";
 
-export type SettingsTab = "common" | "keys" | "pings" | "emotes" | "team" | "voice" | "about";
+export type SettingsTab = "profile" | "common" | "keys" | "pings" | "emotes" | "team" | "voice" | "about";
 const TABS: { id: SettingsTab; label: string; icon: GlyphName }[] = [
+  { id: "profile", label: "资料", icon: "users" },
   { id: "common", label: "常用", icon: "bolt" },
   { id: "keys", label: "按键", icon: "keyboard" },
   { id: "pings", label: "信号", icon: "target" },
@@ -212,6 +216,62 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
     return () => window.removeEventListener("paste", onPaste);
   }, [tab, doImport]);
 
+  // ---- 个人资料：昵称 + 头像（改动即时保存，见状态栏） ----
+  const [me, setMe] = useState<Me | null>(null);
+  const [nick, setNick] = useState("");
+  const [profileErr, setProfileErr] = useState<string | null>(null);
+  const [profileBusy, setProfileBusy] = useState(false);
+
+  useEffect(() => {
+    if (tab !== "profile") return;
+    void teamView().then((v) => {
+      setMe(v.me);
+      setNick(v.me.nickname);
+      setProfileErr(null);
+    });
+  }, [tab]);
+
+  // 现在的头像拆回 profile_set 的两个参数：内置头像给 avatar；图片头像给 avatarImage（200×200 大图通道）
+  const avatarArgs = (): { avatar: AvatarInput | null; avatarImage: string | null } => {
+    const a = me?.avatar;
+    if (a?.kind === "preset") return { avatar: { kind: "preset", icon: a.icon, color: a.color }, avatarImage: null };
+    if (a?.kind === "image") return { avatar: null, avatarImage: base64OfDataUrl(a.dataUrl) };
+    return { avatar: null, avatarImage: null };
+  };
+
+  const saveProfile = useCallback(async (nickname: string, avatar: AvatarInput | null, avatarImage: string | null) => {
+    setProfileBusy(true);
+    setProfileErr(null);
+    try {
+      const v = await profileSet(nickname, avatar, avatarImage);
+      setMe(v.me);
+      setNick(v.me.nickname);
+    } catch (e) {
+      setProfileErr(String(e));
+    } finally {
+      setProfileBusy(false);
+    }
+  }, []);
+
+  const saveNickname = () => {
+    if (!me || profileBusy) return;
+    const n = nick.trim();
+    if (n === me.nickname) return;
+    const { avatar, avatarImage } = avatarArgs();
+    void saveProfile(n, avatar, avatarImage);
+  };
+
+  const pickAvatarFile = useCallback(async (file: File | undefined) => {
+    if (!file) return;
+    const r = await prepareAvatar(file);
+    if (!r.ok) { setProfileErr(r.error); return; }
+    void saveProfile(nick.trim(), null, r.value.data);
+  }, [nick, saveProfile]);
+
+  const pickRandomPreset = useCallback(() => {
+    void saveProfile(nick.trim(), randomPreset(), null);
+  }, [nick, saveProfile]);
+
   return (
     <div className="v-page">
       <header className="v-page-head">
@@ -236,7 +296,34 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
 
       <div className="v-settings-main">
         <div className="v-tab-body">
-          {tab === "common" && (
+          {tab === "profile" && (
+          <section className="v-tile v-profile">
+            <div className="v-profile-face">
+              <Avatar fingerprint={me?.fingerprint ?? ""} name={nick || me?.nickname || null} avatar={me?.avatar ?? null} size={88} />
+              <div className="v-profile-side">
+                <div className="v-profile-actions">
+                  <label className={`v-btn ghost${profileBusy ? " disabled" : ""}`}>
+                    <Glyph name="image" size={18} />
+                    {profileBusy ? "保存中…" : "选头像"}
+                    <input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={profileBusy}
+                      onChange={(e) => { void pickAvatarFile(e.target.files?.[0]); e.currentTarget.value = ""; }} />
+                  </label>
+                  <Action icon="smile" label="随机头像" tone="ghost" disabled={profileBusy} onClick={pickRandomPreset} />
+                </div>
+                <span className="v-note">正方形 PNG / JPEG / WebP，最长边 ≤500、≤200 KB；同步给队友时统一 200×200</span>
+              </div>
+            </div>
+            <Row icon="users" label="昵称" title="进队后显示在队友的成员列表里；不设就显示编号">
+              <input className="v-input v-profile-nick" value={nick} maxLength={32} placeholder="不设就显示编号"
+                onChange={(e) => setNick(e.target.value)}
+                onBlur={saveNickname}
+                onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }} />
+            </Row>
+            {profileErr && <p className="v-error">{profileErr}</p>}
+          </section>
+        )}
+
+        {tab === "common" && (
           <>
             <section className="v-tile v-common">
               <div className="v-common-item">
@@ -602,6 +689,11 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                   {update?.phase === "available" && <Action icon="download" label="下载安装" onClick={() => void updateInstall()} />}
                 </div>
               </div>
+            </section>
+            <section className="v-tile">
+              <Row icon="bolt" label="更新下载直连" title="检查更新和下载安装包不走系统代理（梯子常把 GitHub 绕远）。语音、表情、队伍消息本来就直连服务器不经代理；挂全局梯子时请给服务器 14.103.234.253 加直连规则">
+                <Toggle label="更新下载直连" checked={s.netDirect} onChange={(netDirect) => onChange({ netDirect })} />
+              </Row>
             </section>
           </div>
         )}

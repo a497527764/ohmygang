@@ -26,6 +26,8 @@ pub struct RoomState {
     pub nicknames: BTreeMap<MemberId, String>,
     /// 只含最新 Profile 带了合格头像的人。
     pub avatars: BTreeMap<MemberId, Avatar>,
+    /// 最新 Profile 报了大头像哈希（形状合法）的人；图片走分块传输，这里只存哈希。
+    pub avatar_hashes: BTreeMap<MemberId, String>,
     pub dissolve_ts: Option<u64>,
 }
 
@@ -64,8 +66,20 @@ pub fn derive_room_state(owner_tag: &[u8; 10], events: &[SignedEvent]) -> RoomSt
                 if let Ok(p) = body::decode::<ProfileBody>(&ev.body) {
                     st.nicknames.insert(*author, p.nickname);
                     match p.avatar.filter(Avatar::is_valid) {
-                        Some(a) => st.avatars.insert(*author, a),
-                        None => st.avatars.remove(author),
+                        Some(a) => {
+                            st.avatars.insert(*author, a);
+                        }
+                        None => {
+                            st.avatars.remove(author);
+                        }
+                    };
+                    match p.avatar_hash.filter(|h| crate::emotes::is_hash(h)) {
+                        Some(h) => {
+                            st.avatar_hashes.insert(*author, h);
+                        }
+                        None => {
+                            st.avatar_hashes.remove(author);
+                        }
                     };
                 }
             }
@@ -154,6 +168,7 @@ mod tests {
                 encode(&ProfileBody {
                     nickname: "队长".into(),
                     avatar: None,
+                    avatar_hash: None,
                 }),
             ),
             state(&bob, 1, 1500, kind::JOIN, vec![]),
@@ -238,6 +253,7 @@ mod tests {
                 encode(&ProfileBody {
                     nickname: format!("第{seq}版"),
                     avatar,
+                    avatar_hash: None,
                 }),
             )
         };

@@ -186,19 +186,31 @@ pub async fn team_rename(app: AppHandle, title: String) -> Result<TeamView, Stri
     .await
 }
 
+/// 改个人资料：昵称、内置头像、200×200 大头像（base64，界面已经裁好压好）。
+/// 大头像先导进数据目录（验文件头和大小）拿到哈希，再进事务；`avatar_image` 为 None 表示不用大图（换回内置头像）。
 #[tauri::command]
 pub async fn profile_set(
     app: AppHandle,
     nickname: String,
     avatar: Option<AvatarInput>,
+    avatar_image: Option<String>,
 ) -> Result<TeamView, String> {
     let avatar = match avatar {
         None => None,
         Some(AvatarInput::Preset { icon, color }) => Some(Avatar::Preset { icon, color }),
         Some(AvatarInput::Image { data }) => Some(Avatar::Image(unbase64(&data)?)),
     };
+    let avatar_hash = match avatar_image {
+        Some(data) => {
+            let bytes = unbase64(&data)?;
+            let store = app.state::<AppState>().emotes.clone();
+            Some(store.import_avatar(&bytes).map_err(|e| e.to_string())?)
+        }
+        None => None,
+    };
     act(&app, move |core, out| {
-        let written = core.set_profile(nickname.trim(), avatar, now_ms())?;
+        let written =
+            core.set_profile(nickname.trim(), avatar, avatar_hash.as_deref(), now_ms())?;
         if let Some(room) = core.current_team()?.map(|t| t.room_id) {
             out.broadcast(room, written);
         }

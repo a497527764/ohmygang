@@ -4,7 +4,7 @@
 //! 第 6 版把旧版队伍的 owner_tag 截成 10 字节（早期版本存的是 32 字节完整摘要，3.x 读取会报错）。
 //! 和 1.x 的 `lolgang.db` 相比去掉了聊天要的表和列：已读游标、聊天补齐分界、清空记录、隐藏、心之钢规则、事件的 stream 和显示时间。
 
-pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
+pub const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
 
 const V1: &str =
     "CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), json TEXT NOT NULL);";
@@ -80,3 +80,10 @@ const V5: &str = "ALTER TABLE rooms ADD COLUMN short_code TEXT;";
 /// 于现在派生的 owner_tag，队伍码里存的就是同一段，语义不变。
 const V6: &str =
     "UPDATE rooms SET owner_tag = substr(owner_tag, 1, 10) WHERE length(owner_tag) > 10;";
+
+/// 200×200 的大头像走分块传输（和队友的表情一个通道），身份表只记它的哈希；
+/// 图片文件本身存在数据目录的 `avatars/` 里。
+const V7: &str = "
+ALTER TABLE identity ADD COLUMN avatar_hash TEXT;
+ALTER TABLE members ADD COLUMN avatar_hash TEXT;
+";

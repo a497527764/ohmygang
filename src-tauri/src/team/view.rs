@@ -170,12 +170,18 @@ fn relay_dto(r: &RelayHealth) -> RelayDto {
     }
 }
 
-fn me_dto(v: &IdentityView) -> MeDto {
+/// 大头像（200×200）：哈希对应的文件在本机（自己的，或者收到队友的）才有 data URL。
+fn big_avatar(state: &AppState, hash: Option<&str>) -> Option<AvatarDto> {
+    hash.and_then(|h| state.emotes.avatar_data_url(h))
+        .map(|data_url| AvatarDto::Image { data_url })
+}
+
+fn me_dto(v: &IdentityView, big: Option<AvatarDto>) -> MeDto {
     MeDto {
         member_id: hex(&v.member_id),
         nickname: v.nickname.clone(),
         fingerprint: v.fingerprint.clone(),
-        avatar: avatar_dto(&v.avatar),
+        avatar: big.or_else(|| avatar_dto(&v.avatar)),
     }
 }
 
@@ -241,7 +247,8 @@ pub async fn view(app: &AppHandle) -> Result<TeamView, String> {
                 fingerprint: m.fingerprint,
                 is_owner: m.is_owner,
                 is_me,
-                avatar: avatar_dto(&m.avatar),
+                avatar: big_avatar(&state, m.avatar_hash.as_deref())
+                    .or_else(|| avatar_dto(&m.avatar)),
                 path: (!is_me).then_some(match path {
                     Some(PathKind::Relay) => "relay",
                     _ => "offline",
@@ -252,8 +259,9 @@ pub async fn view(app: &AppHandle) -> Result<TeamView, String> {
         })
         .collect();
     let relays = relays.unwrap_or_default();
+    let me_big = big_avatar(&state, me.avatar_hash.as_deref());
     Ok(TeamView {
-        me: me_dto(&me),
+        me: me_dto(&me, me_big),
         team: team.map(|(t, code)| TeamDto {
             title: t.title,
             status: if t.status == RoomStatus::Joining {

@@ -35,6 +35,8 @@ pub struct MemberView {
     pub is_owner: bool,
     pub in_room: bool,
     pub avatar: Option<Avatar>,
+    /// 200×200 大头像的哈希；界面拿它去 `avatars/` 目录换 base64 大图。
+    pub avatar_hash: Option<String>,
 }
 
 fn code_bytes(code: &RoomCode) -> Vec<u8> {
@@ -189,7 +191,7 @@ pub fn apply_state(conn: &Connection, room: &RoomId) -> AppResult<RoomState> {
         .iter()
         .map(|(m, a)| (*m, body::encode(a)))
         .collect();
-    room_store::set_members(conn, room, &st.members, &st.nicknames, &avatars)?;
+    room_store::set_members(conn, room, &st.members, &st.nicknames, &avatars, &st.avatar_hashes)?;
     if st.dissolve_ts.is_some() && matches!(row.status, RoomStatus::Joining | RoomStatus::Active) {
         room_store::set_status(conn, room, RoomStatus::Dissolved)?;
     }
@@ -217,6 +219,7 @@ pub fn list_members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberVie
             nickname: m.nickname,
             in_room: m.in_room,
             avatar: m.avatar.and_then(|b| body::decode::<Avatar>(&b).ok()),
+            avatar_hash: m.avatar_hash,
         })
         .collect())
 }

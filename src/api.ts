@@ -87,6 +87,8 @@ export interface Settings {
   autoRejoin: boolean;
   /** 启动后和每 6 小时查一次新版本。 */
   autoUpdateCheck: boolean;
+  /** 检查更新和下载安装包不走系统代理（直连）。语音、表情、队伍消息本来就直连服务器。 */
+  netDirect: boolean;
   /** 控制面板上次关掉时的位置和大小；只有 Rust 写，页面存设置时带过去的会被忽略。 */
   panelRect: PanelRect | null;
 }
@@ -204,8 +206,11 @@ export const teamCancel = (): Promise<TeamView> => invoke("team_cancel");
 export const teamLeave = (): Promise<TeamView> => invoke("team_leave");
 export const teamDissolve = (): Promise<TeamView> => invoke("team_dissolve");
 export const teamRename = (title: string): Promise<TeamView> => invoke("team_rename", { title });
-export const profileSet = (nickname: string, avatar: AvatarInput | null): Promise<TeamView> =>
-  invoke("profile_set", { nickname, avatar });
+export const profileSet = (
+  nickname: string,
+  avatar: AvatarInput | null,
+  avatarImage: string | null,
+): Promise<TeamView> => invoke("profile_set", { nickname, avatar, avatarImage });
 
 /** 队伍有变化（进队、退出、改名、资料、在线状态）。 */
 export const onTeamChanged = (cb: () => void): Promise<UnlistenFn> => listen("team://changed", () => cb());

@@ -2,8 +2,9 @@
 //!
 //! 实现流程：
 //! 1. 收到的帧按「第一个小帧的序号」放进有序表；比正在放的位置还旧的（来晚了）不要。
-//! 2. 开始放之前先攒：攒够 0.5 秒、或者这段话已经结束（很短的一句）、或者第一帧到了已经 0.5 秒，就开始。
-//!    语音帧每 400 毫秒成批到一次，攒 0.5 秒能盖住网络的抖动。从收到的最小序号开始放（前面丢的不补）。
+//! 2. 开始放之前先攒：攒够 240 毫秒、或者这段话已经结束（很短的一句）、或者第一帧到了已经 240 毫秒，就开始。
+//!    语音帧每 200 毫秒成批到一次，攒 240 毫秒能盖住一批的迟到再加网络的抖动。从收到的最小序号开始放（前面丢的不补）。
+//!    （原来攒 500 毫秒，是为 400 毫秒一批的帧留余量；帧改小后按比例收紧，端到端延迟直降约半秒。）
 //! 3. 每 20 毫秒取一个：有就交出去；没有但后面还有（中间丢了），交「丢了」让解码器补一段（丢包补偿）；
 //!    后面什么都没有、也没结束，说明网络卡了：先补 100 毫秒，还没来就停下重新攒。
 //! 4. 放到结束帧为止。说的人掉线（2 秒没收到新帧、手里也没有了）也算结束。
@@ -11,7 +12,7 @@
 use std::collections::BTreeMap;
 
 /// 开始放之前攒多少（毫秒）。
-pub const JITTER_MS: u64 = 500;
+pub const JITTER_MS: u64 = 240;
 const FRAME_MS: u64 = 20;
 /// 网络卡住时最多连续补多少个小帧（100 毫秒），之后停下重新攒。
 const MAX_CONCEAL: u32 = 5;
@@ -138,12 +139,12 @@ mod tests {
     }
 
     #[test]
-    fn waits_half_a_second_then_plays_in_order() {
+    fn waits_until_enough_buffered_then_plays_in_order() {
         let mut j = Jitter::default();
-        j.push(0, frames(0, 20), false, 1000);
-        assert_eq!(j.pull(1000), Pull::Wait, "只有 400 毫秒，还在攒");
+        j.push(0, frames(0, 10), false, 1000);
+        assert_eq!(j.pull(1000), Pull::Wait, "只有 200 毫秒，还在攒");
         assert!(!j.speaking());
-        j.push(20, frames(20, 20), false, 1400);
+        j.push(10, frames(10, 10), false, 1400);
         assert_eq!(j.pull(1400), Pull::Frame(vec![0]));
         assert!(j.speaking());
         assert_eq!(j.pull(1420), Pull::Frame(vec![1]));

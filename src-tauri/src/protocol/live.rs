@@ -68,6 +68,9 @@ pub enum LiveBody {
         /// 关掉了的功能：`OFF_TEXT`、`OFF_VOTES` 按位或。关了投票的人不算投票人。
         #[serde(rename = "f", default)]
         off: u8,
+        /// 200×200 大头像的哈希（32 位十六进制）；没有大头像时省略。旧版本解码时忽略。
+        #[serde(rename = "a", default, skip_serializing_if = "Option::is_none")]
+        avatar: Option<String>,
     },
     /// 信号：第几号显示器、0–65535 的比例位置、信号 id。
     #[serde(rename = "G")]
@@ -150,7 +153,7 @@ pub enum LiveBody {
     /// 离开队伍或退出程序。
     #[serde(rename = "Y")]
     Bye,
-    /// 一段语音（3.0，按住说话），约 400 毫秒一帧：第几段话（说的人每次随机取一个号）、
+    /// 一段语音（3.0，按住说话），约 200 毫秒一帧：第几段话（说的人每次随机取一个号）、
     /// 这一帧里第一个小帧在这段话里的序号、一串 Opus 小帧（每个 20 毫秒）、是不是这段话的最后一帧。
     #[serde(rename = "A")]
     Voice {
@@ -308,6 +311,7 @@ mod tests {
             platform: "win".into(),
             emotes: vec![9; 32],
             off: OFF_VOTES,
+            avatar: None,
         };
         let w = sign_live(&me(), &ROOM, 6, NOW, &presence);
         assert_eq!(open_live(&w, &ROOM).unwrap().body, presence);
@@ -452,6 +456,7 @@ mod tests {
             platform: "linux".into(),
             emotes: vec![0xff; 16 * crate::emotes::ANNOUNCED_MAX],
             off: 0xff,
+            avatar: None,
         };
         assert!(wire_len(&presence) <= MAX_FRAME_LEN);
     }
@@ -513,12 +518,13 @@ mod tests {
             platform: "win".into(),
             emotes: Vec::new(),
             off: 0,
+            avatar: None,
         };
         let OldPresence::Presence { laning } = body::decode(&body::encode(&mine)).unwrap();
         assert!(!laning);
     }
 
-    /// 400 毫秒的语音（20 个 16 kbps 的 Opus 小帧，每个 40 字节）装得进一个包。
+    /// 400 毫秒的语音（20 个 16 kbps 的 Opus 小帧，每个 40 字节；即使旧版按 400 毫秒打包）也装得进一个包。
     #[test]
     fn a_voice_frame_round_trips_and_fits_in_one_packet() {
         let voice = LiveBody::Voice {

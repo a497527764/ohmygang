@@ -174,11 +174,13 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
                 platform,
                 emotes: announced,
                 off,
+                avatar,
                 ..
             } => {
                 state.emote_net.send(NetMsg::Announced {
                     from,
                     hashes: emotes::split_announced(&announced),
+                    avatar,
                 });
                 let mut presence = state.team.presence.lock().expect("在线状态锁没有中毒");
                 let changed = presence

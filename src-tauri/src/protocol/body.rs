@@ -28,12 +28,16 @@ pub struct RenameBody {
     pub title: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileBody {
     pub nickname: String,
     /// 没有时用按指纹自动生成的头像。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<Avatar>,
+    /// 200×200 大头像的哈希（32 位十六进制）：有大图的人以大图为准，图片走分块传输（和表情一个通道）。
+    /// 旧版本解码 Profile 时忽略这个字段（CBOR 追加字段兼容）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,7 +51,7 @@ pub enum Avatar {
 impl ProfileBody {
     /// 昵称和头像都没设置时不用写 Profile。
     pub fn has_content(&self) -> bool {
-        !self.nickname.is_empty() || self.avatar.is_some()
+        !self.nickname.is_empty() || self.avatar.is_some() || self.avatar_hash.is_some()
     }
 }
 
@@ -156,11 +160,13 @@ mod tests {
         let with = ProfileBody {
             nickname: "阿钢".into(),
             avatar: Some(Avatar::Image(webp(100))),
+            avatar_hash: Some("b".repeat(32)),
         };
         assert_eq!(decode::<ProfileBody>(&encode(&with)), Ok(with));
         let without = ProfileBody {
             nickname: "乙".into(),
             avatar: None,
+            avatar_hash: None,
         };
         assert_eq!(
             encode(&without),
@@ -171,6 +177,7 @@ mod tests {
         let preset = ProfileBody {
             nickname: String::new(),
             avatar: Some(Avatar::Preset { icon: 3, color: 7 }),
+            avatar_hash: None,
         };
         assert_eq!(decode::<ProfileBody>(&encode(&preset)), Ok(preset));
     }
@@ -213,6 +220,7 @@ mod tests {
         let profile = ProfileBody {
             nickname: "😀".repeat(NICKNAME_MAX_CHARS),
             avatar: Some(Avatar::Image(webp(AVATAR_IMAGE_MAX_BYTES))),
+            avatar_hash: None,
         };
         let n = encode(&profile).len();
         assert!(n <= MAX_BODY_LEN, "Profile body {n} 字节");

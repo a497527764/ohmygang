@@ -19,11 +19,11 @@ fn new_core() -> Core {
 /// 甲建队，乙用队伍码进队、补齐、激活，甲收到乙的进队事件。
 fn pair() -> (Core, Core, RoomId) {
     let mut a = new_core();
-    a.set_profile("队长", None, 1).unwrap();
+    a.set_profile("队长", None, None, 1).unwrap();
     let created = a.create_room("开黑", 1000).unwrap();
     let room = created.summary.room_id;
     let mut b = new_core();
-    b.set_profile("乙", None, 2).unwrap();
+    b.set_profile("乙", None, None, 2).unwrap();
     b.join_room(&created.code, 2000).unwrap();
     b.ingest_events(&room, &a.room_events(&room).unwrap())
         .unwrap();
@@ -39,7 +39,7 @@ fn in_room(c: &Core, room: &RoomId, who: &MemberId) -> bool {
 #[test]
 fn create_room_makes_me_owner_and_member() {
     let mut a = new_core();
-    a.set_profile("阿钢", None, 1).unwrap();
+    a.set_profile("阿钢", None, None, 1).unwrap();
     let created = a.create_room("开黑", 1000).unwrap();
     let room = created.summary.room_id;
     assert!(created.summary.is_owner);
@@ -122,11 +122,11 @@ fn join_parses_code_and_waits_for_sync() {
 #[test]
 fn joining_member_catches_up_then_activates() {
     let mut a = new_core();
-    a.set_profile("队长", None, 1).unwrap();
+    a.set_profile("队长", None, None, 1).unwrap();
     let created = a.create_room("开黑", 1000).unwrap();
     let room = created.summary.room_id;
     let mut b = new_core();
-    b.set_profile("新人", None, 2).unwrap();
+    b.set_profile("新人", None, None, 2).unwrap();
     b.join_room(&created.code, 2000).unwrap();
 
     // 乙只看甲的 Have 算缺口，按区间向甲要，甲取出事件交给乙
@@ -162,7 +162,7 @@ fn joining_member_catches_up_then_activates() {
 fn profile_reaches_teammates_with_avatar() {
     let (mut a, mut b, room) = pair();
     let avatar = Avatar::Preset { icon: 5, color: 3 };
-    let written = b.set_profile("乙乙", Some(avatar.clone()), 5000).unwrap();
+    let written = b.set_profile("乙乙", Some(avatar.clone()), None, 5000).unwrap();
     assert_eq!(written.len(), 1);
     a.ingest_events(&room, &written).unwrap();
     let bm = a
@@ -176,11 +176,11 @@ fn profile_reaches_teammates_with_avatar() {
         (Some("乙乙"), Some(avatar))
     );
     assert!(matches!(
-        b.set_profile("太长".repeat(20).as_str(), None, 6000),
+        b.set_profile("太长".repeat(20).as_str(), None, None, 6000),
         Err(AppError::NicknameTooLong)
     ));
     assert!(matches!(
-        b.set_profile("乙", Some(Avatar::Image(b"<svg/>".to_vec())), 6000),
+        b.set_profile("乙", Some(Avatar::Image(b"<svg/>".to_vec())), None, 6000),
         Err(AppError::InvalidAvatar)
     ));
 }
@@ -333,7 +333,7 @@ fn everything_survives_reopen() {
     let keys = MemoryKeyStore([7u8; 32]);
     let (me, room, code) = {
         let mut a = Core::open(storage::open(&path).unwrap(), &keys).unwrap();
-        a.set_profile("阿钢", None, 500).unwrap();
+        a.set_profile("阿钢", None, None, 500).unwrap();
         let created = a.create_room("开黑", 1000).unwrap();
         (
             a.identity().member_id,

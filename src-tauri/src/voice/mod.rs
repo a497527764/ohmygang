@@ -770,8 +770,8 @@ mod tests {
         bodies.push(packer.finish());
         assert_eq!(
             bodies.len(),
-            3,
-            "1 秒 = 两个 400 毫秒的帧，剩下的 200 毫秒和「结束」一起发"
+            6,
+            "1 秒 = 五个 200 毫秒的帧，最后剩的和「结束」一起发"
         );
 
         let mut j = Jitter::default();

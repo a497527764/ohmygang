@@ -14,13 +14,33 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_updater::{Update, UpdaterExt};
+use tauri_plugin_updater::{Update, Updater, UpdaterExt};
 
 use crate::api::AppState;
 use crate::overlay::Msg;
 
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// 建更新器：设置里「下载直连」开着时不走系统代理。
+/// 说明：语音、表情、队伍消息的连接本来就直连服务器（tokio 裸 TCP），不经代理；
+/// 这里只影响更新检查/下载走的 HTTP。挂全局（TUN）梯子的用户请给服务器 IP 加直连规则。
+fn build_updater(app: &AppHandle) -> Result<Updater, String> {
+    let direct = app
+        .try_state::<AppState>()
+        .map(|s| {
+            s.settings
+                .lock()
+                .expect("设置锁没有中毒")
+                .net_direct
+        })
+        .unwrap_or(true);
+    let mut b = app.updater_builder();
+    if direct {
+        b = b.no_proxy();
+    }
+    b.build().map_err(|e| e.to_string())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,9 +143,9 @@ pub async fn check(app: &AppHandle, quiet: bool) -> UpdateView {
         i.error = None;
         i.note = None;
     });
-    let result = match app.updater() {
+    let result = match build_updater(app) {
         Ok(u) => u.check().await.map_err(|e| e.to_string()),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(e),
     };
     match result {
         Ok(Some(update)) => {

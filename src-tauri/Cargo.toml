@@ -1,6 +1,6 @@
 [package]
 name = "lolgang"
-version = "0.2.1"
+version = "0.2.5"
 description = "常驻桌面的英雄联盟开黑小工具：屏幕上发信号、放表情、按住说话，队友同步看到"
 authors = ["lijianqiao"]
 license = "MIT"

@@ -128,6 +128,7 @@ mod tests {
         let b = body::encode(&ProfileBody {
             nickname: "字".repeat(len / 3),
             avatar: None,
+            avatar_hash: None,
         });
         WireEvent::from_signed(&build_event(&me, ROOM, seq, seq * 1000, kind::PROFILE, b))
     }

@@ -29,6 +29,7 @@ fn empty_or_broken_input_gives_the_defaults() {
 #[test]
 fn a_saved_file_reads_back_the_same() {
     let s = Settings {
+        net_direct: true,
         trigger: TriggerKey::Custom { vk: 0x47 },
         drag_threshold_px: 12,
         click_ping: true,

@@ -1,8 +1,9 @@
 //! 把一段话的 Opus 小帧打成语音实时帧（`LiveBody::Voice`）。
 //!
 //! 实现流程：
-//! 1. 每个小帧 20 毫秒。攒够 20 个（400 毫秒）就打成一帧发出去：16 kbps 恒定码率时每个小帧 40 字节，
-//!    一帧约 1 KB，装得进一个 1200 字节的包；中继每秒约 2.5 包，发送预算是每秒 5 包，给信号留出余量。
+//! 1. 每个小帧 20 毫秒。攒够 10 个（200 毫秒）就打成一帧发出去：16 kbps 恒定码率时每个小帧 40 字节，
+//!    一帧约 400 字节，装得进一个 1200 字节的包；中继每秒 5 包，发送预算是每秒 20 包，给信号留出余量。
+//!    帧越攒越大延迟越高，200 毫秒是「包的个数」和「端到端延迟」的折衷（原 lolPing 实测的流畅档）。
 //! 2. 万一小帧变大（比如以后换了码率），攒的字节数超过上限就提前发，绝不超过包的大小。
 //! 3. 每一帧带上「这段话的号」和「第一个小帧的序号」，收的人据此排好顺序、发现丢了哪些。
 //!    说完时把剩下的小帧打成最后一帧（标上「结束」），一个小帧都没有也发一个空的结束帧。
@@ -11,8 +12,8 @@ use serde_bytes::ByteBuf;
 
 use crate::protocol::live::LiveBody;
 
-/// 一帧最多装多少个 20 毫秒的小帧（400 毫秒）。
-pub const FRAMES_PER_PACKET: usize = 20;
+/// 一帧最多装多少个 20 毫秒的小帧（200 毫秒）。
+pub const FRAMES_PER_PACKET: usize = 10;
 /// 一帧里小帧加起来最多这么多字节；加上签名、公钥这些仍在包的上限（1141 字节）以内。
 const MAX_AUDIO_BYTES: usize = 900;
 
@@ -90,7 +91,7 @@ mod tests {
     }
 
     #[test]
-    fn twenty_small_frames_make_one_packet_and_the_rest_goes_with_the_end() {
+    fn ten_small_frames_make_one_packet_and_the_rest_goes_with_the_end() {
         let mut p = Packer::new(7);
         let mut sent = Vec::new();
         for _ in 0..45 {
@@ -98,7 +99,7 @@ mod tests {
         }
         assert_eq!(
             sent.iter().map(parts).collect::<Vec<_>>(),
-            vec![(7, 0, 20, false), (7, 20, 20, false)]
+            vec![(7, 0, 10, false), (7, 10, 10, false), (7, 20, 10, false), (7, 30, 10, false)]
         );
         assert_eq!(p.sent(), 40);
         assert_eq!(parts(&p.finish()), (7, 40, 5, true));

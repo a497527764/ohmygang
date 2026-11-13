@@ -26,7 +26,7 @@ const triggerLabel = (t: TriggerKey | "off"): string => {
   return t === "alt" ? "ALT" : t === "ctrl" ? "CTRL" : t === "shift" ? "SHIFT" : t === "win" ? "WIN" : t === "capslock" ? "CAPS" : t === "mouse4" ? "侧键1" : t === "mouse5" ? "侧键2" : String(t).toUpperCase();
 };
 
-const PATH_TEXT = { relay: "中继转发", offline: "离线" } as const;
+const PATH_TEXT = { relay: "在线", offline: "离线" } as const;
 
 /** 队名后面跟的队伍码：优先云端 6 位短码；老队伍拿 GT2 长码的头一段，保证同名队伍能区分开。 */
 const codeLabel = (r: { shortCode: string | null; code: string }): string =>
@@ -174,7 +174,7 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
                       {m.isOwner && <span className="v-chip">队长</span>}
                     </span>
                     <span className="v-member-os">{m.platform ?? "—"}</span>
-                    <span className={`v-path${m.path ? ` ${m.path}` : ""}`}>{m.path ? PATH_TEXT[m.path] : "连接中"}</span>
+                    <span className={`v-path${m.path ? ` ${m.path}` : ""}`}>{m.path ? PATH_TEXT[m.path] : "在线"}</span>
                   </div>
                 ))}
                 {Array.from({ length: slots }, (_, i) => (

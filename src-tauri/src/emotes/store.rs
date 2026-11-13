@@ -7,6 +7,8 @@
 //! 2. 写进来之前按文件头检查类型、大小、边长：静态图必须是不动的 WebP，透明窗口把它当 `<img>` 画，动的会喧宾夺主。
 //! 3. 队友的静态图收齐、验过哈希后放在 `emote-cache/`，最多 200 个、4 MB，超了按最近一次用到的时间删最旧的。
 //! 4. 透明窗口和控制面板用 `emote://` 地址取文件（`lib.rs` 注册），这里只认 `<32 位十六进制>.<webp|anim|sound>` 这样的名字。
+//! 5. 200×200 的大头像（个人资料）放在数据目录的 `avatars/<哈希>.img`：界面选图后压成 200×200 的 WebP，
+//!    队友之间走和表情一样的分块传输（`transfer.rs`）。收到的头像也验哈希和文件头（WebP/PNG/JPEG）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,6 +25,8 @@ pub const SOUND_MAX_BYTES: usize = 1024 * 1024;
 /// 自定义表情的静态图：用户自己的图，要保真，放宽到 1000 像素、1 MB，比例不限。
 pub const CUSTOM_STILL_MAX_BYTES: usize = 1024 * 1024;
 pub const CUSTOM_STILL_SIDE: u32 = 1000;
+/// 200×200 大头像的体积上限（WebP 压缩后一般 4–16 KB）。
+pub const AVATAR_MAX_BYTES: usize = 32 * 1024;
 const CACHE_MAX_FILES: usize = 200;
 const CACHE_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -128,8 +132,7 @@ impl std::fmt::Display for ImportError {
 pub fn check_still(b: &[u8]) -> Result<(), ImportError> {
     if !is_webp(b) || webp_animated(b) {
         return Err(ImportError::Type);
-    }
-    if b.len() > STILL_MAX_BYTES {
+    }    if b.len() > STILL_MAX_BYTES {
         return Err(ImportError::Size);
     }
     match webp_size(b) {
@@ -150,6 +153,22 @@ pub fn check_custom_still(b: &[u8]) -> Result<(), ImportError> {
         Some((w, h)) if w.max(h) <= CUSTOM_STILL_SIDE => Ok(()),
         _ => Err(ImportError::Type),
     }
+}
+
+/// 大头像：WebP、PNG、JPEG 都行（界面存的是 WebP，队友传什么格式头对就行），200×200、32 KB 以内。
+/// 边长只有 WebP 能从文件头读出来；PNG/JPEG 就不查边长（哈希对得上、体积有上限，够安全）。
+pub fn check_avatar(b: &[u8]) -> Result<(), ImportError> {
+    let mime = crate::protocol::body::image_mime(b);
+    if mime.is_none() {
+        return Err(ImportError::Type);
+    }
+    if b.len() > AVATAR_MAX_BYTES {
+        return Err(ImportError::Size);
+    }
+    if mime == Some("image/webp") && webp_size(b).is_some_and(|(w, h)| w.max(h) > 200) {
+        return Err(ImportError::Type);
+    }
+    Ok(())
 }
 
 /// 动画：GIF 或 WebP，5 MB、1024 像素以内。
@@ -259,6 +278,8 @@ impl Cache {
 pub struct Store {
     library: PathBuf,
     cache: Mutex<Cache>,
+    /// 大头像的目录（`avatars/`）：`<哈希>.img`，自己和收到的队友头像都在这。
+    avatars: PathBuf,
 }
 
 impl Store {
@@ -267,11 +288,56 @@ impl Store {
         Self {
             library: dir.join("emotes"),
             cache: Mutex::new(Cache::open(dir.join("emote-cache"))),
+            avatars: dir.join("avatars"),
         }
     }
 
     fn path(&self, hash: &str, part: Part) -> PathBuf {
         self.library.join(format!("{hash}.{}", part.ext()))
+    }
+
+    fn avatar_path(&self, hash: &str) -> PathBuf {
+        self.avatars.join(format!("{hash}.img"))
+    }
+
+    /// 导入自己的大头像：验文件头（WebP/PNG/JPEG）和大小，存进 `avatars/`，返回哈希。
+    pub fn import_avatar(&self, bytes: &[u8]) -> Result<String, ImportError> {
+        check_avatar(bytes)?;
+        let hash = hash_of(bytes);
+        std::fs::create_dir_all(&self.avatars).map_err(|_| ImportError::Disk)?;
+        std::fs::write(self.avatar_path(&hash), bytes).map_err(|_| ImportError::Disk)?;
+        Ok(hash)
+    }
+
+    /// 自己的大头像（发给要它的队友）。
+    pub fn own_avatar(&self, hash: &str) -> Option<Vec<u8>> {
+        super::is_hash(hash)
+            .then(|| std::fs::read(self.avatar_path(hash)).ok())
+            .flatten()
+    }
+
+    /// 这个头像本机已经有了：自己的，或者收到过队友的。
+    pub fn has_avatar(&self, hash: &str) -> bool {
+        super::is_hash(hash) && self.avatar_path(hash).exists()
+    }
+
+    /// 收到的队友头像：分块传输已验过哈希（拼起来的字节和哈希一致），这里再验文件头和大小。
+    pub fn put_avatar_cached(&self, hash: &str, bytes: &[u8]) -> bool {
+        if !super::is_hash(hash) || check_avatar(bytes).is_err() || hash != hash_of(bytes) {
+            return false;
+        }
+        let _ = std::fs::create_dir_all(&self.avatars);
+        std::fs::write(self.avatar_path(hash), bytes).is_ok()
+    }
+
+    /// 大头像给界面用：能直接放进 `<img>` 的 data URL。
+    pub fn avatar_data_url(&self, hash: &str) -> Option<String> {
+        use crate::protocol::body::image_mime;
+        let bytes = self.own_avatar(hash)?;
+        let mime = image_mime(&bytes)?;
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        Some(format!("data:{mime};base64,{b64}"))
     }
 
     /// 检查后写进 `emotes/`，返回哈希。同一张静态图再导入一次会换掉它的动画和音效。

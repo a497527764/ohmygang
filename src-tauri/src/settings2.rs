@@ -252,6 +252,8 @@ pub struct Settings {
     pub auto_rejoin: bool,
     /// 启动后和每 6 小时查一次新版本（只提示，不自己装）。
     pub auto_update_check: bool,
+    /// 检查更新和下载安装包不走系统代理（直连）。梯子把 GitHub 绕远时关掉它反而合适。
+    pub net_direct: bool,
     /// 控制面板上次关掉时的位置和大小（3.1.1）；没有就按默认的居中打开。
     /// 只有 Rust 在关控制面板时写（`tray::remember_main`），控制面板存设置时不改它。
     pub panel_rect: Option<PanelRect>,
@@ -304,6 +306,7 @@ impl Default for Settings {
             auto_online: true,
             auto_rejoin: true,
             auto_update_check: true,
+            net_direct: true,
             panel_rect: None,
         }
     }
@@ -733,6 +736,7 @@ pub fn normalize_keys(raw: &Value) -> (Settings, Vec<KeyClash>) {
         auto_online: bool_or(get("autoOnline"), d.auto_online),
         auto_rejoin: bool_or(get("autoRejoin"), d.auto_rejoin),
         auto_update_check: bool_or(get("autoUpdateCheck"), d.auto_update_check),
+        net_direct: bool_or(get("netDirect"), d.net_direct),
         panel_rect: get("panelRect")
             .and_then(|v| serde_json::from_value::<PanelRect>(v.clone()).ok())
             .filter(|r| PANEL_SIDE.contains(&r.width) && PANEL_SIDE.contains(&r.height)),

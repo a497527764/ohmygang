@@ -59,6 +59,14 @@ pub fn refresh_presence(app: &AppHandle) {
         let s = state.settings.lock().expect("设置锁没有中毒");
         (s.announced_emotes(), s.features_off())
     };
+    // 大头像的哈希报在在线状态里：本机有这张图（文件在）才报，队友没有就会来要
+    let avatar = tauri::async_runtime::block_on(
+        state
+            .node
+            .call(|core, _| core.identity().avatar_hash.clone()),
+    )
+    .flatten()
+    .filter(|h| state.emotes.has_avatar(h));
     let body = LiveBody::Presence {
         status,
         laning: false,
@@ -66,6 +74,7 @@ pub fn refresh_presence(app: &AppHandle) {
         platform: platform_name().into(),
         emotes: emotes::join_announced(&announced),
         off,
+        avatar,
     };
     let mut mine = state.team.mine.lock().expect("在线状态锁没有中毒");
     if mine.as_ref() != Some(&body) {

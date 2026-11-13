@@ -1,7 +1,9 @@
-//! 中继发送预算（架构 6.6）：公共中继对发得太快的客户端会限流甚至封禁，所以所有房间共用一个预算。
+//! 中继发送预算（架构 6.6）：所有房间共用一个预算，防止把中继打挂。
 //!
 //! 实现流程：
-//! 1. 令牌桶每秒回补 5 个、最多存 10 个（lolPing 实测通过的强度）。一个包发给挑出来的几个中继（见 relay.rs），只扣一个令牌。
+//! 1. 令牌桶：每秒回补 20 个、最多存 40 个。现在是自有中继（无公共中继的限流封禁），按服务器
+//!    收包能力（每连接每秒 200 个事件）的十分之一设预算：语音 200 毫秒一帧用 5 个/秒，
+//!    其余给信号、在线状态和表情分块留足余量。一个包发给挑出来的几个中继（见 relay.rs），只扣一个令牌。
 //!    和洪水防护一样用「千分之一个令牌」做单位、时间由调用方传入。
 //! 2. 三个队列按优先级出队：本人实时事件 > Have > 补齐回应。
 //! 3. 每个队列都有上限，满了丢最旧的：中继长时间连不上时内存不会无限涨。
@@ -13,8 +15,12 @@ use std::collections::VecDeque;
 
 use crate::crypto::RoomId;
 
-const LIVE_CAP: usize = 256;
-const CONTROL_CAP: usize = 32;
+const LIVE_CAP: usize = 512;
+const CONTROL_CAP: usize = 64;
+/// 生产预算：每秒 20 个、突发 40 个、补齐队列 128 个。测试用显式小参数（见下）。
+const RATE: u64 = 20;
+const BURST: u64 = 40;
+const BACKFILL_CAP: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Priority {
@@ -43,7 +49,7 @@ pub struct SendBudget {
 
 impl Default for SendBudget {
     fn default() -> Self {
-        Self::new(5, 10, 64)
+        Self::new(RATE, BURST, BACKFILL_CAP)
     }
 }
 
@@ -128,7 +134,7 @@ mod tests {
 
     #[test]
     fn burst_of_ten_then_waits() {
-        let mut b = SendBudget::default();
+        let mut b = SendBudget::new(5, 10, 64);
         for i in 0..11 {
             assert!(b.push(Priority::Live, out(1, i), 0));
         }
@@ -143,7 +149,7 @@ mod tests {
 
     #[test]
     fn refills_five_per_second_up_to_ten() {
-        let mut b = SendBudget::default();
+        let mut b = SendBudget::new(5, 10, 64);
         for i in 0..40 {
             b.push(Priority::Live, out(1, i), 0);
         }
@@ -155,7 +161,7 @@ mod tests {
 
     #[test]
     fn empty_queues_do_not_spend_tokens() {
-        let mut b = SendBudget::default();
+        let mut b = SendBudget::new(5, 10, 64);
         assert!(b.pop(0).is_none());
         assert_eq!(b.wait_ms(0), None);
         for i in 0..10 {
@@ -166,7 +172,7 @@ mod tests {
 
     #[test]
     fn higher_priority_goes_first() {
-        let mut b = SendBudget::default();
+        let mut b = SendBudget::new(5, 10, 64);
         b.push(Priority::Backfill, out(1, 1), 0);
         b.push(Priority::Control, out(1, 2), 0);
         b.push(Priority::Live, out(1, 3), 0);
@@ -187,7 +193,7 @@ mod tests {
 
     #[test]
     fn same_packet_is_queued_once() {
-        let mut b = SendBudget::default();
+        let mut b = SendBudget::new(5, 10, 64);
         assert!(b.push(Priority::Live, out(1, 7), 0));
         assert!(!b.push(Priority::Live, out(1, 7), 0));
         assert!(!b.push(Priority::Backfill, out(1, 7), 0));

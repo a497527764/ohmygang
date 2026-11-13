@@ -132,6 +132,7 @@ fn rooms_and_members() {
         &[id].into_iter().collect(),
         &[(id, "我".to_string())].into_iter().collect(),
         &[(id, vec![1u8, 2, 3])].into_iter().collect(),
+        &Default::default(),
     )
     .unwrap();
     let ms = rooms::members(&c, &ROOM).unwrap();
@@ -148,6 +149,7 @@ fn rooms_and_members() {
         &[id].into_iter().collect(),
         &[(id, "我".to_string())].into_iter().collect(),
         &Default::default(),
+        &Default::default(),
     )
     .unwrap();
     assert_eq!(rooms::members(&c, &ROOM).unwrap()[0].avatar, None);
@@ -155,6 +157,7 @@ fn rooms_and_members() {
     rooms::set_members(
         &c,
         &ROOM,
+        &Default::default(),
         &Default::default(),
         &Default::default(),
         &Default::default(),

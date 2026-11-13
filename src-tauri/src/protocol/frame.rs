@@ -152,6 +152,7 @@ mod tests {
         let b = body::encode(&ProfileBody {
             nickname: name.into(),
             avatar: None,
+            avatar_hash: None,
         });
         build_event(&me(), ROOM, 1, 1_700_000_000_000, kind::PROFILE, b)
     }
@@ -274,6 +275,7 @@ mod tests {
         let big = body::encode(&ProfileBody {
             nickname: "字".repeat(body::NICKNAME_MAX_CHARS),
             avatar: Some(Avatar::Image(vec![0xab; body::AVATAR_IMAGE_MAX_BYTES])),
+            avatar_hash: None,
         });
         let len = fits(build_event(
             &me(),

@@ -172,6 +172,7 @@ fn presence(status: Status) -> LiveBody {
         platform: "win".into(),
         emotes: Vec::new(),
         off: 0,
+        avatar: None,
     }
 }
 
