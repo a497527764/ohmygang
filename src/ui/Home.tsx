@@ -236,7 +236,7 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
             {!status.inputError && !cloudDown && status.relayMs != null && (
               <span className="v-power-hint">服务器 {status.relayMs} ms</span>
             )}
-            {cloudDown && <span className="v-power-hint">连不上中继服务器，检查网络或梯子</span>}
+            {cloudDown && <span className="v-power-hint">连不上中继服务器，正在自动重试</span>}
           </span>
           <MicWave live={s.voice} icon bars={17} max={54} className="v-wave" />
         </button>
