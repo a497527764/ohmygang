@@ -374,6 +374,8 @@ input, select, textarea { font: inherit; color: inherit; }
   font: 700 9px var(--num);
   letter-spacing: 0.06em;
 }
+/* 连接状态：在线用酸绿（跟头像在线小点、中继路径同一个绿），离线留灰 */
+.v-path.on { color: var(--lime); border-color: rgba(200, 255, 46, 0.35); }
 .v-path.lan, .v-path.relay { color: var(--lime); border-color: rgba(200, 255, 46, 0.35); }
 .v-chip {
   padding: 1px 6px;

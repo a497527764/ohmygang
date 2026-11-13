@@ -38,10 +38,12 @@ function portrait(m: Member): HTMLElement {
   return p;
 }
 
-function line(m: Member): string {
-  if (m.isMe) return "这台电脑";
-  if (m.path === "offline" || m.path === null) return "离线";
-  return [m.status ? STATUS[m.status] : "在线", PATH[m.path]].join(" · ");
+/** 状态行：状态词 + 后面跟的路径词。在线时状态词用绿色（跟主面板的「在线」一致）。 */
+function statusLine(m: Member): { text: string; online: boolean; tail: string } {
+  if (m.isMe) return { text: "这台电脑", online: true, tail: "" };
+  if (m.path === "offline" || m.path === null) return { text: "离线", online: false, tail: "" };
+  const text = m.status ? STATUS[m.status] : "在线";
+  return { text, online: text === "在线", tail: PATH[m.path] };
 }
 
 async function act(p: Promise<unknown>): Promise<void> {
@@ -59,7 +61,11 @@ function memberRow(m: Member): HTMLElement {
   const talking = speaking.has(m.memberId) ? " speaking" : "";
   const row = el("div", `member${m.isMe ? " me" : ""}${off ? " off" : ""}${talking}`);
   const who = el("div", "who");
-  who.append(el("span", "name", m.nickname || m.fingerprint), el("span", "path", line(m)));
+  const st = statusLine(m);
+  const pathEl = el("span", "path");
+  pathEl.append(el("span", `st${st.online ? " on" : ""}`, st.text));
+  if (st.tail) pathEl.append(document.createTextNode(` · ${st.tail}`));
+  who.append(el("span", "name", m.nickname || m.fingerprint), pathEl);
   row.append(portrait(m), who);
   if (!m.isMe) {
     const kick = el("button", "kick", "");
