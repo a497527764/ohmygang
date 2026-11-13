@@ -3,6 +3,8 @@
 一个端口同时承担两件事：
 
 1. **Nostr 风格 WebSocket 中继** —— 客户端把「中继」直接指向这里（`ws://服务器IP:转发端口`），房间内消息走 kind `24810`、标签 `x` = room_id 十六进制，content 为 Base64 包。协议与客户端完全一致，端到端加密不变。
+   - 客户端每 15 秒发一个 WebSocket **Ping**，服务端回 **Pong**：空闲太久的连接会被 NAT 或梯子悄悄掐掉，
+     有心跳才不会被当成掉线；客户端确认能收到 Pong 后，多久收不到任何东西就判定连接已死并重连。
 2. **6 位短码 HTTP API** —— 建队时服务器分配 6 位大写字母数字短码（去掉 0/O/1/I 等易混字符）并铸造兼容的 `GT2-` 长码；进队时把短码发回服务器换回长码与 room_id；服务器真正「拥有」并可回收队伍码。
 
 服务每 **10 分钟**扫描一次，自动解散并回收短码：
@@ -139,14 +141,15 @@ pub const CLOUD_RELAY: &str = "ws://14.103.234.253:31818";
 | --- | --- | --- |
 | GET | `/` `/health` | 健康检查，返回 `{"ok":true}` |
 | POST | `/api/team/create` | 建队，分配 6 位短码并铸造 GT2 长码 |
-| POST | `/api/team/join` | 用 6 位短码换回 GT2 长码与 room_id |
+| POST | `/api/team/join` | 用 6 位短码换回 GT2 长码与 room_id，并带回队名 |
+| POST | `/api/team/rename` | 改队名（房主），名字落库 |
 | POST | `/api/team/heartbeat` | 上报房间活跃度与成员，供回收判定 |
 | GET | `/api/team/code?room=<room_id_hex>` | 用 room_id 反查当前短码 |
 
 ### POST /api/team/create
 请求：
 ```json
-{ "member_id": "<64 位十六进制 = 32 字节客户端公钥>" }
+{ "member_id": "<64 位十六进制 = 32 字节客户端公钥>", "title": "队名（可省）" }
 ```
 响应 `200`：
 ```json
@@ -154,6 +157,8 @@ pub const CLOUD_RELAY: &str = "ws://14.103.234.253:31818";
 ```
 - 限流：同一 IP 每小时最多 30 次建队，超出返回 `429`。
 - `member_id` 非法（非 32 字节十六进制）返回 `400`。
+- `title` 会存进数据库（队伍表）：中继的事件缓存只在内存里，服务器一重启房主的建队事件就没了，
+  名字存在服务器上，新加入的人才拿得到队名。
 
 ### POST /api/team/join
 请求：
@@ -162,10 +167,17 @@ pub const CLOUD_RELAY: &str = "ws://14.103.234.253:31818";
 ```
 响应 `200`：
 ```json
-{ "code": "GT2-XXXX-XXXX-...", "room_id": "<32 位十六进制>" }
+{ "code": "GT2-XXXX-XXXX-...", "room_id": "<32 位十六进制>", "title": "队名（没有则为 null）" }
 ```
 - 短码不存在或已回收返回 `404`。
 - `code` 非 6 位字母数字短码（或旧式 GT2 长码格式）返回 `400`。
+
+### POST /api/team/rename
+请求：
+```json
+{ "room_id": "<32 位十六进制>", "title": "新队名" }
+```
+响应 `200`：`{"ok": true}`。队名落库，之后进队的人拿到的就是新名字。
 
 ### POST /api/team/heartbeat
 请求：
