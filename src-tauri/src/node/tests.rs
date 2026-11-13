@@ -93,7 +93,9 @@ pub(super) async fn eventually<F>(node: &TestNode, check: F) -> bool
 where
     F: Fn(&mut Core) -> bool + Send + Sync + Clone + 'static,
 {
-    for _ in 0..250 {
+    // 500 次 × 20 毫秒 = 10 秒。原来的 5 秒在 CI 或本机负载高的时候不够用：
+    // 这几个断言查的都是「最终会达成」的状态，不是时序精确性，多等一会儿不算放宽标准。
+    for _ in 0..500 {
         let c = check.clone();
         if node.handle.call(move |core, _| c(core)).await == Some(true) {
             return true;
@@ -103,9 +105,9 @@ where
     false
 }
 
-/// 每 20 毫秒查一次，5 秒内条件成立就返回 true。
+/// 每 20 毫秒查一次，10 秒内条件成立就返回 true。
 pub(super) async fn wait_for(cond: impl Fn() -> bool) -> bool {
-    for _ in 0..250 {
+    for _ in 0..500 {
         if cond() {
             return true;
         }

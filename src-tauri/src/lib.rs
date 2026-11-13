@@ -297,6 +297,7 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // 启动先当「连接中」：中继还在连，头 8 秒不报「未连接」；在线状态线程会纠正
         cloud_state: AtomicU8::new(api::CLOUD_CONNECTING),
         cloud_miss: AtomicU8::new(0),
+        cloud_last_ok_ms: AtomicU64::new(0),
         cloud_rtt_ms: AtomicU64::new(0),
         started_at: Instant::now(),
         overlays,

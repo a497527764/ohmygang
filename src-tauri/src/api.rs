@@ -35,6 +35,9 @@ pub struct AppState {
     pub cloud_state: AtomicU8,
     /// 连续几次没探到中继（迟滞用：连续两次才算断，免得状态来回跳）。
     pub cloud_miss: AtomicU8,
+    /// 最后一次探到中继的时刻（毫秒，和 `started_at` 同一个基准）。
+    /// 断多久才算「未连接」看它：一次网络抖动不该让界面立刻变红。
+    pub cloud_last_ok_ms: AtomicU64,
     /// 中继往返时间（毫秒）；0 表示还没有。
     pub cloud_rtt_ms: AtomicU64,
     /// 启动时刻：头 8 秒里连不上也算「连接中」，不急着报「未连接」。

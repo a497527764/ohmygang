@@ -15,6 +15,10 @@ use crate::transport::relay::RelayState;
 /// 启动后的宽限期：这期间连不上云端只显示「连接中」，8 秒后才说「未连接」。
 const CONNECT_GRACE: Duration = Duration::from_secs(8);
 
+/// 连上之后又断了，要持续这么久才报「未连接」。
+/// 重连通常只要一两秒，一次网络抖动、一次梯子切换都不该让界面变成红色的「未连接」。
+const CLOUD_LOST_AFTER: Duration = Duration::from_secs(30);
+
 /// 队伍页上会变、却没有事件的东西，变了才通知控制面板（文件头第 6 条）。在线状态线程里调用，可以等节点。
 pub fn watch(app: &AppHandle) {
     let Some(state) = app.try_state::<AppState>() else {
@@ -46,23 +50,27 @@ pub fn watch(app: &AppHandle) {
     // 云端连接状态（三态）：
     // - 一个中继都没配（关了互联网）→ 不算断，用户自己关的不说成掉线。
     // - 连上了 → ok。
-    // - 没连上：刚启动的头 8 秒一律「连接中」；之后要连续两次（10 秒）探不到才算「未连接」，
-    //   一次没探到先按原来的算——重连的那几秒不该让界面来回跳。
+    // - 没连上：刚启动的头 8 秒一律「连接中」；之后要「连续两次没探到」且
+    //   「距上次连上已经超过 30 秒」才算「未连接」。中途的重连窗口显示「连接中」，
+    //   不让界面因为一次抖动就闪成红色。
+    let now_ms = state.started_at.elapsed().as_millis() as u64;
     let cloud = if relay_ok > 0 || relay_total == 0 {
         // 连上了，或者一个中继都没配（关了互联网）：都不算断，用户自己关的不说成掉线。
         state.cloud_miss.store(0, Ordering::Relaxed);
+        state.cloud_last_ok_ms.store(now_ms, Ordering::Relaxed);
         CLOUD_OK
     } else {
         let miss = state
             .cloud_miss
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
+        let since_ok = now_ms.saturating_sub(state.cloud_last_ok_ms.load(Ordering::Relaxed));
         if state.started_at.elapsed() < CONNECT_GRACE {
             CLOUD_CONNECTING
-        } else if miss >= 2 {
+        } else if miss >= 2 && Duration::from_millis(since_ok) > CLOUD_LOST_AFTER {
             CLOUD_DOWN
         } else {
-            CLOUD_OK
+            CLOUD_CONNECTING
         }
     };
     state.cloud_rtt_ms.store(rtt, Ordering::Relaxed);

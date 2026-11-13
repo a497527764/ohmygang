@@ -11,8 +11,11 @@
 //! 3. 收包：同一个事件从多个中继来只交一次（最近 4096 个事件 id）；自己发的事件不交；总共每秒最多 200 个。
 //! 4. 订阅：连上后按当前房间列表发 `REQ`；房间列表变化时（`set_rooms`）所有连接重发 `REQ`，同名订阅会被替换。
 //! 5. 健康（沿用 lolPing）：
-//!    - 发出的事件 25 秒内没从订阅里收到回显，就断开重连；
-//!    - 连接失败或断开后等待重连，退避 2 秒起、每次翻倍、最多 60 秒；收到过回显的连接断开后从 2 秒重新算；
+//!    - 发出的事件 25 秒内没从订阅里收到回显，且这条连接连任何消息都收不到，才断开重连；
+//!      只回显超时不等于连接死了——有的中继不回显发布者自己的事件，连接好好的，
+//!      判死会让界面隔几十秒闪一次「未连接」；
+//!    - 连接失败或断开后等待重连，退避 2 秒起、每次翻倍、最多 60 秒；本次连接收到过回显
+//!      或心跳 Pong 的，断开后从 2 秒重新算；
 //!    - `OK` 回 `rate-limited`：保持连接继续收，但 30 秒内不往这个中继发；
 //!    - `OK` 或 `CLOSED` 回 `blocked` 等：本次运行不再使用这个中继；
 //!    - 网络恢复时节点调用 `reconnect_now`，正在等待重连的连接立刻重连，退避从头算。
@@ -99,6 +102,8 @@ pub enum RelayState {
 pub struct RelayHealth {
     pub url: String,
     pub state: RelayState,
+    /// 这条连接一共建立过几次。一直涨就说明在反复重连（界面会跟着闪「未连接」）。
+    pub connects: u64,
     /// 最近一次回显的往返时间（毫秒）。
     pub last_echo_ms: Option<u64>,
     /// 本次运行发出并等回显的事件数、其中收到回显的数（3.2.0）。
@@ -195,6 +200,7 @@ impl RelayPool {
                 .map(|url| RelayHealth {
                     url: url.clone(),
                     state: RelayState::Connecting,
+                    connects: 0,
                     last_echo_ms: None,
                     sent: 0,
                     echoed: 0,
@@ -447,6 +453,7 @@ impl Connection {
         let mut pending = VecDeque::new();
         loop {
             self.set(RelayState::Connecting);
+            self.count_connect();
             let end = self.session(&mut out, &mut pending).await;
             // 连接断了还没等到的回显不会再来了
             for _ in pending.drain(..) {
@@ -478,6 +485,13 @@ impl Connection {
         set_state(&self.health, self.index, state);
         if state == RelayState::Ok {
             self.ready.notify_one();
+        }
+    }
+
+    /// 记一次「建立连接」。连着的时候不涨，说明没在反复重连。
+    fn count_connect(&self) {
+        if let Ok(mut h) = self.health.lock() {
+            h[self.index].connects += 1;
         }
     }
 
@@ -558,9 +572,13 @@ impl Connection {
                             t
                         }
                         Some(Ok(Message::Pong(_))) => {
-                            // 中继回了心跳：连接还活着
+                            // 中继回了心跳：连接还活着。
+                            // 这一下也把连接标记为健康——「收到过 Pong」和「收到过回显」
+                            // 一样能证明连接是通的。不这么算的话，遇到不回显的中继，
+                            // 每次重连都会被当成「这次连接白连了」，退避一路翻倍到 60 秒。
                             last_rx = Instant::now();
                             saw_pong = true;
+                            healthy = true;
                             continue;
                         }
                         Some(Ok(Message::Ping(data))) => {
@@ -616,8 +634,25 @@ impl Connection {
                 }
                 // 只在等着回显或者在冷却时才每秒查（3.2.0：没事时不定时醒）
                 _ = check.tick(), if !pending.is_empty() || cooling_until.is_some() => {
+                    // 等回显超时 ≠ 连接死了。回显只是健康度的信号之一，不是唯一信号：
+                    // 有的中继（以及旧版的自建中继）根本不回显发布者自己的事件，
+                    // 连接其实好好的，可每次发包都会在 echo_timeout 后被判死一次——
+                    // 表现就是界面隔几十秒闪一次「未连接」。
+                    // 现在只有「回显超时」且「这条连接连任何消息都收不到」才判死。
                     if pending.front().is_some_and(|(_, t)| t.elapsed() > self.cfg.echo_timeout) {
-                        return End::Reconnect { healthy: false };
+                        if last_rx.elapsed() > self.cfg.keepalive_timeout {
+                            return End::Reconnect { healthy };
+                        }
+                        // 连接还活着，只是这个中继不回显：把超时的这些记成「没回显」，
+                        // 别让它们一直堆在队列里。
+                        while pending
+                            .front()
+                            .is_some_and(|(_, t)| t.elapsed() > self.cfg.echo_timeout)
+                        {
+                            if pending.pop_front().is_some() {
+                                self.outcome(false, None);
+                            }
+                        }
                     }
                     if cooling_until.is_some_and(|t| Instant::now() >= t) {
                         cooling_until = None;
@@ -626,8 +661,15 @@ impl Connection {
                 }
                 // 心跳：顺带看一眼这条连接是不是已经死了（梯子切换、NAT 回收都会这样）
                 _ = keepalive.tick() => {
-                    if saw_pong && last_rx.elapsed() > self.cfg.keepalive_timeout {
-                        return End::Reconnect { healthy: false };
+                    // 判死：收到过 Pong 的按 keepalive_timeout 算；一次 Pong 都没收到过的
+                    // （老中继不回 Pong）给三倍宽限，否则这类中继永远死不掉。
+                    let idle_limit = if saw_pong {
+                        self.cfg.keepalive_timeout
+                    } else {
+                        self.cfg.keepalive_timeout * 3
+                    };
+                    if last_rx.elapsed() > idle_limit {
+                        return End::Reconnect { healthy };
                     }
                     if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
                         return End::Reconnect { healthy };
@@ -673,6 +715,7 @@ mod tests {
         RelayHealth {
             url: String::new(),
             state,
+            connects: 1,
             last_echo_ms: Some(avg),
             sent,
             echoed: sent,

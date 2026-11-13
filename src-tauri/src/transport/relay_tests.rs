@@ -97,10 +97,11 @@ async fn same_event_from_two_relays_arrives_once() {
     );
 }
 
+/// 连接真的断了要重连。
 #[tokio::test]
-async fn missing_echo_reconnects() {
+async fn a_dead_connection_reconnects() {
     let relay = FakeRelay::start(Behavior {
-        silent: true,
+        kill_on_event: true,
         ..Behavior::default()
     })
     .await;
@@ -110,8 +111,67 @@ async fn missing_echo_reconnects() {
     a.publish(R1, vec![1; 10], Priority::Live);
     assert!(
         wait_until(|| relay.total_connections() >= 2).await,
-        "没有回显应该重连"
+        "连接被掐断后应该重连"
     );
+}
+
+/// 中继不回显，但它活着：不能把它当死连接。
+///
+/// 这是「很容易显示未连接」的真正成因——我们的云端中继曾经不回显发布者自己的
+/// 事件，而客户端把「等不到回显」当成了唯一的死亡判据，于是每发一个包
+/// （包括定时发的在线状态）就隔 25 秒断一次线，界面跟着闪一次「未连接」。
+/// 回显只是健康度的信号之一：连接还收得到东西，就说明它活着。
+#[tokio::test]
+async fn no_echo_alone_does_not_kill_the_connection() {
+    let relay = FakeRelay::start(Behavior {
+        silent: true,
+        ..Behavior::default()
+    })
+    .await;
+    let (a, _a_in) = start(&[&relay.url], &[R1]);
+    assert!(wait_until(|| relay.subscribers(&R1) == 1).await);
+
+    a.publish(R1, vec![1; 10], Priority::Live);
+    // 等过好几倍的 echo_timeout（400 毫秒）。
+    sleep(Duration::from_millis(1600)).await;
+    assert_eq!(
+        relay.total_connections(),
+        1,
+        "不回显不等于连接死了，不该重连"
+    );
+    assert_eq!(state(&a, 0), RelayState::Ok, "连接状态还该是正常的");
+}
+
+/// 手动跑：连真实的云端中继，验证「发了包也不会因为等不到回显而重连」。
+///
+/// 这是「很容易显示未连接」那个 bug 的端到端验证。以前每发一个包（包括定时发的
+/// 在线状态）就隔 25 秒断一次线，界面跟着闪一次「未连接」；现在应该能一直连着。
+///
+/// `cargo test --lib real_relay_stays_connected -- --ignored --nocapture`
+/// 想指别的中继就设环境变量 `RELAY_URL`。
+#[tokio::test]
+#[ignore]
+async fn real_relay_stays_connected() {
+    let url =
+        std::env::var("RELAY_URL").unwrap_or_else(|_| "ws://14.103.234.253:31818".to_string());
+    let (h, _in) = RelayPool::start(vec![url.clone()], vec![R1], RelayConfig::default());
+    assert!(
+        wait_until(|| h.status()[0].state == RelayState::Ok).await,
+        "连不上 {url}"
+    );
+    // 每 3 秒发一个包，模拟在线状态这种持续的小包。
+    for _ in 0..15 {
+        h.publish(R1, vec![1; 40], Priority::Live);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+    let st = h.status();
+    assert_eq!(st[0].state, RelayState::Ok, "45 秒后还该连着");
+    assert_eq!(
+        st[0].connects, 1,
+        "这 45 秒里不该重连过（连了 {} 次）",
+        st[0].connects
+    );
+    assert!(st[0].last_echo_ms.is_some(), "应该收到回显：{:?}", st[0]);
 }
 
 /// 3.2.0-M10（P7）：真实公共中继上的实测，手动跑（要联网，约 5 分钟）：

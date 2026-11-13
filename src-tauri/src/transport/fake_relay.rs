@@ -4,7 +4,9 @@
 //! 1. 在 127.0.0.1 的随机端口上监听 WebSocket，每个连接一个任务。
 //! 2. `REQ` 记下订阅（kind 和 `#x`），`CLOSE` 删除订阅。
 //! 3. `EVENT` 先回 `OK`，接受的事件转发给所有匹配的订阅（包括发送者自己，这就是「回显」）。
-//! 4. 可配置的异常行为：不转发（测回显超时）、前 N 条回 `rate-limited`、一律用指定原因拒绝。
+//! 4. `Ping` 回 `Pong`（真中继都回；客户端靠它判断连接还活着）。
+//! 5. 可配置的异常行为：不转发（测回显超时）、前 N 条回 `rate-limited`、一律用指定原因拒绝、
+//!    收到事件就掐断连接（测「连接真的死了要重连」）。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -20,12 +22,14 @@ use crate::crypto::{RoomId, hex};
 
 #[derive(Clone, Debug, Default)]
 pub struct Behavior {
-    /// 接受事件但不转发给任何订阅。
+    /// 接受事件但不转发给任何订阅（连发送者自己也不回显）。
     pub silent: bool,
     /// 前几条事件回 `rate-limited`。
     pub rate_limit_first: usize,
     /// 设置后所有事件都用这个原因拒绝，比如 `"blocked: no"`。
     pub reject: Option<String>,
+    /// 收到事件后直接掐断连接（测「连接真的死了要重连」）。
+    pub kill_on_event: bool,
 }
 
 struct Sub {
@@ -125,22 +129,35 @@ async fn serve(stream: tokio::net::TcpStream, state: Arc<Mutex<State>>, behavior
         );
         id
     };
-    let writer = tokio::spawn(async move {
-        while let Some(text) = rx.recv().await {
-            if sink.send(Message::text(text)).await.is_err() {
-                break;
+    // 收和发在同一个任务里（和真中继一样）：这样收到 Ping 才能回 Pong。
+    loop {
+        tokio::select! {
+            out = rx.recv() => {
+                let Some(text) = out else { break };
+                if sink.send(Message::text(text)).await.is_err() { break; }
             }
-        }
-    });
-    while let Some(Ok(msg)) = source.next().await {
-        if let Message::Text(t) = msg
-            && let Ok(Value::Array(a)) = serde_json::from_str::<Value>(t.as_str())
-        {
-            handle(&state, id, &a, &behavior);
+            msg = source.next() => {
+                let Some(Ok(msg)) = msg else { break };
+                match msg {
+                    Message::Text(t) => {
+                        let Ok(Value::Array(a)) = serde_json::from_str::<Value>(t.as_str()) else {
+                            continue;
+                        };
+                        let is_event = a.first().and_then(Value::as_str) == Some("EVENT");
+                        handle(&state, id, &a, &behavior);
+                        if is_event && behavior.kill_on_event {
+                            break; // 连接被掐断
+                        }
+                    }
+                    Message::Ping(data) => {
+                        let _ = sink.send(Message::Pong(data)).await;
+                    }
+                    _ => {}
+                }
+            }
         }
     }
     state.lock().unwrap().conns.remove(&id);
-    writer.abort();
 }
 
 fn handle(state: &Mutex<State>, conn: u64, a: &[Value], behavior: &Behavior) {
