@@ -56,6 +56,15 @@ input, select, textarea { font: inherit; color: inherit; }
   font-size: 12px;
 }
 .v-note { color: var(--muted); font-size: 12px; }
+/* 提示：不是错误，只是提醒（比如云端额度用尽、这次没拿到 6 位短码） */
+.v-notice {
+  padding: 7px 10px;
+  flex: none;
+  border-left: 2px solid var(--orange);
+  background: rgba(255, 149, 0, 0.08);
+  color: var(--orange);
+  font-size: 12px;
+}
 .v-value { font: 700 12px var(--num); color: var(--text-2); font-variant-numeric: tabular-nums; }
 
 /* ---------- 通用卡：切角 + 左侧状态轨 ---------- */

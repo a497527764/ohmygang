@@ -24,6 +24,9 @@ pub const CLOUD_API: &str = "http://14.103.234.253:31818";
 pub const CLOUD_RELAY: &str = "ws://14.103.234.253:31818";
 
 const TIMEOUT: Duration = Duration::from_secs(15);
+/// 查在线人数这类「锦上添花」的请求用更短的超时：问不到就把那一列留成「—」，
+/// 不能让整个列表陪着等 15 秒（界面上「加入过的队伍」会一直空着）。
+const QUICK_TIMEOUT: Duration = Duration::from_secs(3);
 /// 心跳周期：服务端 5 天没活动才回收，10 分钟一次足够。
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(600);
 
@@ -89,7 +92,12 @@ pub async fn team_heartbeat(room_id_hex: &str, member_id_hex: &str) -> Result<()
 pub async fn team_stats(
     room_ids: &[String],
 ) -> Result<std::collections::HashMap<String, usize>, String> {
-    let v = post_json("/api/team/stats", &json!({ "room_ids": room_ids })).await?;
+    let v = post_json_with(
+        "/api/team/stats",
+        &json!({ "room_ids": room_ids }),
+        QUICK_TIMEOUT,
+    )
+    .await?;
     let Some(map) = v.get("stats").and_then(|s| s.as_object()) else {
         return Err("云端响应格式不对".to_string());
     };
@@ -139,6 +147,11 @@ fn str_field(v: &Value, key: &str) -> Result<String, String> {
 
 /// POST 一个 JSON 到云端接口，返回响应里的 JSON。
 async fn post_json(path: &str, body: &Value) -> Result<Value, String> {
+    post_json_with(path, body, TIMEOUT).await
+}
+
+/// 同上，但自己指定超时。
+async fn post_json_with(path: &str, body: &Value, timeout: Duration) -> Result<Value, String> {
     // 地址形如 http://host:port 或 https://host（端口可省略）。
     let base = CLOUD_API.trim_end_matches('/');
     let (use_tls, rest) = match base.split_once("://") {
@@ -198,7 +211,7 @@ async fn post_json(path: &str, body: &Value) -> Result<Value, String> {
         }
         Ok::<Vec<u8>, String>(raw)
     };
-    let raw = tokio::time::timeout(TIMEOUT, exchange)
+    let raw = tokio::time::timeout(timeout, exchange)
         .await
         .map_err(|_| "云端服务响应超时".to_string())??;
     parse_response(&raw)

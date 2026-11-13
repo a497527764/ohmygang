@@ -1,7 +1,7 @@
 // 主页：一块电源主控（设置齿轮贴在其右侧内），一排快捷键键帽，下面整块给队伍。
 // 窄高窗口：建队 / 进队表单在上，「加入过的队伍」竖排在下，历史吃满剩余高度并可滚动。
 // 数据：队伍历史来自 Rust 的 team_recent，自动归队由 Rust 启动时做。
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   onTeamChanged, teamCancel, teamCreate, teamDissolve, teamForget, teamJoin, teamLeave,
   teamModerate, teamRecent, teamView, type Member, type RecentTeam, type RecentTeams,
@@ -42,6 +42,8 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
   const [currentOnline, setCurrentOnline] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 读历史失败单独一栏：它不是致命错误（列表还在），只是一句提醒。
+  const [historyErr, setHistoryErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   // 队名默认留空（输入框里不出现任何占位字），不填时后端用默认名建队。
   const [title, setTitle] = useState("");
@@ -50,15 +52,54 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
   // 右键菜单：记下触发位置和菜单项，点外面自动关
   const [menu, setMenu] = useState<{ anchor: DOMRect; items: MenuItem[] } | null>(null);
 
+  // 「加入过的队伍」是整页最容易出岔子的地方——退出队伍后必须马上看到刚退的那一条。
+  //
+  // 这里用两个序号，不是「后发请求才算数」：
+  //   recentSeq    —— 已发出的请求数，只用来编号；
+  //   recentApplied —— 已经用上的是哪一次的结果。
+  // 为什么不能简单地「后发才算数」：后发的那次要是失败了，先成功的那次就被一起丢掉，
+  // 列表又变成空的——这恰恰就是「退出后历史里什么都没有」的成因。
+  // 所以改成：成功的那份按「谁更晚成功谁算数」更新，失败的那份绝不清空列表。
+  const recentSeq = useRef(0);
+  const recentApplied = useRef(0);
+  // 队伍页同理：viewFloor 之前的请求都算过期，回来也不许改界面。
+  const viewSeq = useRef(0);
+  const viewFloor = useRef(0);
+
   const refreshRecent = useCallback(() => {
+    const seq = ++recentSeq.current;
     teamRecent().then(
-      (r: RecentTeams) => { setRecent(r.rooms); setCurrentOnline(r.currentOnline); },
-      () => { setRecent([]); setCurrentOnline(null); },
+      (r: RecentTeams) => {
+        // 已经有更晚成功的那份了，这份是旧的，丢掉。
+        if (seq < recentApplied.current) return;
+        recentApplied.current = seq;
+        setRecent(r.rooms);
+        setCurrentOnline(r.currentOnline);
+        setHistoryErr(null);
+      },
+      (e) => {
+        // 失败只提示，绝不动列表：已经显示出来的历史要留着，
+        // 否则用户会以为刚退的那支队伍根本没记上。
+        setHistoryErr(`读队伍历史失败：${String(e)}`);
+      },
     );
   }, []);
 
   const load = useCallback(() => {
-    teamView().then(setView, () => setView(null));
+    // 队伍页和历史列表一起拉，但两者都要防「旧的响应后到」把新的覆盖掉：
+    // 退出队伍时 team://changed 和命令返回几乎同时到，谁后到谁说了算会闪一下。
+    const seq = ++viewSeq.current;
+    teamView().then(
+      (v) => {
+        if (seq < viewFloor.current) return;
+        viewFloor.current = seq;
+        setView(v);
+      },
+      () => {
+        // 问不到就保持原样：把队伍页换成空，等于告诉用户「你没在队伍里」，
+        // 而这多半只是一次网络抖动。
+      },
+    );
     refreshRecent();
   }, [refreshRecent]);
   useEffect(() => {
@@ -69,8 +110,22 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
 
   const run = (p: Promise<TeamView>) => {
     setBusy(true);
-    p.then((v) => { setView(v); setError(null); }, (e) => setError(String(e)))
-      // 退出队伍后历史列表要立刻重拉一次：不然「加入过的队伍」还是进队时的快照，看不到刚退的这条
+    p.then(
+      (v) => {
+        // 命令返回的队伍页是最新的：把地板抬到它头上，
+        // 还在路上的旧请求回来也不许再改界面。
+        viewFloor.current = ++viewSeq.current;
+        setView(v);
+        setError(null);
+      },
+      (e) => {
+        // 操作失败：在途的旧请求也别来改界面了（这次操作比它们都新）。
+        viewFloor.current = ++viewSeq.current;
+        setError(String(e));
+      },
+    )
+      // 无论成功失败都重拉一次历史：退出队伍后必须马上看到刚退的那一条，
+      // 失败时也不能把列表停在「进队时」的旧快照上（那时当前队伍占位，历史是空的）。
       .finally(() => { setBusy(false); refreshRecent(); });
   };
 
@@ -78,8 +133,12 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
   const forget = (roomId: string) => {
     setBusy(true);
     teamForget(roomId).then(
-      (r) => { setRecent(r.rooms); setCurrentOnline(r.currentOnline); setError(null); },
-      (e) => setError(String(e)),
+      (r) => { setRecent(r.rooms); setCurrentOnline(r.currentOnline); setError(null); setHistoryErr(null); },
+      (e) => {
+        setError(String(e));
+        // 删失败就重拉一次：别让列表停在半新半旧的状态。
+        refreshRecent();
+      },
     ).finally(() => setBusy(false));
   };
 
@@ -208,6 +267,8 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
 
         <div className="v-squad-body">
           {error && <p className="v-error">{error}</p>}
+          {historyErr && <p className="v-notice">{historyErr}</p>}
+          {team?.notice && <p className="v-notice">{team.notice}</p>}
 
           {team && (
             <>
@@ -316,7 +377,7 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
                 <form className="v-squad-form" onSubmit={(e) => { e.preventDefault(); run(teamJoin(code)); }}>
                   <label className="v-field-label" htmlFor="team-code">加入队伍</label>
                   <div className="v-field-row">
-                    <input id="team-code" className="v-code-input" value={code} placeholder="6 位队伍码"
+                    <input id="team-code" className="v-code-input" value={code} placeholder="6 位队伍码 / GT2 长码"
                       spellCheck={false} autoCapitalize="characters" maxLength={64}
                       onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^0-9A-Z-]/g, ""))} />
                     <button className="v-btn orange" type="submit" disabled={busy || !code.trim()}>

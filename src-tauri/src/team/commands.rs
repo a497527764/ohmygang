@@ -41,14 +41,13 @@ pub async fn team_view(app: AppHandle) -> Result<TeamView, String> {
 #[tauri::command]
 pub async fn team_recent(app: AppHandle) -> Result<RecentTeams, String> {
     let node = app.state::<AppState>().node.clone();
-    let list = node
-        .call(|core, _| core.recent_rooms())
-        .await
-        .ok_or("网络模块停了")?
-        .map_err(|e| e.to_string())?;
-    // 当前队伍：主页第一行就是它，在线人数也从云端问。
-    let current: Option<crate::crypto::RoomId> = node
-        .call(|core, _| core.current_team().map(|t| t.map(|s| s.room_id)))
+    // 一次 node.call 拿全（列表 + 当前队伍）：分两次调会排两次队，中间队伍状态可能变，
+    // 前后两份数据对不上，界面上的「当前队伍」和历史会打架。
+    let (list, current) = node
+        .call(|core, _| {
+            let current = core.current_team()?.map(|t| t.room_id);
+            Ok::<_, AppError>((core.recent_rooms()?, current))
+        })
         .await
         .ok_or("网络模块停了")?
         .map_err(|e| e.to_string())?;
@@ -102,6 +101,10 @@ pub async fn rejoin_last(app: &AppHandle) {
 }
 
 /// 建队：先向云端申请 6 位短码（服务器铸造 GT2 长码），再本地建队、写事件、立刻报心跳。
+///
+/// 云端拒绝（额度用尽、被限流）或连不上时，退回本地铸一个 GT2 长码：
+/// 队伍照样建得起来、队友照样进得来，代价只是没有 6 位短码。
+/// 云端配额是保护服务器的，不该让用户连队都建不了。
 #[tauri::command]
 pub async fn team_create(app: AppHandle, title: String) -> Result<TeamView, String> {
     let node = app.state::<AppState>().node.clone();
@@ -109,15 +112,39 @@ pub async fn team_create(app: AppHandle, title: String) -> Result<TeamView, Stri
         .call(|core, _| crate::crypto::hex(&core.identity().member_id))
         .await
         .ok_or("网络模块停了")?;
-    let created = crate::cloud::team_create(&member_hex, &title).await?;
-    let (code, short) = (created.code, created.short_code);
-    let view = act(&app, move |core, out| {
-        let c = core.create_room_with_code(&code, &title, now_ms())?;
-        core.set_short_code(&c.summary.room_id, &short)?;
-        out.broadcast(c.summary.room_id, c.events);
-        Ok(())
-    })
-    .await?;
+    let created = crate::cloud::team_create(&member_hex, &title).await;
+    let (view, notice) = match created {
+        Ok(c) => {
+            let (code, short) = (c.code, c.short_code);
+            let v = act(&app, move |core, out| {
+                let c = core.create_room_with_code(&code, &title, now_ms())?;
+                core.set_short_code(&c.summary.room_id, &short)?;
+                out.broadcast(c.summary.room_id, c.events);
+                Ok(())
+            })
+            .await?;
+            (v, None)
+        }
+        Err(e) => {
+            eprintln!("云端没给短码，本地铸码兜底：{e}");
+            let v = act(&app, move |core, out| {
+                let c = core.create_room(&title, now_ms())?;
+                out.broadcast(c.summary.room_id, c.events);
+                Ok(())
+            })
+            .await?;
+            (
+                v,
+                Some("云端暂时不给短码了（额度用尽或连不上），这次用长码分享".to_string()),
+            )
+        }
+    };
+    let mut view = view;
+    if let Some(t) = view.team.as_mut()
+        && let Some(n) = notice
+    {
+        t.notice = Some(n);
+    }
     kick_heartbeat(&app);
     Ok(view)
 }

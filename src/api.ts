@@ -159,6 +159,8 @@ export interface TeamInfo {
   isOwner: boolean;
   /** 显示/分享用：云端 6 位短码；老队伍是 GT2 长码。 */
   code: string;
+  /** 给用户看的一句话提示（比如云端额度用尽、这次没拿到 6 位短码）。 */
+  notice?: string | null;
 }
 
 export interface Member {

@@ -448,3 +448,20 @@ fn cached_holdings_follow_every_event_write() {
     }
     assert_eq!(total(&c, &room), 0, "整个队伍删掉以后不再用旧的缓存");
 }
+
+#[test]
+fn recent_rooms_keeps_left_teams_after_leaving() {
+    let mut a = new_core();
+    a.set_profile("队长", None, None, 1).unwrap();
+    let created = a.create_room("开黑", 1000).unwrap();
+    let room = created.summary.room_id;
+    // 在队里时，历史里没有它（它被当成「当前队伍」单独显示）
+    assert!(a.recent_rooms().unwrap().is_empty());
+    // 退出以后，它应该出现在「加入过的队伍」里
+    a.leave_room(&room, 5000).unwrap();
+    let recent = a.recent_rooms().unwrap();
+    assert_eq!(recent.len(), 1, "退出后本机历史里应该留下这个队伍");
+    assert_eq!(recent[0].room_id, room);
+    assert_eq!(recent[0].status, RoomStatus::Left);
+    assert_eq!(recent[0].title.as_deref(), Some("开黑"));
+}

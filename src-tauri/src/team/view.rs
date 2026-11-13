@@ -79,6 +79,8 @@ pub struct TeamDto {
     pub status: &'static str,
     pub is_owner: bool,
     pub code: String,
+    /// 给用户看的一句话提示（比如「云端额度用尽，这次没拿到 6 位短码」）。
+    pub notice: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -308,6 +310,7 @@ pub async fn view(app: &AppHandle) -> Result<TeamView, String> {
             },
             is_owner: t.is_owner,
             code,
+            notice: None,
         }),
         members,
         relays_ok: relays.iter().filter(|r| r.state == RelayState::Ok).count(),
