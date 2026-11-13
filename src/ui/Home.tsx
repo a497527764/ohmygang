@@ -3,14 +3,15 @@
 // 数据：队伍历史来自 Rust 的 team_recent，自动归队由 Rust 启动时做。
 import { useCallback, useEffect, useState } from "react";
 import {
-  onTeamChanged, teamCancel, teamCreate, teamDissolve, teamJoin, teamLeave,
-  teamRecent, teamView, type RecentTeam, type Settings, type Status, type TeamView,
-  type TriggerKey,
+  onTeamChanged, teamCancel, teamCreate, teamDissolve, teamForget, teamJoin, teamLeave,
+  teamModerate, teamRecent, teamView, type Member, type RecentTeam, type RecentTeams,
+  type Settings, type Status, type TeamView, type TriggerKey,
 } from "../api";
 import { hotkeyParts, vkLabel } from "../shared/keys";
 import { Avatar } from "../components/Avatar";
 import { Glyph, type GlyphName } from "./Glyph";
 import { MicWave } from "./MicWave";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 import type { SettingsTab } from "./Settings";
 
 interface Props {
@@ -46,14 +47,20 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
   const [title, setTitle] = useState("");
   const [code, setCode] = useState("");
   const [confirm, setConfirm] = useState<"leave" | "dissolve" | null>(null);
+  // 右键菜单：记下触发位置和菜单项，点外面自动关
+  const [menu, setMenu] = useState<{ anchor: DOMRect; items: MenuItem[] } | null>(null);
 
-  const load = useCallback(() => {
-    teamView().then(setView, () => setView(null));
+  const refreshRecent = useCallback(() => {
     teamRecent().then(
-      (r) => { setRecent(r.rooms); setCurrentOnline(r.currentOnline); },
+      (r: RecentTeams) => { setRecent(r.rooms); setCurrentOnline(r.currentOnline); },
       () => { setRecent([]); setCurrentOnline(null); },
     );
   }, []);
+
+  const load = useCallback(() => {
+    teamView().then(setView, () => setView(null));
+    refreshRecent();
+  }, [refreshRecent]);
   useEffect(() => {
     load();
     const off = onTeamChanged(load);
@@ -62,7 +69,24 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
 
   const run = (p: Promise<TeamView>) => {
     setBusy(true);
-    p.then((v) => { setView(v); setError(null); }, (e) => setError(String(e))).finally(() => setBusy(false));
+    p.then((v) => { setView(v); setError(null); }, (e) => setError(String(e)))
+      // 退出队伍后历史列表要立刻重拉一次：不然「加入过的队伍」还是进队时的快照，看不到刚退的这条
+      .finally(() => { setBusy(false); refreshRecent(); });
+  };
+
+  /** 右键历史里的一行：删掉本机记录（队伍本身还在，别人照样能用队伍码进来）。 */
+  const forget = (roomId: string) => {
+    setBusy(true);
+    teamForget(roomId).then(
+      (r) => { setRecent(r.rooms); setCurrentOnline(r.currentOnline); setError(null); },
+      (e) => setError(String(e)),
+    ).finally(() => setBusy(false));
+  };
+
+  /** 右键成员：房主才能踢人 / 拉黑。 */
+  const moderate = (m: Member, block: boolean) => {
+    setError(null);
+    run(teamModerate(m.memberId, block));
   };
 
   const on = status.enabled && !status.inputError;
@@ -97,6 +121,8 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
   const current: (RecentTeam & { current: boolean }) | null = team
     ? {
         code: code_,
+        // 当前队伍不能从历史里删（后端也会拦），这里只是占个位
+        roomId: "",
         shortCode: null,
         title: team.title ?? null,
         isOwner: team.isOwner,
@@ -194,7 +220,31 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
                 {view?.members.map((m) => (
                   <div key={m.memberId}
                     className={`v-member${m.path === "relay" ? " p1" : ""}${m.path === "offline" ? " off" : ""}`}
-                    title={m.nickname || m.fingerprint}>
+                    title={team?.isOwner && !m.isMe
+                      ? `${m.nickname || m.fingerprint}（右键：踢出 / 拉黑）`
+                      : (m.nickname || m.fingerprint)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      // 只有房主能处置队员；对自己不行
+                      if (!team?.isOwner || m.isMe) return;
+                      setMenu({
+                        anchor: e.currentTarget.getBoundingClientRect(),
+                        items: [
+                          {
+                            key: "kick",
+                            label: "踢出队伍",
+                            danger: true,
+                            onSelect: () => moderate(m, false),
+                          },
+                          {
+                            key: "block",
+                            label: "拉黑（之后加不进来）",
+                            danger: true,
+                            onSelect: () => moderate(m, true),
+                          },
+                        ],
+                      });
+                    }}>
                     <span className="v-member-main">
                       <Avatar fingerprint={m.fingerprint} name={m.nickname} avatar={m.avatar} size={28} />
                       <b>{m.isMe ? `${m.nickname || m.fingerprint}（我自己）` : (m.nickname || m.fingerprint)}</b>
@@ -300,6 +350,21 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
                   </div>
                 ) : (
                   <button type="button" key={r.code} className="v-recent-row" disabled={busy}
+                    title="右键：删除这条记录"
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setMenu({
+                        anchor: e.currentTarget.getBoundingClientRect(),
+                        items: [
+                          {
+                            key: "forget",
+                            label: "删除这条记录",
+                            danger: true,
+                            onSelect: () => forget(r.roomId),
+                          },
+                        ],
+                      });
+                    }}
                     onClick={() => run(teamJoin(r.code))}>
                     <Glyph name="users" size={16} />
                     <span className="v-recent-main">
@@ -320,6 +385,10 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
           </div>
         </div>
       </section>
+
+      {menu && (
+        <ContextMenu anchor={menu.anchor} items={menu.items} onClose={() => setMenu(null)} />
+      )}
     </div>
   );
 }

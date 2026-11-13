@@ -54,6 +54,8 @@ pub struct AppState {
     pub voice: crate::voice::Voice,
     /// 历史记录（聊天框里的文字、语音、信号、表情）。
     pub history: crate::history::History,
+    /// 本机数据目录（身份备份写在这里）。
+    pub dir: std::path::PathBuf,
 }
 
 impl AppState {
@@ -113,6 +115,22 @@ pub fn after_toggle(app: &AppHandle, on: bool) {
     tray::set_checked(app, on);
     let _ = app.emit_to("main", "pings://enabled", on);
     team::refresh_presence(app);
+}
+
+/// 把当前身份写进备份文件（改了昵称/头像后调用）。
+/// 数据库文件丢了还能靠它恢复身份，不然会变成一个全新的人、旧身份还留在队伍里。
+pub fn backup_identity(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let row = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| crate::storage::identity::load(&db).ok().flatten());
+    if let Some(row) = row {
+        let _ = crate::storage::identity::write_backup(&state.dir, &row);
+    }
 }
 
 /// 开机启动：只在设置改了时去改系统设置。开发用的第二、第三实例不碰。

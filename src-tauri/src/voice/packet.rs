@@ -99,7 +99,12 @@ mod tests {
         }
         assert_eq!(
             sent.iter().map(parts).collect::<Vec<_>>(),
-            vec![(7, 0, 10, false), (7, 10, 10, false), (7, 20, 10, false), (7, 30, 10, false)]
+            vec![
+                (7, 0, 10, false),
+                (7, 10, 10, false),
+                (7, 20, 10, false),
+                (7, 30, 10, false)
+            ]
         );
         assert_eq!(p.sent(), 40);
         assert_eq!(parts(&p.finish()), (7, 40, 5, true));

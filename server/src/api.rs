@@ -135,6 +135,7 @@ async fn route(
         ("POST", "/api/team/join") => join(body, store).await,
         ("POST", "/api/team/heartbeat") => heartbeat(body, store, server).await,
         ("POST", "/api/team/stats") => stats(body, store).await,
+        ("POST", "/api/team/rename") => rename(body, store).await,
         ("GET", "/api/team/code") => code_lookup(path, store).await,
         // 管理后台 API
         ("POST", "/api/admin/login") => admin_login(body),
@@ -197,8 +198,21 @@ async fn create(
         }
     };
     let now = now_secs();
+    let title = v
+        .get("title")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().chars().take(64).collect::<String>())
+        .filter(|s| !s.is_empty());
     if store
-        .create_team(&short, &secret, &owner_tag, &room_id_hex, now, &member_hex)
+        .create_team(
+            &short,
+            &secret,
+            &owner_tag,
+            &room_id_hex,
+            now,
+            &member_hex,
+            title.as_deref(),
+        )
         .is_err()
     {
         return (500, json!({ "error": "internal" }));
@@ -237,10 +251,37 @@ async fn join(body: &[u8], store: &Arc<Store>) -> (u16, Value) {
         return (400, json!({ "error": "队伍码应为 6 位字母数字" }));
     }
     match store.team_by_short(&normalized) {
-        Ok(Some((code_str, room_id_hex))) => {
-            (200, json!({ "code": code_str, "room_id": room_id_hex }))
-        }
+        Ok(Some((code_str, room_id_hex, title))) => (
+            200,
+            json!({ "code": code_str, "room_id": room_id_hex, "title": title }),
+        ),
         Ok(None) => (404, json!({ "error": "队伍码不存在或已过期" })),
+        Err(_) => (500, json!({ "error": "internal" })),
+    }
+}
+
+/// 房主改队名：存到服务器（客户端进队时从服务器拿名字，中继重启也不丢）。
+async fn rename(body: &[u8], store: &Arc<Store>) -> (u16, Value) {
+    let v: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return (400, json!({ "error": "bad json" })),
+    };
+    let Some(room_id) = v.get("room_id").and_then(|x| x.as_str()) else {
+        return (400, json!({ "error": "缺少 room_id" }));
+    };
+    let title = v
+        .get("title")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(64)
+        .collect::<String>();
+    if title.is_empty() {
+        return (400, json!({ "error": "队名为空" }));
+    }
+    match store.set_team_title(room_id, &title) {
+        Ok(_) => (200, json!({ "ok": true })),
         Err(_) => (500, json!({ "error": "internal" })),
     }
 }

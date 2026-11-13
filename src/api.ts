@@ -200,6 +200,8 @@ export const teamView = (): Promise<TeamView> => invoke("team_view");
 export interface RecentTeam {
   /** GT2 长码（点击直接进队用，离线也能用）。 */
   code: string;
+  /** 队伍标识（十六进制）。右键「删除这条记录」靠它定位本机记录。 */
+  roomId: string;
   /** 云端分配的 6 位短码（显示用）；老队伍没有。 */
   shortCode: string | null;
   title: string | null;
@@ -222,6 +224,11 @@ export const teamCreate = (title: string): Promise<TeamView> => invoke("team_cre
 export const teamJoin = (code: string): Promise<TeamView> => invoke("team_join", { code });
 export const teamCancel = (): Promise<TeamView> => invoke("team_cancel");
 export const teamLeave = (): Promise<TeamView> => invoke("team_leave");
+/** 从本机历史里删掉一个队伍（主页历史列表右键 → 删除这条记录）。 */
+export const teamForget = (roomId: string): Promise<RecentTeams> => invoke("team_forget", { roomId });
+/** 队长把队员踢出队伍（block=false）或拉黑（block=true）；拉黑后对方再加也进不来。 */
+export const teamModerate = (memberId: string, block: boolean): Promise<TeamView> =>
+  invoke("team_moderate", { memberId, block });
 export const teamDissolve = (): Promise<TeamView> => invoke("team_dissolve");
 export const teamRename = (title: string): Promise<TeamView> => invoke("team_rename", { title });
 export const profileSet = (

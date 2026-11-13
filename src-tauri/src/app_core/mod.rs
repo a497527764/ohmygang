@@ -18,7 +18,7 @@ use crate::crypto::{EventId, Identity, MemberId, RoomId, RoomKey};
 use crate::error::AppResult;
 use crate::identity::{self, IdentityView};
 use crate::keystore::KeyStore;
-use crate::protocol::body::{self, Avatar, ProfileBody, RenameBody};
+use crate::protocol::body::{self, Avatar, ModerationBody, ProfileBody, RenameBody};
 use crate::protocol::event::{SignedEvent, kind, verify_stateless};
 use crate::protocol::frame::{HaveEntry, WantRange, short_id};
 use crate::protocol::live::{LiveBody, WireLive, sign_live};
@@ -41,6 +41,10 @@ pub enum CoreEvent {
     ForkDetected {
         room_id: RoomId,
         member_id: MemberId,
+    },
+    /// 自己被队长拉黑了：本机已经退出这个队伍。
+    Blocked {
+        room_id: RoomId,
     },
 }
 
@@ -217,7 +221,11 @@ impl Core {
 
     /// 进队：写一条 Joining 状态的队伍记录，紧接着就激活（写自己的入队事件、转 Active）。
     /// 不等同伴在线——进队码对得上就算进队成功，队友的成员信息等事件同步过来再补上。
-    pub fn join_room(&mut self, code: &str, now_ms: u64) -> AppResult<(RoomSummary, Vec<SignedEvent>)> {
+    pub fn join_room(
+        &mut self,
+        code: &str,
+        now_ms: u64,
+    ) -> AppResult<(RoomSummary, Vec<SignedEvent>)> {
         self.require_no_team()?;
         let room = {
             let tx = self.conn.transaction()?;
@@ -287,6 +295,21 @@ impl Core {
         rooms::list_members(&self.conn, room)
     }
 
+    /// 队伍里被队长拉黑的人（实时消息要过滤掉他们）。
+    pub fn blocked_members(&self, room: &RoomId) -> AppResult<Vec<MemberId>> {
+        rooms::blocked_members(&self.conn, room)
+    }
+
+    /// 直接写一个队名进本地缓存（服务器上存的队名，房主的建队事件收不到时兜底）。
+    pub fn set_local_title(&self, room: &RoomId, title: &str) -> AppResult<()> {
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > body::TITLE_MAX_CHARS {
+            return Err(AppError::InvalidTitle);
+        }
+        room_store::update_cache(&self.conn, room, Some(title), None, None)?;
+        Ok(())
+    }
+
     /// 现在在队里的人（不含已退出的）。
     pub fn members_in(&self, room: &RoomId) -> AppResult<Vec<MemberId>> {
         Ok(room_store::members(&self.conn, room)?
@@ -318,6 +341,37 @@ impl Core {
         Ok(vec![e])
     }
 
+    /// 房主管理队员：踢出（block=false）或拉黑（block=true）。
+    /// 写一条 KICK / BLOCK 事件：所有成员的成员列表都会把他去掉；拉黑的人再发进队事件也不算数。
+    pub fn moderate_member(
+        &mut self,
+        target: MemberId,
+        block: bool,
+        now_ms: u64,
+    ) -> AppResult<Vec<SignedEvent>> {
+        if target == self.view.member_id {
+            return Err(AppError::InvalidTarget);
+        }
+        let tx = self.conn.transaction()?;
+        let room = current_room_id(&tx)?;
+        require_active_owner(&tx, &self.view.member_id, &room)?;
+        let b = body::encode(&ModerationBody {
+            target: target.to_vec(),
+            reason: None,
+        });
+        let e = events::append_own(
+            &tx,
+            &self.me,
+            &room,
+            if block { kind::BLOCK } else { kind::KICK },
+            b,
+            now_ms,
+        )?;
+        rooms::apply_state(&tx, &room)?;
+        tx.commit()?;
+        Ok(vec![e])
+    }
+
     /// 退出队伍：写一条 Leave，状态改为 Left。用队伍码可以重新进队。
     pub fn leave_room(&mut self, room: &RoomId, now_ms: u64) -> AppResult<Vec<SignedEvent>> {
         let tx = self.conn.transaction()?;
@@ -329,6 +383,22 @@ impl Core {
         room_store::set_status(&tx, room, RoomStatus::Left)?;
         tx.commit()?;
         Ok(vec![e])
+    }
+
+    /// 从本机历史里删掉一个队伍：队伍页不再显示它，队伍码、成员、事件一起清掉。
+    /// 当前所在队伍不给删（先退出）。
+    pub fn forget_room(&mut self, room: &RoomId) -> AppResult<()> {
+        let tx = self.conn.transaction()?;
+        let Some(row) = room_store::get_room(&tx, room)? else {
+            tx.commit()?;
+            return Ok(());
+        };
+        if matches!(row.status, RoomStatus::Joining | RoomStatus::Active) {
+            return Err(AppError::StillInTeam);
+        }
+        room_store::delete_room(&tx, room)?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// 取消加入：从没在这个队伍写过事件的，删除本机记录；以前是队员、退出后又重新进队的，退回 Left。
@@ -396,6 +466,12 @@ impl Core {
         }
         if changed {
             rooms::apply_state(&tx, room)?;
+            // 自己被队长拉黑了：本机退出这个队伍（房主那边已经把我踢出去了）。
+            let me = self.view.member_id;
+            if rooms::is_blocked(&tx, room, &me)? {
+                room_store::set_status(&tx, room, RoomStatus::Left)?;
+                notes.push(CoreEvent::Blocked { room_id: *room });
+            }
             notes.push(CoreEvent::RoomUpdated { room_id: *room });
         }
         tx.commit()?;
@@ -530,6 +606,15 @@ impl Core {
 }
 
 /// 只有队长、且队伍是 Active 时才能改名、解散。
+/// 当前所在的队伍（加入中或已加入）。
+fn current_room_id(conn: &Connection) -> AppResult<RoomId> {
+    room_store::list_rooms(conn)?
+        .into_iter()
+        .find(|r| matches!(r.status, RoomStatus::Joining | RoomStatus::Active))
+        .map(|r| r.room_id)
+        .ok_or(AppError::RoomNotFound)
+}
+
 fn require_active_owner(conn: &Connection, me: &MemberId, room: &RoomId) -> AppResult<()> {
     let row = rooms::get(conn, room)?;
     if crate::protocol::room_code::owner_tag_of(me) != row.owner_tag {

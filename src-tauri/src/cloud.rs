@@ -33,14 +33,19 @@ pub struct TeamCreated {
     pub code: String,
 }
 
-/// 进队成功：换回的 GT2 长码和 room_id（十六进制）。
+/// 进队成功：换回的 GT2 长码、room_id（十六进制）、队名（服务器上存的）。
 pub struct TeamJoined {
     pub code: String,
+    pub title: Option<String>,
 }
 
-/// 建队：服务器分配 6 位短码并铸造 GT2 长码（owner_tag 由本人公钥生成）。
-pub async fn team_create(member_id_hex: &str) -> Result<TeamCreated, String> {
-    let v = post_json("/api/team/create", &json!({ "member_id": member_id_hex })).await?;
+/// 建队：服务器分配 6 位短码并铸造 GT2 长码（owner_tag 由本人公钥生成）。队名一起存到服务器。
+pub async fn team_create(member_id_hex: &str, title: &str) -> Result<TeamCreated, String> {
+    let v = post_json(
+        "/api/team/create",
+        &json!({ "member_id": member_id_hex, "title": title }),
+    )
+    .await?;
     Ok(TeamCreated {
         short_code: str_field(&v, "short_code")?,
         code: str_field(&v, "code")?,
@@ -52,7 +57,22 @@ pub async fn team_join(short_code: &str) -> Result<TeamJoined, String> {
     let v = post_json("/api/team/join", &json!({ "code": short_code })).await?;
     Ok(TeamJoined {
         code: str_field(&v, "code")?,
+        title: v
+            .get("title")
+            .and_then(|x| x.as_str())
+            .map(String::from)
+            .filter(|s| !s.is_empty()),
     })
+}
+
+/// 改队名：房主改名后同步给服务器（别人进队时从服务器拿名字）。
+pub async fn team_rename(room_id_hex: &str, title: &str) -> Result<(), String> {
+    post_json(
+        "/api/team/rename",
+        &json!({ "room_id": room_id_hex, "title": title }),
+    )
+    .await?;
+    Ok(())
 }
 
 /// 队伍心跳（保活）。队伍已被回收时返回错误。
@@ -66,7 +86,9 @@ pub async fn team_heartbeat(room_id_hex: &str, member_id_hex: &str) -> Result<()
 }
 
 /// 一批队伍现在各有多少人在线（15 分钟内报过心跳）。给主页「加入过的队伍」显示 在线/总数。
-pub async fn team_stats(room_ids: &[String]) -> Result<std::collections::HashMap<String, usize>, String> {
+pub async fn team_stats(
+    room_ids: &[String],
+) -> Result<std::collections::HashMap<String, usize>, String> {
     let v = post_json("/api/team/stats", &json!({ "room_ids": room_ids })).await?;
     let Some(map) = v.get("stats").and_then(|s| s.as_object()) else {
         return Err("云端响应格式不对".to_string());

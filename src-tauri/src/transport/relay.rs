@@ -61,6 +61,10 @@ pub struct RelayConfig {
     pub recv_per_sec: u32,
     /// 量完回显以后每个包发给几个中继（见文件头第 2 条）。
     pub fanout: usize,
+    /// 多久往中继发一个心跳 Ping：空闲太久的连接会被 NAT / 梯子悄悄掐掉。
+    pub keepalive: Duration,
+    /// 多久收不到中继的任何东西就判定这条连接死了，重连换一条。
+    pub keepalive_timeout: Duration,
 }
 
 impl Default for RelayConfig {
@@ -73,6 +77,8 @@ impl Default for RelayConfig {
             since_back: Duration::from_secs(10),
             recv_per_sec: 200,
             fanout: 3,
+            keepalive: Duration::from_secs(15),
+            keepalive_timeout: Duration::from_secs(45),
         }
     }
 }
@@ -511,6 +517,13 @@ impl Connection {
         let mut check =
             tokio::time::interval((self.cfg.echo_timeout / 4).min(Duration::from_secs(1)));
         check.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        // 心跳：定期给中继发个 Ping，空闲的连接就不会被 NAT / 梯子的空闲超时掐掉。
+        // 中继回了 Pong 才开始算「多久没消息」；老中继不会回 Pong，那就只当保活用，不做判死。
+        let mut keepalive = tokio::time::interval(self.cfg.keepalive);
+        keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        keepalive.tick().await; // 第一次立刻触发，先吃掉
+        let mut last_rx = Instant::now();
+        let mut saw_pong = false;
         loop {
             // 按顺序检查：房间列表变了先重发订阅，再发新事件。否则新房间的第一批事件可能先于订阅到达中继，
             // 收不到回显，25 秒后被误判为不健康而重连。发送排在接收前面：发送受预算限制，不会饿死接收。
@@ -540,7 +553,23 @@ impl Connection {
                 }
                 msg = source.next() => {
                     let text = match msg {
-                        Some(Ok(Message::Text(t))) => t,
+                        Some(Ok(Message::Text(t))) => {
+                            last_rx = Instant::now();
+                            t
+                        }
+                        Some(Ok(Message::Pong(_))) => {
+                            // 中继回了心跳：连接还活着
+                            last_rx = Instant::now();
+                            saw_pong = true;
+                            continue;
+                        }
+                        Some(Ok(Message::Ping(data))) => {
+                            last_rx = Instant::now();
+                            if sink.send(Message::Pong(data)).await.is_err() {
+                                return End::Reconnect { healthy };
+                            }
+                            continue;
+                        }
                         Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
                             return End::Reconnect { healthy };
                         }
@@ -593,6 +622,15 @@ impl Connection {
                     if cooling_until.is_some_and(|t| Instant::now() >= t) {
                         cooling_until = None;
                         self.set(RelayState::Ok);
+                    }
+                }
+                // 心跳：顺带看一眼这条连接是不是已经死了（梯子切换、NAT 回收都会这样）
+                _ = keepalive.tick() => {
+                    if saw_pong && last_rx.elapsed() > self.cfg.keepalive_timeout {
+                        return End::Reconnect { healthy: false };
+                    }
+                    if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        return End::Reconnect { healthy };
                     }
                 }
             }

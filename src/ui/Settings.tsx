@@ -717,6 +717,10 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                 这里的开关只影响更新下载。用全局模式（TUN）的梯子会在网络层接管所有流量，软件绕不过去，
                 请在梯子客户端里把服务器 IP 设成直连；上面的延迟是到服务器的往返时间，忽高忽低多半是梯子在绕路。
               </p>
+              <p className="v-note">
+                中继连接每 15 秒有一次心跳，空闲时也不会被 NAT 或梯子悄悄掐断；
+                如果「云端未连接」频繁出现，先把服务器 IP 加进梯子的直连规则，再看上面的延迟。
+              </p>
             </section>
           </div>
         )}

@@ -133,6 +133,21 @@ pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// 十六进制字符串 → 字节。字符不是十六进制、或长度是奇数，返回 None。
+pub fn parse_hex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for pair in b.chunks(2) {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+    }
+    Some(out)
+}
+
 /// 指纹摘要：SHA-256(公钥) 前 8 字节的 Base32，共 13 个字符。
 pub fn fingerprint(member_id: &MemberId) -> String {
     crate::base32::encode(&sha256(&[member_id])[..8], 64)

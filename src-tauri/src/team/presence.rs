@@ -22,39 +22,41 @@ pub fn watch(app: &AppHandle) {
     };
     let room = *state.team.room.lock().expect("队伍锁没有中毒");
     let node = state.node.clone();
-    let (paths, relay_ok, relay_total, rtt) = tauri::async_runtime::block_on(node.inspect(move |n| {
-        let relays = n.relay_status().unwrap_or_default();
-        // Ok 是正常连着；Cooling 是被中继限流（连接还在，只是暂时不发了）——都算连着。
-        let connected = relays
-            .iter()
-            .filter(|r| matches!(r.state, RelayState::Ok | RelayState::Cooling))
-            .count();
-        (
-            room.map(|r| n.member_paths(&r)).unwrap_or_default(),
-            connected,
-            relays.len(),
-            relays
+    let (paths, relay_ok, relay_total, rtt) =
+        tauri::async_runtime::block_on(node.inspect(move |n| {
+            let relays = n.relay_status().unwrap_or_default();
+            // Ok 是正常连着；Cooling 是被中继限流（连接还在，只是暂时不发了）——都算连着。
+            let connected = relays
                 .iter()
-                .filter_map(|r| r.echo_avg_ms)
-                .min()
-                .unwrap_or(0),
-        )
-    }))
-    .unwrap_or((Vec::new(), 0, 0, 0));
+                .filter(|r| matches!(r.state, RelayState::Ok | RelayState::Cooling))
+                .count();
+            (
+                room.map(|r| n.member_paths(&r)).unwrap_or_default(),
+                connected,
+                relays.len(),
+                relays
+                    .iter()
+                    .filter_map(|r| r.echo_avg_ms)
+                    .min()
+                    .unwrap_or(0),
+            )
+        }))
+        .unwrap_or((Vec::new(), 0, 0, 0));
 
     // 云端连接状态（三态）：
     // - 一个中继都没配（关了互联网）→ 不算断，用户自己关的不说成掉线。
     // - 连上了 → ok。
     // - 没连上：刚启动的头 8 秒一律「连接中」；之后要连续两次（10 秒）探不到才算「未连接」，
     //   一次没探到先按原来的算——重连的那几秒不该让界面来回跳。
-    let cloud = if relay_ok > 0 {
-        state.cloud_miss.store(0, Ordering::Relaxed);
-        CLOUD_OK
-    } else if relay_total == 0 {
+    let cloud = if relay_ok > 0 || relay_total == 0 {
+        // 连上了，或者一个中继都没配（关了互联网）：都不算断，用户自己关的不说成掉线。
         state.cloud_miss.store(0, Ordering::Relaxed);
         CLOUD_OK
     } else {
-        let miss = state.cloud_miss.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        let miss = state
+            .cloud_miss
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
         if state.started_at.elapsed() < CONNECT_GRACE {
             CLOUD_CONNECTING
         } else if miss >= 2 {

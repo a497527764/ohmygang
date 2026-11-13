@@ -218,13 +218,19 @@ impl RelayServer {
                 // 入站：客户端发来的 EVENT/REQ/CLOSE
                 msg = source.next() => {
                     let Some(frame) = msg else { break };
-                    let Ok(text) = frame.and_then(|m| match m {
-                        Message::Text(t) => Ok(t.to_string()),
-                        Message::Close(_) => Err(tokio_tungstenite::tungstenite::Error::ConnectionClosed),
-                        _ => Ok(String::new()),
-                    }) else { break };
-                    if text.is_empty() { continue; }
-                    self.on_client_text(conn_id, &text, &mut sink).await;
+                    match frame {
+                        Ok(Message::Text(t)) => {
+                            let text = t.to_string();
+                            if text.is_empty() { continue; }
+                            self.on_client_text(conn_id, &text, &mut sink).await;
+                        }
+                        // 心跳：回一个 Pong。客户端靠它判断这条连接还活着（梯子/NAT 会掐空闲连接）
+                        Ok(Message::Ping(data)) => {
+                            if sink.send(Message::Pong(data)).await.is_err() { break; }
+                        }
+                        Ok(Message::Close(_)) | Err(_) => break,
+                        Ok(_) => {}
+                    }
                 }
             }
         }

@@ -3,6 +3,7 @@ pub mod app_core;
 pub mod base32;
 pub mod cloud;
 pub mod crypto;
+pub mod datadir;
 pub mod emotes;
 pub mod error;
 pub mod history;
@@ -166,6 +167,8 @@ pub fn run() {
             team::commands::team_join,
             team::commands::team_cancel,
             team::commands::team_leave,
+            team::commands::team_forget,
+            team::commands::team_moderate,
             team::commands::team_dissolve,
             team::commands::team_rename,
             team::commands::profile_set,
@@ -193,12 +196,18 @@ pub fn run() {
 /// 单机多开（开发用）：环境变量 `LOLGANG_INSTANCE=2` 或 `3` 时，数据目录、凭据条目、UDP 端口都换一套；
 /// 开发版的广播同时发往这几个端口，几个实例就能在一台电脑上互相发现。
 fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
-    let mut dir = app.path().app_data_dir()?;
+    // 数据目录用产品名目录（%APPDATA%\OH-MY-GANG!），不用 Tauri 的 app_data_dir：
+    // 安装包的「删除应用数据」勾选框删的是 identifier 目录，会把身份、昵称、头像一起删光（见 datadir.rs）。
+    let mut dir = datadir::resolve(app.handle());
     if let Some(n) = dev_instance() {
         dir.push(format!("instance-{n}"));
     }
     std::fs::create_dir_all(&dir)?;
     let db = storage::open(&dir.join("gang2.db"))?;
+    // 身份表空着（数据目录被清过）→ 先从备份恢复，别变成一个全新的人。
+    if storage::identity::restore_from_backup(&db, &dir) {
+        eprintln!("身份表是空的，已从备份恢复本机身份");
+    }
     let mut settings = storage::settings::load(&db)?;
     // 一次性迁移：旧的自动字号挪到新默认 50（用户自己调过的值不动），迁完存一次。
     if let Some(px) = settings2::migrate_text_size(settings.text_size_px) {
@@ -221,6 +230,8 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         tray::reveal_main(app.handle(), &w, settings.panel_rect);
     }
     let node = start_node(app.handle(), &dir, &settings)?;
+    // 身份备份：数据库文件丢了还能恢复
+    api::backup_identity(app.handle());
     cloud::spawn_heartbeat(node.clone());
     let me = tauri::async_runtime::block_on(node.call(|core, _| core.identity().member_id))
         .ok_or("网络模块没起来")?;
@@ -297,6 +308,7 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         updates: Default::default(),
         voice,
         history,
+        dir: dir.clone(),
     });
     tray::setup(app, auto_online)?;
     api::apply_window_theme(app.handle(), &theme);

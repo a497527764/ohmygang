@@ -114,6 +114,8 @@ pub struct TeamView {
 #[serde(rename_all = "camelCase")]
 pub struct RecentTeamDto {
     pub code: String,
+    /// 队伍标识（十六进制）。右键「删除这条记录」要靠它定位本机记录。
+    pub room_id: String,
     /// 云端分配的 6 位短码（显示用）；老队伍没有。
     pub short_code: Option<String>,
     pub title: Option<String>,
@@ -140,6 +142,7 @@ pub struct RecentTeams {
 pub(super) fn recent_dto(r: &crate::app_core::RecentRoom) -> RecentTeamDto {
     RecentTeamDto {
         code: r.code.clone(),
+        room_id: crate::crypto::hex(&r.room_id),
         short_code: r.short_code.clone(),
         title: r.title.clone(),
         is_owner: r.is_owner,
@@ -287,9 +290,7 @@ pub async fn view(app: &AppHandle) -> Result<TeamView, String> {
             fingerprint: me.fingerprint.clone(),
             is_owner: false,
             is_me: true,
-            avatar: me_big
-                .clone()
-                .or_else(|| avatar_dto(&me.avatar)),
+            avatar: me_big.clone().or_else(|| avatar_dto(&me.avatar)),
             path: None,
             status: None,
             platform: None,

@@ -132,7 +132,8 @@ impl std::fmt::Display for ImportError {
 pub fn check_still(b: &[u8]) -> Result<(), ImportError> {
     if !is_webp(b) || webp_animated(b) {
         return Err(ImportError::Type);
-    }    if b.len() > STILL_MAX_BYTES {
+    }
+    if b.len() > STILL_MAX_BYTES {
         return Err(ImportError::Size);
     }
     match webp_size(b) {

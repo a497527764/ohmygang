@@ -164,9 +164,7 @@ impl Runner {
                 // 头像：始终收
                 if let Some(h) = avatar.filter(|h| super::is_hash(h)) {
                     let have = |h: &str| store.has_avatar(h);
-                    let out = self
-                        .avatars
-                        .announced(from, vec![h], have, now_ms());
+                    let out = self.avatars.announced(from, vec![h], have, now_ms());
                     self.deliver_avatars(out);
                 }
             }
@@ -193,10 +191,14 @@ impl Runner {
                 bytes,
             } => {
                 let have = |h: &str| store.has_still(h);
-                let out = self.transfer.on_chunk(from, &hash, (i, n), bytes.clone(), have, now_ms());
+                let out =
+                    self.transfer
+                        .on_chunk(from, &hash, (i, n), bytes.clone(), have, now_ms());
                 self.deliver_emotes(out);
                 let have = |h: &str| store.has_avatar(h);
-                let out = self.avatars.on_chunk(from, &hash, (i, n), bytes, have, now_ms());
+                let out = self
+                    .avatars
+                    .on_chunk(from, &hash, (i, n), bytes, have, now_ms());
                 self.deliver_avatars(out);
             }
             NetMsg::Gone(from) => {

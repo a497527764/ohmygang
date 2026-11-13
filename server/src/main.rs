@@ -212,6 +212,71 @@ mod tests {
         assert!(status4 == 200 && ok, "心跳应成功");
     }
 
+    /// 队名要存在服务器上：中继的事件缓存是内存的，服务器一重启，房主的建队事件就没了，
+    /// 新加入的人拿不到队名。名字落库，进队时再发给客户端。
+    #[tokio::test]
+    async fn team_title_survives_on_the_server() {
+        let (server, store, _addr) = test_server().await;
+        let me = hex(32);
+        let (status, v) = api::handle_json(
+            "POST",
+            "/api/team/create",
+            serde_json::to_vec(&json!({ "member_id": me, "title": "开黑小队" }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "9.9.9.9",
+        )
+        .await;
+        assert_eq!(status, 200);
+        let short = v["short_code"].as_str().unwrap().to_string();
+
+        // 换个人用短码进来，队名要跟着下发
+        let (status2, v2) = api::handle_json(
+            "POST",
+            "/api/team/join",
+            serde_json::to_vec(&json!({ "code": short }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "9.9.9.9",
+        )
+        .await;
+        assert_eq!(status2, 200);
+        assert_eq!(v2["title"].as_str(), Some("开黑小队"));
+
+        // 房主改队名，服务器上要跟着变
+        let room = v["room_id"].as_str().unwrap().to_string();
+        let (status3, _v3) = api::handle_json(
+            "POST",
+            "/api/team/rename",
+            serde_json::to_vec(&json!({ "room_id": room, "title": "开黑小队 2" }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "9.9.9.9",
+        )
+        .await;
+        assert_eq!(status3, 200);
+
+        let (status4, v4) = api::handle_json(
+            "POST",
+            "/api/team/join",
+            serde_json::to_vec(&json!({ "code": short }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "9.9.9.9",
+        )
+        .await;
+        assert_eq!(status4, 200);
+        assert_eq!(v4["title"].as_str(), Some("开黑小队 2"));
+    }
+
     #[tokio::test]
     async fn reaper_dissolves_idle_team() {
         let (server, store, _addr) = test_server().await;
@@ -224,7 +289,7 @@ mod tests {
         // 6 天前就无活动
         let old = api::now_secs() - 6 * DAY;
         store
-            .create_team("123456", &secret, &owner, &room_hex, old, &me_hex)
+            .create_team("123456", &secret, &owner, &room_hex, old, &me_hex, None)
             .unwrap();
         reap(&server, &store).await;
         assert!(

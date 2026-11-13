@@ -28,6 +28,16 @@ pub struct RenameBody {
     pub title: String,
 }
 
+/// 房主的管理事件：踢出（KICK）或拉黑（BLOCK）某个队员。
+/// `target` 是被处理的队员公钥（32 字节）；`reason` 房主可以写一句原因（可选）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModerationBody {
+    #[serde(with = "serde_bytes")]
+    pub target: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileBody {
     pub nickname: String,

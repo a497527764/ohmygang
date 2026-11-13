@@ -78,7 +78,7 @@ fn report_mic_error(e: &str) {
     static GLITCH: AtomicU32 = AtomicU32::new(0);
     if e.contains("underrun") || e.contains("overrun") {
         let n = GLITCH.fetch_add(1, Ordering::Relaxed);
-        if n % 10 == 0 {
+        if n.is_multiple_of(10) {
             eprintln!("麦克风瞬时卡顿（已自动恢复）：{e}");
         }
         return;

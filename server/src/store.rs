@@ -45,12 +45,25 @@ impl Store {
                 room_id TEXT PRIMARY KEY
             );",
         )?;
+        // 队名存服务器：中继的事件缓存是内存的，服务器一重启，队名就找不回来了。
+        // 老库补一列 title。
+        let has_title = {
+            let mut stmt = conn.prepare("PRAGMA table_info(teams)")?;
+            let cols = stmt
+                .query_map([], |r| r.get::<_, String>(1))?
+                .collect::<Result<Vec<String>, _>>()?;
+            cols.iter().any(|c| c == "title")
+        };
+        if !has_title {
+            let _ = conn.execute("ALTER TABLE teams ADD COLUMN title TEXT", []);
+        }
         Ok(Store {
             conn: Mutex::new(conn),
         })
     }
 
     /// 新建队伍：写入短码、room_secret/owner_tag、room_id，并把创建者记为第一名成员。
+    #[allow(clippy::too_many_arguments)]
     pub fn create_team(
         &self,
         short: &str,
@@ -59,12 +72,13 @@ impl Store {
         room_id_hex: &str,
         now: i64,
         creator_hex: &str,
+        title: Option<&str>,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
         conn.execute(
-            "INSERT INTO teams (short_code, room_secret, owner_tag, room_id, created_at, last_active, low_since)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
-            params![short, secret, owner_tag, room_id_hex, now, now],
+            "INSERT INTO teams (short_code, room_secret, owner_tag, room_id, created_at, last_active, low_since, title)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)",
+            params![short, secret, owner_tag, room_id_hex, now, now, title],
         )?;
         conn.execute(
             "INSERT OR REPLACE INTO members (room_id, member_hex, last_seen) VALUES (?1, ?2, ?3)",
@@ -83,17 +97,20 @@ impl Store {
             .is_some())
     }
 
-    /// 用短码取回 GT2 长码和 room_id（进队时用）。
-    pub fn team_by_short(&self, short: &str) -> rusqlite::Result<Option<(String, String)>> {
+    /// 用短码取回 GT2 长码、room_id 和队名（进队时用）。
+    pub fn team_by_short(
+        &self,
+        short: &str,
+    ) -> rusqlite::Result<Option<(String, String, Option<String>)>> {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
-        let room_id_hex: Option<String> = conn
+        let row: Option<(String, Option<String>)> = conn
             .query_row(
-                "SELECT room_id FROM teams WHERE short_code = ?1",
+                "SELECT room_id, title FROM teams WHERE short_code = ?1",
                 [short],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        let Some(room_id_hex) = room_id_hex else {
+        let Some((room_id_hex, title)) = row else {
             return Ok(None);
         };
         let secret: Vec<u8> = conn.query_row(
@@ -110,7 +127,17 @@ impl Store {
         let mut o = [0u8; 10];
         s.copy_from_slice(&secret);
         o.copy_from_slice(&owner);
-        Ok(Some((protocol::format_code(&s, &o), room_id_hex)))
+        Ok(Some((protocol::format_code(&s, &o), room_id_hex, title)))
+    }
+
+    /// 改队名（房主改名后同步过来）。
+    pub fn set_team_title(&self, room_id_hex: &str, title: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+        conn.execute(
+            "UPDATE teams SET title = ?2 WHERE room_id = ?1",
+            params![room_id_hex, title],
+        )?;
+        Ok(())
     }
 
     /// 用 room_id 反查短码（客户端重启后想拿回短码展示时用）。

@@ -63,6 +63,8 @@ pub struct TeamState {
     /// 本人头像（200×200 大图）的哈希。启动读一次、`profile_set` 改一次；
     /// `refresh_presence` 在异步命令里也会被调，只读这份缓存，不在异步线程上等节点。
     pub avatar_hash: Mutex<Option<String>>,
+    /// 当前队伍里被队长拉黑的人：他们的实时消息（语音、表情、文字）不收。
+    pub blocked: Mutex<std::collections::HashSet<MemberId>>,
 }
 
 /// 投票人：本人加上在线、没关投票的队友。

@@ -17,6 +17,10 @@ pub enum AppError {
     RoomNotJoining,
     #[error("已经在一个队伍里了，先退出再建队或进队")]
     AlreadyInTeam,
+    #[error("当前还在这个队伍里，先退出再删")]
+    StillInTeam,
+    #[error("不能对自己这么做")]
+    InvalidTarget,
     #[error("队名为空或太长，最多 64 个字符")]
     InvalidTitle,
     #[error("昵称太长，最多 32 个字符")]

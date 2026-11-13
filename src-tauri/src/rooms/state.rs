@@ -14,9 +14,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::crypto::MemberId;
-use crate::protocol::body::{self, Avatar, ProfileBody, RenameBody, RoomCreateBody};
+use crate::protocol::body::{
+    self, Avatar, ModerationBody, ProfileBody, RenameBody, RoomCreateBody,
+};
 use crate::protocol::event::{SignedEvent, kind};
 use crate::protocol::room_code::owner_tag_of;
+
+/// 32 字节公钥 → MemberId。
+fn member_of(b: &[u8]) -> Option<MemberId> {
+    <[u8; 32]>::try_from(b).ok()
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RoomState {
@@ -29,6 +36,10 @@ pub struct RoomState {
     /// 最新 Profile 报了大头像哈希（形状合法）的人；图片走分块传输，这里只存哈希。
     pub avatar_hashes: BTreeMap<MemberId, String>,
     pub dissolve_ts: Option<u64>,
+    /// 被队长踢出去的人：不在队里，但还可以再进来。
+    pub kicked: BTreeSet<MemberId>,
+    /// 被队长拉黑的人：不在队里，而且他再发进队事件也不算数（拉黑后加不进来）。
+    pub blocked: BTreeSet<MemberId>,
 }
 
 /// 同一作者同一 seq 只留 event_id 最小的一条，按 (作者, seq) 升序。
@@ -51,12 +62,44 @@ pub fn derive_room_state(owner_tag: &[u8; 10], events: &[SignedEvent]) -> RoomSt
     let mut st = RoomState::default();
     let mut last_membership: BTreeMap<MemberId, bool> = BTreeMap::new();
 
+    // 先收队长签的管理事件：被踢/被拉黑的人，后面他自己的进队事件一律不算数。
+    // 分两步是因为事件按（作者, 序号）排序，不同作者之间不是时间顺序，先收齐再判断才不会漏。
+    for ((author, _seq), e) in &by_slot {
+        if owner_tag_of(author) != *owner_tag {
+            continue;
+        }
+        let ev = &e.event;
+        match ev.kind {
+            kind::KICK => {
+                if let Ok(b) = body::decode::<ModerationBody>(&ev.body)
+                    && let Some(target) = member_of(&b.target)
+                {
+                    st.kicked.insert(target);
+                    st.blocked.remove(&target);
+                }
+            }
+            kind::BLOCK => {
+                if let Ok(b) = body::decode::<ModerationBody>(&ev.body)
+                    && let Some(target) = member_of(&b.target)
+                {
+                    st.blocked.insert(target);
+                    st.kicked.remove(&target);
+                }
+            }
+            _ => {}
+        }
+    }
+
     // BTreeMap 按 (作者, seq) 升序遍历，同一作者后面的事件覆盖前面的
     for ((author, _seq), e) in &by_slot {
         let ev = &e.event;
         let is_owner_key = owner_tag_of(author) == *owner_tag;
         match ev.kind {
             kind::JOIN => {
+                // 被踢出或被拉黑的人，进队事件不生效（拉黑后加不进来）。
+                if st.kicked.contains(author) || st.blocked.contains(author) {
+                    continue;
+                }
                 last_membership.insert(*author, true);
             }
             kind::LEAVE => {
@@ -269,5 +312,72 @@ mod tests {
         let bad = Avatar::Image(b"<svg/>".to_vec());
         let st = derive_room_state(&tag, &[profile(1, Some(preset)), profile(2, Some(bad))]);
         assert_eq!(st.avatars.get(&me), None);
+    }
+
+    fn moderate(me: &Identity, seq: u64, target: &Identity, block: bool) -> SignedEvent {
+        state(
+            me,
+            seq,
+            seq * 1000,
+            if block { kind::BLOCK } else { kind::KICK },
+            encode(&ModerationBody {
+                target: target.member_id().to_vec(),
+                reason: None,
+            }),
+        )
+    }
+
+    #[test]
+    fn owner_can_kick_a_member() {
+        let owner = person(1);
+        let bob = person(2);
+        let tag = owner_tag_of(&owner.member_id());
+        let events = vec![
+            create(&owner, 1, "开黑"),
+            state(&owner, 2, 2000, kind::JOIN, vec![]),
+            state(&bob, 1, 1500, kind::JOIN, vec![]),
+            moderate(&owner, 3, &bob, false),
+        ];
+        let st = derive_room_state(&tag, &events);
+        assert!(st.kicked.contains(&bob.member_id()));
+        assert!(!st.members.contains(&bob.member_id()));
+        assert!(st.members.contains(&owner.member_id()));
+    }
+
+    #[test]
+    fn blocked_member_cannot_join_again() {
+        let owner = person(1);
+        let bob = person(2);
+        let tag = owner_tag_of(&owner.member_id());
+        let events = vec![
+            create(&owner, 1, "开黑"),
+            state(&owner, 2, 2000, kind::JOIN, vec![]),
+            state(&bob, 1, 1500, kind::JOIN, vec![]),
+            moderate(&owner, 3, &bob, true),
+            // 拉黑之后他又发了一次进队：不算数
+            state(&bob, 2, 5000, kind::JOIN, vec![]),
+        ];
+        let st = derive_room_state(&tag, &events);
+        assert!(st.blocked.contains(&bob.member_id()));
+        assert!(!st.members.contains(&bob.member_id()));
+    }
+
+    #[test]
+    fn non_owner_cannot_kick_or_block() {
+        let owner = person(1);
+        let bob = person(2);
+        let mallory = person(3);
+        let tag = owner_tag_of(&owner.member_id());
+        let events = vec![
+            create(&owner, 1, "开黑"),
+            state(&owner, 2, 2000, kind::JOIN, vec![]),
+            state(&bob, 1, 1500, kind::JOIN, vec![]),
+            // 不是队长的人签的踢人事件：不算数
+            moderate(&mallory, 1, &bob, true),
+        ];
+        let st = derive_room_state(&tag, &events);
+        assert!(st.blocked.is_empty());
+        assert!(st.kicked.is_empty());
+        assert!(st.members.contains(&bob.member_id()));
     }
 }

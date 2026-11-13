@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use super::{PRESENCE_STALE, Seen};
 use crate::api::AppState;
-use crate::app_core::AppError;
+use crate::app_core::{AppError, CoreEvent};
 use crate::crypto::{MemberId, RoomId, hex};
 use crate::emotes::{self, net::NetMsg};
 use crate::history::{Kind, NewEntry};
@@ -18,8 +18,8 @@ use crate::protocol::live::LiveBody;
 use crate::voice::VoiceMsg;
 use crate::votes::VoteKind;
 
-/// 现在所在的队伍（加入中或已加入）、在不在队伍里、队员名字。
-type TeamNames = (Option<RoomId>, bool, Vec<(MemberId, String)>);
+/// 现在所在的队伍（加入中或已加入）、在不在队伍里、队员名字、被拉黑的人。
+type TeamNames = (Option<RoomId>, bool, Vec<(MemberId, String)>, Vec<MemberId>);
 
 /// 把队员名字交给透明窗口（信号下面的标签用），并通知控制面板刷新；告诉历史记录现在是哪个队伍。不在节点任务里等。
 pub fn refresh_names(app: &AppHandle) {
@@ -32,7 +32,7 @@ pub fn refresh_names(app: &AppHandle) {
         let names = node
             .call(|core, _| -> Result<TeamNames, AppError> {
                 let Some(team) = core.current_team()? else {
-                    return Ok((None, false, Vec::new()));
+                    return Ok((None, false, Vec::new(), Vec::new()));
                 };
                 // 「在队伍里」按加入中或已加入算（3.0.1）：只认已加入的话，单独进队等激活时
                 // 文字快捷键、面板键、说话键全没反应，看着像快捷键坏了。
@@ -50,13 +50,15 @@ pub fn refresh_names(app: &AppHandle) {
                             )
                         })
                         .collect(),
+                    core.blocked_members(&team.room_id)?,
                 ))
             })
             .await;
-        if let Some(Ok((room, active, names))) = names {
+        if let Some(Ok((room, active, names, blocked))) = names {
             // 历史记录只留现在所在的队伍：退出、被踢、解散后这里是 None，记录全删（计划 3.6）
             state.history.set_room(room);
             *state.team.room.lock().expect("队伍锁没有中毒") = room;
+            *state.team.blocked.lock().expect("拉黑名单锁没有中毒") = blocked.into_iter().collect();
             state.panel.send(PanelMsg::Names(names.clone()));
             state.overlays.send(Msg::Names(names));
             if state.team.active.swap(active, Ordering::Relaxed) != active {
@@ -74,163 +76,182 @@ pub fn on_node_event(app: &AppHandle, e: NodeEvent) {
         return;
     };
     match e {
-        NodeEvent::Live { from, body, .. } => match body {
-            LiveBody::Ping { display, x, y, id } => {
-                if crate::settings2::PING_IDS.contains(&id.as_str()) {
-                    state.history.add(NewEntry {
-                        member: Some(from),
-                        ts_ms: now_ms(),
-                        kind: Kind::Ping,
-                        text: id.clone(),
-                        voice: None,
+        NodeEvent::Live { from, body, .. } => {
+            // 被队长拉黑的人：他的实时消息一律不收（拉黑就是不想再搭理他）。
+            if state
+                .team
+                .blocked
+                .lock()
+                .expect("拉黑名单锁没有中毒")
+                .contains(&from)
+            {
+                return;
+            }
+            match body {
+                LiveBody::Ping { display, x, y, id } => {
+                    if crate::settings2::PING_IDS.contains(&id.as_str()) {
+                        state.history.add(NewEntry {
+                            member: Some(from),
+                            ts_ms: now_ms(),
+                            kind: Kind::Ping,
+                            text: id.clone(),
+                            voice: None,
+                        });
+                    }
+                    state.overlays.send(Msg::RemotePing {
+                        from,
+                        display,
+                        x,
+                        y,
+                        id,
                     });
                 }
-                state.overlays.send(Msg::RemotePing {
-                    from,
+                LiveBody::Emote {
                     display,
                     x,
                     y,
-                    id,
-                });
-            }
-            LiveBody::Emote {
-                display,
-                x,
-                y,
-                emote,
-                fx,
-            } => {
-                if emotes::is_ref_shape(&emote) && fx < emotes::FX_VARIANTS {
-                    state.history.add(NewEntry {
-                        member: Some(from),
-                        ts_ms: now_ms(),
-                        kind: Kind::Emote,
-                        text: emote.clone(),
-                        voice: None,
-                    });
-                    state.overlays.send(Msg::RemoteEmote {
-                        from,
-                        display,
-                        x,
-                        y,
-                        emote,
-                        fx,
-                    });
+                    emote,
+                    fx,
+                } => {
+                    if emotes::is_ref_shape(&emote) && fx < emotes::FX_VARIANTS {
+                        state.history.add(NewEntry {
+                            member: Some(from),
+                            ts_ms: now_ms(),
+                            kind: Kind::Emote,
+                            text: emote.clone(),
+                            voice: None,
+                        });
+                        state.overlays.send(Msg::RemoteEmote {
+                            from,
+                            display,
+                            x,
+                            y,
+                            emote,
+                            fx,
+                        });
+                    }
                 }
-            }
-            LiveBody::Text {
-                display,
-                x,
-                y,
-                text,
-            } => {
-                let on = state.settings.lock().expect("设置锁没有中毒").team_text;
-                let text = crate::team_text::sanitize(&text);
-                if on && !text.is_empty() {
-                    state.history.add(NewEntry {
-                        member: Some(from),
-                        ts_ms: now_ms(),
-                        kind: Kind::Text,
-                        text: text.clone(),
-                        voice: None,
-                    });
-                    state.overlays.send(Msg::Text {
-                        from: Some(from),
-                        display,
-                        x,
-                        y,
-                        text,
-                    });
+                LiveBody::Text {
+                    display,
+                    x,
+                    y,
+                    text,
+                } => {
+                    let on = state.settings.lock().expect("设置锁没有中毒").team_text;
+                    let text = crate::team_text::sanitize(&text);
+                    if on && !text.is_empty() {
+                        state.history.add(NewEntry {
+                            member: Some(from),
+                            ts_ms: now_ms(),
+                            kind: Kind::Text,
+                            text: text.clone(),
+                            voice: None,
+                        });
+                        state.overlays.send(Msg::Text {
+                            from: Some(from),
+                            display,
+                            x,
+                            y,
+                            text,
+                        });
+                    }
                 }
-            }
-            LiveBody::Vote { id, kind, target } => {
-                if let Some(kind) = VoteKind::from_code(kind) {
-                    state.panel.send(PanelMsg::RemoteVote {
-                        from,
-                        id,
-                        kind,
-                        target,
-                    });
+                LiveBody::Vote { id, kind, target } => {
+                    if let Some(kind) = VoteKind::from_code(kind) {
+                        state.panel.send(PanelMsg::RemoteVote {
+                            from,
+                            id,
+                            kind,
+                            target,
+                        });
+                    }
                 }
-            }
-            LiveBody::Ballot { id, yes } => {
-                state.panel.send(PanelMsg::RemoteBallot { from, id, yes })
-            }
-            LiveBody::Want { to, hash, need } => state.emote_net.send(NetMsg::Want {
-                from,
-                to,
-                hash: hex(&hash),
-                need,
-            }),
-            LiveBody::Chunk { hash, i, n, bytes } => state.emote_net.send(NetMsg::Chunk {
-                from,
-                hash: hex(&hash),
-                i,
-                n,
-                bytes,
-            }),
-            LiveBody::Presence {
-                status,
-                platform,
-                emotes: announced,
-                off,
-                avatar,
-                ..
-            } => {
-                state.emote_net.send(NetMsg::Announced {
+                LiveBody::Ballot { id, yes } => {
+                    state.panel.send(PanelMsg::RemoteBallot { from, id, yes })
+                }
+                LiveBody::Want { to, hash, need } => state.emote_net.send(NetMsg::Want {
                     from,
-                    hashes: emotes::split_announced(&announced),
+                    to,
+                    hash: hex(&hash),
+                    need,
+                }),
+                LiveBody::Chunk { hash, i, n, bytes } => state.emote_net.send(NetMsg::Chunk {
+                    from,
+                    hash: hex(&hash),
+                    i,
+                    n,
+                    bytes,
+                }),
+                LiveBody::Presence {
+                    status,
+                    platform,
+                    emotes: announced,
+                    off,
                     avatar,
-                });
-                let mut presence = state.team.presence.lock().expect("在线状态锁没有中毒");
-                let changed = presence
-                    .get(&from)
-                    .is_none_or(|s| s.status != status || s.at.elapsed() > PRESENCE_STALE);
-                presence.insert(
+                    ..
+                } => {
+                    state.emote_net.send(NetMsg::Announced {
+                        from,
+                        hashes: emotes::split_announced(&announced),
+                        avatar,
+                    });
+                    let mut presence = state.team.presence.lock().expect("在线状态锁没有中毒");
+                    let changed = presence
+                        .get(&from)
+                        .is_none_or(|s| s.status != status || s.at.elapsed() > PRESENCE_STALE);
+                    presence.insert(
+                        from,
+                        Seen {
+                            status,
+                            platform,
+                            off,
+                            at: Instant::now(),
+                        },
+                    );
+                    drop(presence);
+                    // 只在状态变了时刷新控制面板，免得每 2 秒刷一次
+                    if changed {
+                        let _ = app.emit_to("main", "team://changed", ());
+                    }
+                }
+                LiveBody::Voice {
+                    stream,
+                    first,
+                    frames,
+                    end,
+                } => state.voice.send(VoiceMsg::Remote {
                     from,
-                    Seen {
-                        status,
-                        platform,
-                        off,
-                        at: Instant::now(),
-                    },
-                );
-                drop(presence);
-                // 只在状态变了时刷新控制面板，免得每 2 秒刷一次
-                if changed {
+                    stream,
+                    first,
+                    frames: frames
+                        .into_iter()
+                        .map(serde_bytes::ByteBuf::into_vec)
+                        .collect(),
+                    end,
+                }),
+                LiveBody::Bye => {
+                    state
+                        .team
+                        .presence
+                        .lock()
+                        .expect("在线状态锁没有中毒")
+                        .remove(&from);
+                    state.emote_net.send(NetMsg::Gone(from));
+                    state.panel.send(PanelMsg::Gone(from));
+                    state.voice.send(VoiceMsg::Gone(from));
                     let _ = app.emit_to("main", "team://changed", ());
                 }
             }
-            LiveBody::Voice {
-                stream,
-                first,
-                frames,
-                end,
-            } => state.voice.send(VoiceMsg::Remote {
-                from,
-                stream,
-                first,
-                frames: frames
-                    .into_iter()
-                    .map(serde_bytes::ByteBuf::into_vec)
-                    .collect(),
-                end,
-            }),
-            LiveBody::Bye => {
-                state
-                    .team
-                    .presence
-                    .lock()
-                    .expect("在线状态锁没有中毒")
-                    .remove(&from);
-                state.emote_net.send(NetMsg::Gone(from));
-                state.panel.send(PanelMsg::Gone(from));
-                state.voice.send(VoiceMsg::Gone(from));
-                let _ = app.emit_to("main", "team://changed", ());
-            }
-        },
+        }
         NodeEvent::ProtocolMismatch { remote_proto, .. } => {
             let _ = app.emit_to("main", "team://mismatch", remote_proto);
+        }
+        NodeEvent::Core(CoreEvent::Blocked { .. }) => {
+            state.overlays.send(Msg::Toast {
+                title: "你被队长移出了队伍".into(),
+                body: "队长把你拉黑了，这个队伍你再加不进来".into(),
+            });
+            refresh_names(app);
         }
         NodeEvent::Core(_) | NodeEvent::RoomStatusChanged { .. } => refresh_names(app),
         NodeEvent::Delivered { .. } => {}

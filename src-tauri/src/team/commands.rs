@@ -54,7 +54,10 @@ pub async fn team_recent(app: AppHandle) -> Result<RecentTeams, String> {
         .map_err(|e| e.to_string())?;
     // 顺手问云端每个队伍现在几个人在线（15 分钟内报过心跳）。
     // 问不到（服务器暂时连不上）不报错：那一列显示「—」就行，别把整个列表拖死。
-    let mut ids: Vec<String> = list.iter().map(|r| crate::crypto::hex(&r.room_id)).collect();
+    let mut ids: Vec<String> = list
+        .iter()
+        .map(|r| crate::crypto::hex(&r.room_id))
+        .collect();
     if let Some(r) = current {
         ids.push(crate::crypto::hex(&r));
     }
@@ -68,7 +71,10 @@ pub async fn team_recent(app: AppHandle) -> Result<RecentTeams, String> {
         })
         .collect();
     let current_online = current.and_then(|r| online.get(&crate::crypto::hex(&r)).copied());
-    Ok(RecentTeams { rooms, current_online })
+    Ok(RecentTeams {
+        rooms,
+        current_online,
+    })
 }
 
 /// 启动自动回归：当时没在队里、最近一个队伍不是已解散的，就重新 join 它。
@@ -103,7 +109,7 @@ pub async fn team_create(app: AppHandle, title: String) -> Result<TeamView, Stri
         .call(|core, _| crate::crypto::hex(&core.identity().member_id))
         .await
         .ok_or("网络模块停了")?;
-    let created = crate::cloud::team_create(&member_hex).await?;
+    let created = crate::cloud::team_create(&member_hex, &title).await?;
     let (code, short) = (created.code, created.short_code);
     let view = act(&app, move |core, out| {
         let c = core.create_room_with_code(&code, &title, now_ms())?;
@@ -119,11 +125,15 @@ pub async fn team_create(app: AppHandle, title: String) -> Result<TeamView, Stri
 /// 进队：输入 6 位短码就向云端换 GT2 长码；GT2 长码直接用（兼容存量队伍）。
 #[tauri::command]
 pub async fn team_join(app: AppHandle, code: String) -> Result<TeamView, String> {
-    let (gt2, short) = resolve_code(code).await?;
+    let (gt2, short, cloud_title) = resolve_code(code).await?;
     let view = act(&app, move |core, out| {
         let (joined, written) = core.join_room(&gt2, now_ms())?;
         if let Some(s) = short {
             core.set_short_code(&joined.room_id, &s)?;
+        }
+        // 服务器上存的队名：房主的建队事件收不到时（中继重启过）用它兜底。
+        if let Some(t) = cloud_title {
+            core.set_local_title(&joined.room_id, &t)?;
         }
         // 自己的入队事件马上发出去：队友在线的话几秒内就能看到我
         out.broadcast(joined.room_id, written);
@@ -134,11 +144,48 @@ pub async fn team_join(app: AppHandle, code: String) -> Result<TeamView, String>
     Ok(view)
 }
 
-/// 6 位短码 → 向云端换 GT2 长码；GT2 长码原样返回。
-async fn resolve_code(input: String) -> Result<(String, Option<String>), String> {
+/// 房主把某个队员踢出队伍（block=false）或拉黑（block=true）。
+/// 拉黑之后这个人再发进队事件也不算数（所有成员都按房主的事件推导成员名单）。
+#[tauri::command]
+pub async fn team_moderate(
+    app: AppHandle,
+    member_id: String,
+    block: bool,
+) -> Result<TeamView, String> {
+    let bytes = crate::crypto::parse_hex(&member_id).ok_or("队员标识不对")?;
+    let target: crate::crypto::MemberId =
+        bytes.try_into().map_err(|_| "队员标识不对".to_string())?;
+    let view = act(&app, move |core, out| {
+        let written = core.moderate_member(target, block, now_ms())?;
+        if let Some(room) = core.current_team()?.map(|t| t.room_id) {
+            out.broadcast(room, written);
+        }
+        Ok(())
+    })
+    .await?;
+    refresh_names(&app);
+    Ok(view)
+}
+
+/// 从本机历史里删掉一个队伍（主页「加入过的队伍」右键 → 删除这条记录）。
+/// 只删本机记录：不写事件、不影响队友，队伍本身还在，别人照样能用队伍码进来。
+#[tauri::command]
+pub async fn team_forget(app: AppHandle, room_id: String) -> Result<RecentTeams, String> {
+    let node = app.state::<AppState>().node.clone();
+    let bytes = crate::crypto::parse_hex(&room_id).ok_or("队伍标识不对")?;
+    let room: crate::crypto::RoomId = bytes.try_into().map_err(|_| "队伍标识不对".to_string())?;
+    node.call(move |core, _| core.forget_room(&room))
+        .await
+        .ok_or("网络模块停了")?
+        .map_err(|e| e.to_string())?;
+    team_recent(app).await
+}
+
+/// 6 位短码 → 向云端换 GT2 长码和队名；GT2 长码原样返回。
+async fn resolve_code(input: String) -> Result<(String, Option<String>, Option<String>), String> {
     let input = input.trim().to_string();
     if input.to_ascii_uppercase().starts_with("GT2") {
-        return Ok((input, None));
+        return Ok((input, None, None));
     }
     let normalized: String = input
         .chars()
@@ -147,7 +194,7 @@ async fn resolve_code(input: String) -> Result<(String, Option<String>), String>
         .collect();
     if normalized.chars().count() == 6 {
         let joined = crate::cloud::team_join(&normalized).await?;
-        Ok((joined.code, Some(normalized)))
+        Ok((joined.code, Some(normalized), joined.title))
     } else {
         Err("队伍码应为 6 位字母数字（或 GT2- 开头的长码）".to_string())
     }
@@ -252,5 +299,6 @@ pub async fn profile_set(
     }
     refresh_names(&app);
     refresh_presence(&app);
+    crate::api::backup_identity(&app);
     view(&app).await
 }

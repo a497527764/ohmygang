@@ -24,6 +24,10 @@ pub mod kind {
     pub const PROFILE: u16 = 4;
     pub const RENAME: u16 = 5;
     pub const DISSOLVE: u16 = 7;
+    /// 房主把某个队员踢出队伍（0.2.7）。只有队长签的才算数。
+    pub const KICK: u16 = 20;
+    /// 房主把某个队员拉黑（0.2.7）：踢出之后，他再进来也不算数。
+    pub const BLOCK: u16 = 21;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

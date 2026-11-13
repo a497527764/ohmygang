@@ -28,12 +28,7 @@ const EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 fn build_updater(app: &AppHandle) -> Result<Updater, String> {
     let direct = app
         .try_state::<AppState>()
-        .map(|s| {
-            s.settings
-                .lock()
-                .expect("设置锁没有中毒")
-                .net_direct
-        })
+        .map(|s| s.settings.lock().expect("设置锁没有中毒").net_direct)
         .unwrap_or(true);
     let mut b = app.updater_builder();
     if direct {

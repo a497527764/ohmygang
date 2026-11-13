@@ -179,10 +179,13 @@ pub fn all_events(conn: &Connection, room: &RoomId) -> AppResult<Vec<SignedEvent
 pub fn apply_state(conn: &Connection, room: &RoomId) -> AppResult<RoomState> {
     let row = get(conn, room)?;
     let st = derive_room_state(&row.owner_tag, &all_events(conn, room)?);
+    // 队名：优先用推导结果（房主的建队/改名事件）。推导不出来时保留本地已有的名字——
+    // 中继的事件缓存是内存的，服务器重启后新加入的人拿不到房主的建队事件，名字是从服务器取的。
+    let title = st.title.clone().or(row.title.clone());
     room_store::update_cache(
         conn,
         room,
-        st.title.as_deref(),
+        title.as_deref(),
         st.owner.as_ref(),
         st.dissolve_ts,
     )?;
@@ -191,7 +194,14 @@ pub fn apply_state(conn: &Connection, room: &RoomId) -> AppResult<RoomState> {
         .iter()
         .map(|(m, a)| (*m, body::encode(a)))
         .collect();
-    room_store::set_members(conn, room, &st.members, &st.nicknames, &avatars, &st.avatar_hashes)?;
+    room_store::set_members(
+        conn,
+        room,
+        &st.members,
+        &st.nicknames,
+        &avatars,
+        &st.avatar_hashes,
+    )?;
     if st.dissolve_ts.is_some() && matches!(row.status, RoomStatus::Joining | RoomStatus::Active) {
         room_store::set_status(conn, room, RoomStatus::Dissolved)?;
     }
@@ -205,6 +215,20 @@ pub fn summary(me: &MemberId, row: &RoomRow) -> RoomSummary {
         status: row.status,
         is_owner: owner_tag_of(me) == row.owner_tag,
     }
+}
+
+/// 队伍里被队长拉黑的人（他们的实时消息也不再收）。
+pub fn blocked_members(conn: &Connection, room: &RoomId) -> AppResult<Vec<MemberId>> {
+    let row = get(conn, room)?;
+    let st = derive_room_state(&row.owner_tag, &all_events(conn, room)?);
+    Ok(st.blocked.into_iter().collect())
+}
+
+/// 这个人在这个队伍里被队长拉黑了吗（拉黑的人进队事件不生效）。
+pub fn is_blocked(conn: &Connection, room: &RoomId, who: &MemberId) -> AppResult<bool> {
+    let row = get(conn, room)?;
+    let st = derive_room_state(&row.owner_tag, &all_events(conn, room)?);
+    Ok(st.blocked.contains(who))
 }
 
 /// 队伍里出现过的所有人（含已退出的）。

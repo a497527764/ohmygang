@@ -95,7 +95,11 @@ fn only_one_team_at_a_time() {
     a.leave_room(&created.summary.room_id, 3000).unwrap();
     assert!(a.current_team().unwrap().is_none());
     let (joined, _) = a.join_room(&other_code, 4000).unwrap();
-    assert_eq!(joined.status, RoomStatus::Active, "进队即入队，不再停在加入中");
+    assert_eq!(
+        joined.status,
+        RoomStatus::Active,
+        "进队即入队，不再停在加入中"
+    );
     assert_eq!(
         a.current_team().unwrap().map(|t| t.room_id),
         Some(joined.room_id)
@@ -115,7 +119,10 @@ fn join_parses_code_and_enters_the_team_right_away() {
     assert_eq!(s.room_id, created.summary.room_id);
     assert_eq!(s.status, RoomStatus::Active, "进队成功就直接是队伍成员");
     assert!(!s.is_owner);
-    assert!(!b.owner_known(&s.room_id).unwrap(), "还没拿到建队事件，等同步补上");
+    assert!(
+        !b.owner_known(&s.room_id).unwrap(),
+        "还没拿到建队事件，等同步补上"
+    );
     assert!(
         written.iter().any(|e| e.event.kind == kind::JOIN),
         "进队要写自己的入队事件"
@@ -181,7 +188,9 @@ fn pending_joins_from_old_versions_are_activated_on_startup() {
 fn profile_reaches_teammates_with_avatar() {
     let (mut a, mut b, room) = pair();
     let avatar = Avatar::Preset { icon: 5, color: 3 };
-    let written = b.set_profile("乙乙", Some(avatar.clone()), None, 5000).unwrap();
+    let written = b
+        .set_profile("乙乙", Some(avatar.clone()), None, 5000)
+        .unwrap();
     assert_eq!(written.len(), 1);
     a.ingest_events(&room, &written).unwrap();
     let bm = a
