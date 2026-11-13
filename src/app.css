@@ -399,6 +399,12 @@ input, select, textarea { font: inherit; color: inherit; }
   font-weight: 700;
 }
 
+/* 队伍码已过期：云端把这个码回收了，分享出去别人进不来 */
+.v-chip.stale {
+  border-color: rgba(255, 46, 99, 0.5);
+  color: var(--pink);
+}
+
 .v-squad-foot {
   display: flex;
   align-items: center;

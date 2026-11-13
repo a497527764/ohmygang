@@ -214,6 +214,8 @@ export interface RecentTeam {
   members: number;
   /** 云端统计的现在在线人数（15 分钟内报过心跳）；问不到云端时是 null。 */
   online: number | null;
+  /** 队伍码已被云端回收（到期没人用）：这个码分享出去别人进不来了。 */
+  codeExpired: boolean;
 }
 /** 历史队伍列表 + 当前队伍的在线人数。 */
 export interface RecentTeams {

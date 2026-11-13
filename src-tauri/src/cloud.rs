@@ -88,10 +88,18 @@ pub async fn team_heartbeat(room_id_hex: &str, member_id_hex: &str) -> Result<()
     Ok(())
 }
 
+/// 一批队伍的在线人数和短码状态。
+#[derive(Clone, Debug, Default)]
+pub struct TeamStats {
+    /// room_id → 在线人数（15 分钟内报过心跳）。
+    pub online: std::collections::HashMap<String, usize>,
+    /// room_id → 短码。`Some` 是还能用的短码，`None` 表示这个房间的码已经没了
+    /// （到期待回收或队伍已被解散）——客户端要据此提示「队伍码已过期」。
+    pub codes: std::collections::HashMap<String, Option<String>>,
+}
+
 /// 一批队伍现在各有多少人在线（15 分钟内报过心跳）。给主页「加入过的队伍」显示 在线/总数。
-pub async fn team_stats(
-    room_ids: &[String],
-) -> Result<std::collections::HashMap<String, usize>, String> {
+pub async fn team_stats(room_ids: &[String]) -> Result<TeamStats, String> {
     let v = post_json_with(
         "/api/team/stats",
         &json!({ "room_ids": room_ids }),
@@ -101,10 +109,17 @@ pub async fn team_stats(
     let Some(map) = v.get("stats").and_then(|s| s.as_object()) else {
         return Err("云端响应格式不对".to_string());
     };
-    Ok(map
-        .into_iter()
+    let online = map
+        .iter()
         .filter_map(|(k, x)| x.as_u64().map(|n| (k.clone(), n as usize)))
-        .collect())
+        .collect();
+    let mut codes = std::collections::HashMap::new();
+    if let Some(obj) = v.get("codes").and_then(|c| c.as_object()) {
+        for (k, val) in obj {
+            codes.insert(k.clone(), val.as_str().map(|s| s.to_string()));
+        }
+    }
+    Ok(TeamStats { online, codes })
 }
 
 /// 给所有活跃队伍报一次心跳。

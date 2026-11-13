@@ -128,6 +128,8 @@ pub struct RecentTeamDto {
     pub members: usize,
     /// 云端统计的现在在线人数（15 分钟内报过心跳）；问不到云端时是 None，前端显示「—」。
     pub online: Option<usize>,
+    /// 短码已经被云端回收了（到期没人用）：这个码分享出去别人也进不来了。
+    pub code_expired: bool,
 }
 
 /// 主页历史队伍列表 + 当前队伍的在线人数（云端查的）。
@@ -156,6 +158,8 @@ pub(super) fn recent_dto(r: &crate::app_core::RecentRoom) -> RecentTeamDto {
         members: r.members,
         // 在线数由命令层问完云端再填（recent_dto 拿不到网络）
         online: None,
+        // 短码有没有过期也是问完云端才知道
+        code_expired: false,
     }
 }
 

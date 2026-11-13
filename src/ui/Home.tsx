@@ -197,6 +197,7 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
         members: view?.members.length ?? 0,
         status: team.status,
         current: true,
+        codeExpired: false,
       }
     : null;
   const history: (RecentTeam & { current: boolean })[] = [
@@ -439,6 +440,14 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
                       <b>{r.title ?? "队伍"}</b>
                       <span className="v-recent-code">{codeLabel(r)}</span>
                       {r.isOwner && <span className="v-chip">队长</span>}
+                      {r.codeExpired && (
+                        <span
+                          className="v-chip stale"
+                          title="这个队伍码已经被云端回收了（到期没人用），分享出去别人进不来。点一下还是能进——本地还留着完整邀请码。"
+                        >
+                          码已过期
+                        </span>
+                      )}
                     </span>
                     <span className="v-recent-num" title="在线 / 总人数">{r.online ?? "—"}/{r.members}</span>
                     <span className="v-recent-go"><Glyph name="chevron" size={16} /></span>

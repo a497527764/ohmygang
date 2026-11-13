@@ -51,7 +51,7 @@ pub async fn team_recent(app: AppHandle) -> Result<RecentTeams, String> {
         .await
         .ok_or("网络模块停了")?
         .map_err(|e| e.to_string())?;
-    // 顺手问云端每个队伍现在几个人在线（15 分钟内报过心跳）。
+    // 顺手问云端每个队伍现在几个人在线（15 分钟内报过心跳），以及短码还在不在。
     // 问不到（服务器暂时连不上）不报错：那一列显示「—」就行，别把整个列表拖死。
     let mut ids: Vec<String> = list
         .iter()
@@ -60,16 +60,25 @@ pub async fn team_recent(app: AppHandle) -> Result<RecentTeams, String> {
     if let Some(r) = current {
         ids.push(crate::crypto::hex(&r));
     }
-    let online = crate::cloud::team_stats(&ids).await.unwrap_or_default();
+    let stats = crate::cloud::team_stats(&ids).await.ok();
+    let online = stats.as_ref().map(|s| &s.online);
+    let codes = stats.as_ref().map(|s| &s.codes);
     let rooms = list
         .iter()
         .map(|r| {
             let mut dto = recent_dto(r);
-            dto.online = online.get(&crate::crypto::hex(&r.room_id)).copied();
+            let key = crate::crypto::hex(&r.room_id);
+            dto.online = online.and_then(|m| m.get(&key).copied());
+            // 本地存着短码，云端却说这房间的码已经没了 → 码到期被回收了。
+            // 提前告诉用户，别让他拿着一个别人已经进不来的码去分享。
+            if dto.short_code.is_some() && codes.and_then(|m| m.get(&key)) == Some(&None) {
+                dto.code_expired = true;
+            }
             dto
         })
         .collect();
-    let current_online = current.and_then(|r| online.get(&crate::crypto::hex(&r)).copied());
+    let current_online =
+        current.and_then(|r| online.and_then(|m| m.get(&crate::crypto::hex(&r))).copied());
     Ok(RecentTeams {
         rooms,
         current_online,
