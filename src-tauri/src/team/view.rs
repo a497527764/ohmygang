@@ -126,6 +126,16 @@ pub struct RecentTeamDto {
     pub online: Option<usize>,
 }
 
+/// 主页历史队伍列表 + 当前队伍的在线人数（云端查的）。
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentTeams {
+    /// 加入过的队伍（不含当前队伍）。
+    pub rooms: Vec<RecentTeamDto>,
+    /// 当前队伍现在几个人在线；问不到云端时是 None，前端显示「—」。
+    pub current_online: Option<usize>,
+}
+
 /// 主页历史队伍列表：明文队伍码只在内存和这一层出现，落盘的仍是密文。
 pub(super) fn recent_dto(r: &crate::app_core::RecentRoom) -> RecentTeamDto {
     RecentTeamDto {

@@ -81,13 +81,30 @@ impl Core {
     pub fn open(conn: Connection, keystore: &dyn KeyStore) -> AppResult<Self> {
         let master = keystore.master_key()?;
         let (me, view) = identity::bootstrap(&conn, &master)?;
-        Ok(Self {
+        let mut core = Self {
             conn,
             me,
             view,
             master,
             holdings_cache: RefCell::default(),
-        })
+        };
+        // 旧版本加的队停在「加入中」（要等同伴在线才转 Active）。现在进队就是进队，
+        // 启动时把还停着的老队伍补上入队事件、直接转成在队里。
+        core.activate_pending_joins(crate::node::now_ms())?;
+        Ok(core)
+    }
+
+    /// 把还停在「加入中」的队伍转成在队里，补写本人的入队事件。
+    pub fn activate_pending_joins(&mut self, now_ms: u64) -> AppResult<()> {
+        let pending: Vec<RoomId> = room_store::list_rooms(&self.conn)?
+            .into_iter()
+            .filter(|r| r.status == RoomStatus::Joining)
+            .map(|r| r.room_id)
+            .collect();
+        for room in pending {
+            self.activate(&room, now_ms)?;
+        }
+        Ok(())
     }
 
     pub fn identity(&self) -> &IdentityView {
@@ -198,13 +215,19 @@ impl Core {
         })
     }
 
-    pub fn join_room(&mut self, code: &str, now_ms: u64) -> AppResult<RoomSummary> {
+    /// 进队：写一条 Joining 状态的队伍记录，紧接着就激活（写自己的入队事件、转 Active）。
+    /// 不等同伴在线——进队码对得上就算进队成功，队友的成员信息等事件同步过来再补上。
+    pub fn join_room(&mut self, code: &str, now_ms: u64) -> AppResult<(RoomSummary, Vec<SignedEvent>)> {
         self.require_no_team()?;
-        let tx = self.conn.transaction()?;
-        let room = rooms::join_room(&tx, &self.master, code, now_ms)?;
-        let summary = rooms::summary(&self.view.member_id, &rooms::get(&tx, &room)?);
-        tx.commit()?;
-        Ok(summary)
+        let room = {
+            let tx = self.conn.transaction()?;
+            let room = rooms::join_room(&tx, &self.master, code, now_ms)?;
+            tx.commit()?;
+            room
+        };
+        let written = self.activate(&room, now_ms)?;
+        let summary = self.summary(&room)?;
+        Ok((summary, written))
     }
 
     pub fn summary(&self, room: &RoomId) -> AppResult<RoomSummary> {

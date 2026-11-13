@@ -189,7 +189,11 @@ async fn pair(da: &Path, db: &Path, relay: &str) -> (TestNode, TestNode, RoomId)
     join(&b, &code).await;
     assert!(
         eventually(&b, status_is(room, RoomStatus::Active)).await,
-        "乙应从 Joining 变成 Active"
+        "乙进队后就是 Active"
+    );
+    assert!(
+        eventually(&b, in_room(room, 2)).await,
+        "乙应补齐甲的成员信息"
     );
     assert!(eventually(&a, in_room(room, 2)).await, "甲应看到乙进队");
     (a, b, room)

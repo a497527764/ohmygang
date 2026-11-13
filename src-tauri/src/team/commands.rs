@@ -2,7 +2,7 @@
 
 use tauri::{AppHandle, Manager};
 
-use super::view::{AvatarInput, RecentTeamDto, TeamView, recent_dto, unbase64, view};
+use super::view::{AvatarInput, RecentTeams, TeamView, recent_dto, unbase64, view};
 use super::{refresh_names, refresh_presence};
 use crate::api::AppState;
 use crate::app_core::{AppError, Core};
@@ -39,25 +39,36 @@ pub async fn team_view(app: AppHandle) -> Result<TeamView, String> {
 
 /// 主页「加入过的队伍」：按最近活跃倒序，不含当前队伍和已解散的。点击一行直接 `team_join` 它的 code。
 #[tauri::command]
-pub async fn team_recent(app: AppHandle) -> Result<Vec<RecentTeamDto>, String> {
+pub async fn team_recent(app: AppHandle) -> Result<RecentTeams, String> {
     let node = app.state::<AppState>().node.clone();
     let list = node
         .call(|core, _| core.recent_rooms())
         .await
         .ok_or("网络模块停了")?
         .map_err(|e| e.to_string())?;
+    // 当前队伍：主页第一行就是它，在线人数也从云端问。
+    let current: Option<crate::crypto::RoomId> = node
+        .call(|core, _| core.current_team().map(|t| t.map(|s| s.room_id)))
+        .await
+        .ok_or("网络模块停了")?
+        .map_err(|e| e.to_string())?;
     // 顺手问云端每个队伍现在几个人在线（15 分钟内报过心跳）。
     // 问不到（服务器暂时连不上）不报错：那一列显示「—」就行，别把整个列表拖死。
-    let room_ids: Vec<String> = list.iter().map(|r| crate::crypto::hex(&r.room_id)).collect();
-    let online = crate::cloud::team_stats(&room_ids).await.unwrap_or_default();
-    Ok(list
+    let mut ids: Vec<String> = list.iter().map(|r| crate::crypto::hex(&r.room_id)).collect();
+    if let Some(r) = current {
+        ids.push(crate::crypto::hex(&r));
+    }
+    let online = crate::cloud::team_stats(&ids).await.unwrap_or_default();
+    let rooms = list
         .iter()
         .map(|r| {
             let mut dto = recent_dto(r);
             dto.online = online.get(&crate::crypto::hex(&r.room_id)).copied();
             dto
         })
-        .collect())
+        .collect();
+    let current_online = current.and_then(|r| online.get(&crate::crypto::hex(&r)).copied());
+    Ok(RecentTeams { rooms, current_online })
 }
 
 /// 启动自动回归：当时没在队里、最近一个队伍不是已解散的，就重新 join 它。
@@ -66,14 +77,15 @@ pub async fn rejoin_last(app: &AppHandle) {
     let node = app.state::<AppState>().node.clone();
     let joined = node
         .call(
-            |core: &mut Core, _: &mut Outbox| -> Result<bool, AppError> {
+            |core: &mut Core, out: &mut Outbox| -> Result<bool, AppError> {
                 if core.current_team()?.is_some() {
                     return Ok(false);
                 }
                 let Some(last) = core.recent_rooms()?.into_iter().next() else {
                     return Ok(false);
                 };
-                core.join_room(&last.code, now_ms())?;
+                let (joined, written) = core.join_room(&last.code, now_ms())?;
+                out.broadcast(joined.room_id, written);
                 Ok(true)
             },
         )
@@ -108,11 +120,13 @@ pub async fn team_create(app: AppHandle, title: String) -> Result<TeamView, Stri
 #[tauri::command]
 pub async fn team_join(app: AppHandle, code: String) -> Result<TeamView, String> {
     let (gt2, short) = resolve_code(code).await?;
-    let view = act(&app, move |core, _| {
-        let joined = core.join_room(&gt2, now_ms())?;
+    let view = act(&app, move |core, out| {
+        let (joined, written) = core.join_room(&gt2, now_ms())?;
         if let Some(s) = short {
             core.set_short_code(&joined.room_id, &s)?;
         }
+        // 自己的入队事件马上发出去：队友在线的话几秒内就能看到我
+        out.broadcast(joined.room_id, written);
         Ok(())
     })
     .await?;

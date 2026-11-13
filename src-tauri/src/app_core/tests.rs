@@ -24,10 +24,9 @@ fn pair() -> (Core, Core, RoomId) {
     let room = created.summary.room_id;
     let mut b = new_core();
     b.set_profile("乙", None, None, 2).unwrap();
-    b.join_room(&created.code, 2000).unwrap();
+    let (_, written) = b.join_room(&created.code, 2000).unwrap();
     b.ingest_events(&room, &a.room_events(&room).unwrap())
         .unwrap();
-    let written = b.activate(&room, 3000).unwrap();
     a.ingest_events(&room, &written).unwrap();
     (a, b, room)
 }
@@ -95,8 +94,8 @@ fn only_one_team_at_a_time() {
     // 退出以后就能进别的队
     a.leave_room(&created.summary.room_id, 3000).unwrap();
     assert!(a.current_team().unwrap().is_none());
-    let joined = a.join_room(&other_code, 4000).unwrap();
-    assert_eq!(joined.status, RoomStatus::Joining);
+    let (joined, _) = a.join_room(&other_code, 4000).unwrap();
+    assert_eq!(joined.status, RoomStatus::Active, "进队即入队，不再停在加入中");
     assert_eq!(
         a.current_team().unwrap().map(|t| t.room_id),
         Some(joined.room_id)
@@ -104,7 +103,7 @@ fn only_one_team_at_a_time() {
 }
 
 #[test]
-fn join_parses_code_and_waits_for_sync() {
+fn join_parses_code_and_enters_the_team_right_away() {
     let mut a = new_core();
     let created = a.create_room("开黑", 1000).unwrap();
     let mut b = new_core();
@@ -112,15 +111,19 @@ fn join_parses_code_and_waits_for_sync() {
         b.join_room("GT2-坏码", 1),
         Err(AppError::InvalidRoomCode(_))
     ));
-    let s = b.join_room(&created.code, 2000).unwrap();
+    let (s, written) = b.join_room(&created.code, 2000).unwrap();
     assert_eq!(s.room_id, created.summary.room_id);
-    assert_eq!(s.status, RoomStatus::Joining);
+    assert_eq!(s.status, RoomStatus::Active, "进队成功就直接是队伍成员");
     assert!(!s.is_owner);
-    assert!(!b.owner_known(&s.room_id).unwrap());
+    assert!(!b.owner_known(&s.room_id).unwrap(), "还没拿到建队事件，等同步补上");
+    assert!(
+        written.iter().any(|e| e.event.kind == kind::JOIN),
+        "进队要写自己的入队事件"
+    );
 }
 
 #[test]
-fn joining_member_catches_up_then_activates() {
+fn joining_member_catches_up_and_sees_the_owner() {
     let mut a = new_core();
     a.set_profile("队长", None, None, 1).unwrap();
     let created = a.create_room("开黑", 1000).unwrap();
@@ -142,20 +145,36 @@ fn joining_member_catches_up_then_activates() {
         &[a_vector]
     ));
 
-    let written = b.activate(&room, 4000).unwrap();
-    assert_eq!(
-        written.iter().map(|e| e.event.kind).collect::<Vec<_>>(),
-        vec![kind::JOIN, kind::PROFILE]
-    );
     assert_eq!(b.summary(&room).unwrap().status, RoomStatus::Active);
     assert!(
         b.activate(&room, 5000).unwrap().is_empty(),
         "已经是 Active 时不再重复写"
     );
 
-    a.ingest_events(&room, &written).unwrap();
+    a.ingest_events(&room, &b.room_events(&room).unwrap())
+        .unwrap();
     assert!(in_room(&a, &room, &b.identity().member_id));
     assert_eq!(a.members_in(&room).unwrap().len(), 2);
+}
+
+#[test]
+fn pending_joins_from_old_versions_are_activated_on_startup() {
+    let mut a = new_core();
+    let created = a.create_room("开黑", 1000).unwrap();
+    let room = created.summary.room_id;
+    // 模拟旧版本：加队后一直停在「加入中」
+    {
+        let tx = a.conn.transaction().unwrap();
+        crate::storage::rooms::set_status(&tx, &room, RoomStatus::Joining).unwrap();
+        tx.commit().unwrap();
+    }
+    assert_eq!(a.summary(&room).unwrap().status, RoomStatus::Joining);
+    a.activate_pending_joins(2000).unwrap();
+    assert_eq!(
+        a.summary(&room).unwrap().status,
+        RoomStatus::Active,
+        "启动时把老队伍补成在队里"
+    );
 }
 
 #[test]
@@ -193,10 +212,13 @@ fn events_in_any_order_give_the_same_team() {
     c.join_room(&a.room_code(&room).unwrap(), 1).unwrap();
     events.reverse();
     c.ingest_events(&room, &events).unwrap();
+    let c_id = c.identity().member_id;
     let names = |core: &Core| {
         core.list_members(&room)
             .unwrap()
             .into_iter()
+            // 丙自己进队时也写了入队事件，比的是「别人看到的样子」
+            .filter(|m| m.member_id != c_id)
             .map(|m| (m.member_id, m.nickname, m.in_room))
             .collect::<Vec<_>>()
     };
@@ -267,30 +289,33 @@ fn leaving_and_rejoining_restores_membership() {
     assert_eq!(b.summary(&room).unwrap().status, RoomStatus::Left);
     a.ingest_events(&room, &left).unwrap();
     assert!(!in_room(&a, &room, &me));
-    b.join_room(&a.room_code(&room).unwrap(), 6000).unwrap();
+    let (_, back) = b.join_room(&a.room_code(&room).unwrap(), 6000).unwrap();
     b.ingest_events(&room, &a.room_events(&room).unwrap())
         .unwrap();
-    let back = b.activate(&room, 7000).unwrap();
     a.ingest_events(&room, &back).unwrap();
     assert!(in_room(&a, &room, &me));
+    assert_eq!(b.summary(&room).unwrap().status, RoomStatus::Active);
 }
 
 #[test]
-fn cancelling_a_fresh_join_deletes_the_team_and_a_rejoin_goes_back_to_left() {
+fn cancelling_only_works_while_still_joining() {
     let (a, mut b, room) = pair();
     let mut c = new_core();
+    // 进队现在直接成功，「加入中」这个状态只可能出现在写事件失败的时候
     c.join_room(&a.room_code(&room).unwrap(), 1).unwrap();
-    c.cancel_join(&room).unwrap();
-    assert!(matches!(c.summary(&room), Err(AppError::RoomNotFound)));
+    assert_eq!(c.summary(&room).unwrap().status, RoomStatus::Active);
+    assert!(matches!(
+        c.cancel_join(&room),
+        Err(AppError::RoomNotJoining)
+    ));
 
     b.leave_room(&room, 5000).unwrap();
     b.join_room(&a.room_code(&room).unwrap(), 6000).unwrap();
-    b.cancel_join(&room).unwrap();
-    assert_eq!(b.summary(&room).unwrap().status, RoomStatus::Left);
-    assert!(matches!(
-        b.cancel_join(&room),
-        Err(AppError::RoomNotJoining)
-    ));
+    assert_eq!(
+        b.summary(&room).unwrap().status,
+        RoomStatus::Active,
+        "重新进队也是直接进队"
+    );
 }
 
 #[test]
@@ -407,6 +432,10 @@ fn cached_holdings_follow_every_event_write() {
     c.ingest_events(&room, &a.room_events(&room).unwrap())
         .unwrap();
     assert!(total(&c, &room) > 0);
-    c.cancel_join(&room).unwrap();
+    {
+        let tx = c.conn.transaction().unwrap();
+        crate::storage::rooms::delete_room(&tx, &room).unwrap();
+        tx.commit().unwrap();
+    }
     assert_eq!(total(&c, &room), 0, "整个队伍删掉以后不再用旧的缓存");
 }

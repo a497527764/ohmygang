@@ -43,8 +43,8 @@ export default function App() {
     readSettings().then((s) => { latest.current = s; setSettings(s); }, (e) => setError(String(e)));
     getStatus().then(setStatus, (e) => setError(String(e)));
     const off = onEnabled((on) => setStatus((s) => (s ? { ...s, enabled: on } : s)));
-    // 云端服务器可达性：连不上时主页电源区显示红色「未连接」
-    const offCloud = onCloud((ok) => setStatus((s) => (s ? { ...s, cloud: ok } : s)));
+    // 云端服务器连接状态：connecting（刚启动）/ ok / down（主页显示红色「未连接」）
+    const offCloud = onCloud((cloudState) => setStatus((s) => (s ? { ...s, cloudState } : s)));
     const offNav = onNavigate((p) => {
       const to = NAV_FALLBACK[p];
       if (to) { setPage(to.page); setTab(to.tab); }

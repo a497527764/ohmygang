@@ -48,6 +48,12 @@ const UPDATE_TEXT: Record<UpdateView["phase"], string> = {
   idle: "", checking: "检查中", upToDate: "最新", available: "有新版本",
   downloading: "下载中", installing: "安装中", failed: "失败",
 };
+/** 云端连接状态的说法（和主页电源区一致）。 */
+const CLOUD_TEXT: Record<Status["cloudState"], string> = {
+  connecting: "连接中",
+  ok: "已连接",
+  down: "未连接",
+};
 
 function IconStylePick({ value, onChange }: { value: IconStyle; onChange: (v: IconStyle) => void }) {
   const options: { value: IconStyle; label: string; sub: string }[] = [
@@ -693,10 +699,24 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                 </div>
               </div>
             </section>
-            <section className="v-tile">
-              <Row icon="bolt" label="更新下载直连" title="检查更新和下载安装包不走系统代理（梯子常把 GitHub 绕远）。语音、表情、队伍消息本来就直连服务器不经代理；挂全局梯子时请给服务器 14.103.234.253 加直连规则">
+            <section className="v-tile v-net">
+              <div className="v-net-head">
+                <Glyph name="bolt" size={16} />
+                <b>网络</b>
+                <span className="v-page-spacer" />
+                <span className={`v-net-state ${status.cloudState}`}>
+                  {CLOUD_TEXT[status.cloudState]}
+                  {status.relayMs != null ? ` · ${status.relayMs} ms` : ""}
+                </span>
+              </div>
+              <Row icon="download" label="更新下载直连" title="检查更新和下载安装包不走系统代理（梯子常把 GitHub 绕远）">
                 <Toggle label="更新下载直连" checked={s.netDirect} onChange={(netDirect) => onChange({ netDirect })} />
               </Row>
+              <p className="v-note">
+                语音、表情、队伍消息、云端心跳都是直连服务器 IP（14.103.234.253），本来就不走系统代理——
+                这里的开关只影响更新下载。用全局模式（TUN）的梯子会在网络层接管所有流量，软件绕不过去，
+                请在梯子客户端里把服务器 IP 设成直连；上面的延迟是到服务器的往返时间，忽高忽低多半是梯子在绕路。
+              </p>
             </section>
           </div>
         )}
@@ -708,7 +728,7 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
         <i className="v-state-dot" />
         <span>{status.inputError ? "输入设备不可用" : status.enabled ? "在线" : "离线"}</span>
         <span>·</span>
-        <span>云端</span>
+        <span className={`v-sb-cloud ${status.cloudState}`}>云端{CLOUD_TEXT[status.cloudState]}</span>
         <span className="v-sb-mid">改动即时保存</span>
         <span className="v-sb-right">{update?.current ? `v${update.current}` : ""}</span>
       </footer>

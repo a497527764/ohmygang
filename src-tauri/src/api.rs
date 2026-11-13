@@ -8,7 +8,8 @@
 //! 4. 这些命令都很快（读写一行 SQLite、往通道里放消息），而且持锁时不等别的线程，所以放在主线程上执行没问题。
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::time::Instant;
 
 use rusqlite::Connection;
 use serde::Serialize;
@@ -30,8 +31,14 @@ pub struct AppState {
     /// 输入线程；启动失败时是 None，`input_error` 说明原因。
     pub input: Option<InputHandle>,
     pub input_error: Option<String>,
-    /// 云端服务器可达（中继一个都连不上就是 false）。在线状态线程每 5 秒刷新。
-    pub cloud_ok: AtomicBool,
+    /// 云端连接状态：0=连接中（刚启动，还没判定）、1=连上了、2=连不上。在线状态线程每 5 秒刷新。
+    pub cloud_state: AtomicU8,
+    /// 连续几次没探到中继（迟滞用：连续两次才算断，免得状态来回跳）。
+    pub cloud_miss: AtomicU8,
+    /// 中继往返时间（毫秒）；0 表示还没有。
+    pub cloud_rtt_ms: AtomicU64,
+    /// 启动时刻：头 8 秒里连不上也算「连接中」，不急着报「未连接」。
+    pub started_at: Instant,
     pub overlays: Overlays,
     /// 队伍的网络（局域网 + 中继）。
     pub node: NodeHandle,
@@ -64,9 +71,26 @@ pub struct Status {
     pub input_error: Option<String>,
     /// macOS 上监听没起来：多半是缺「辅助功能」权限，控制面板顶部显示授权卡片。
     pub needs_permission: bool,
-    /// 云端服务器（中继所在的服务器）连得上；断了主页电源区显示红色「未连接」。
+    /// 云端服务器（中继所在的服务器）的连接状态：
+    /// connecting（刚启动、还在连）/ ok（连上了）/ down（连不上）。
     /// 在线状态线程每 5 秒刷新，变化时推 "status://changed"。
-    pub cloud: bool,
+    pub cloud_state: String,
+    /// 中继的往返时间（毫秒）；没连上时是 null。用来一眼看出是不是网络/梯子拖慢了。
+    pub relay_ms: Option<u64>,
+}
+
+/// 云端连接状态的三种取值（前端也要用）。
+pub const CLOUD_CONNECTING: u8 = 0;
+pub const CLOUD_OK: u8 = 1;
+pub const CLOUD_DOWN: u8 = 2;
+
+/// 云端状态的名字（给前端用）。
+pub fn cloud_state_name(v: u8) -> &'static str {
+    match v {
+        CLOUD_OK => "ok",
+        CLOUD_DOWN => "down",
+        _ => "connecting",
+    }
 }
 
 /// 开关信号，并让托盘、控制面板跟上。
@@ -258,11 +282,13 @@ fn apply_normalized(
 
 #[tauri::command]
 pub fn status_get(state: State<'_, AppState>) -> Status {
+    let rtt = state.cloud_rtt_ms.load(Ordering::Relaxed);
     Status {
         enabled: state.enabled.load(Ordering::Relaxed),
         input_error: state.input_error.clone(),
         needs_permission: cfg!(target_os = "macos") && state.input_error.is_some(),
-        cloud: state.cloud_ok.load(Ordering::Relaxed),
+        cloud_state: cloud_state_name(state.cloud_state.load(Ordering::Relaxed)).to_string(),
+        relay_ms: (rtt > 0).then_some(rtt),
     }
 }
 

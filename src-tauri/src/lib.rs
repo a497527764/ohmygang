@@ -25,9 +25,9 @@ pub mod update;
 pub mod voice;
 pub mod votes;
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::{Manager, WindowEvent};
 
@@ -283,8 +283,11 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         enabled: AtomicBool::new(auto_online),
         input,
         input_error,
-        // 启动先当作连得上（中继还在连，别先闪红）；在线状态线程 5 秒内会纠正
-        cloud_ok: AtomicBool::new(true),
+        // 启动先当「连接中」：中继还在连，头 8 秒不报「未连接」；在线状态线程会纠正
+        cloud_state: AtomicU8::new(api::CLOUD_CONNECTING),
+        cloud_miss: AtomicU8::new(0),
+        cloud_rtt_ms: AtomicU64::new(0),
+        started_at: Instant::now(),
         overlays,
         node,
         team: Default::default(),

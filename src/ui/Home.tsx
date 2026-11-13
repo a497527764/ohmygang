@@ -35,6 +35,8 @@ const codeLabel = (r: { shortCode: string | null; code: string }): string =>
 export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
   const [view, setView] = useState<TeamView | null>(null);
   const [recent, setRecent] = useState<RecentTeam[]>([]);
+  // 当前队伍现在几个人在线（云端统计；问不到是 null）
+  const [currentOnline, setCurrentOnline] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -45,7 +47,10 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
 
   const load = useCallback(() => {
     teamView().then(setView, () => setView(null));
-    teamRecent().then(setRecent, () => setRecent([]));
+    teamRecent().then(
+      (r) => { setRecent(r.rooms); setCurrentOnline(r.currentOnline); },
+      () => { setRecent([]); setCurrentOnline(null); },
+    );
   }, []);
   useEffect(() => {
     load();
@@ -59,8 +64,20 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
   };
 
   const on = status.enabled && !status.inputError;
-  // 云端服务器（中继所在的服务器）连不上：电源区红色「未连接」，盖过在线/离线的说法
-  const cloudDown = !status.cloud && !status.inputError;
+  // 云端服务器（中继所在的服务器）的连接状态：
+  // connecting = 刚启动还在连（白色「连接中」），ok = 连上了，down = 连不上（红色「未连接」）
+  const cloudDown = status.cloudState === "down" && !status.inputError;
+  const cloudConnecting = status.cloudState === "connecting" && !status.inputError && !cloudDown;
+  // 电源区上的三个字：不可用 > 未连接 > 连接中 > 在线 > 离线
+  const powerText = status.inputError
+    ? "不可用"
+    : cloudDown
+      ? "未连接"
+      : cloudConnecting
+        ? "连接中"
+        : on
+          ? "在线"
+          : "离线";
   // 阵容表固定留到 5 个位置，空位是虚线格，能把卡片高度摊满
   const slots = Math.max(0, 5 - (view?.members.length ?? 0));
   const team = view?.team ?? null;
@@ -81,8 +98,8 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
         shortCode: null,
         title: team.title ?? null,
         isOwner: team.isOwner,
-        // 自己、以及 15 秒内报过在线状态的队友算「在线」
-        online: view?.members.filter((m) => m.isMe || m.status).length ?? 0,
+        // 在线人数：云端统计优先（问不到就按 15 秒内报过状态的队友数算）
+        online: currentOnline ?? view?.members.filter((m) => m.isMe || m.status).length ?? 0,
         members: view?.members.length ?? 0,
         status: team.status,
         current: true,
@@ -107,11 +124,11 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
 
   return (
     <div className="v-home">
-      <section className={`v-power${on && !cloudDown ? " on" : ""}${status.inputError || cloudDown ? " bad" : ""}`}>
+      <section className={`v-power${on && !cloudDown && !cloudConnecting ? " on" : ""}${status.inputError || cloudDown ? " bad" : ""}`}>
         <button
           type="button"
           className="v-power-btn"
-          aria-label={status.inputError ? "不可用" : cloudDown ? "未连接" : on ? "在线" : "离线"}
+          aria-label={powerText}
           aria-pressed={on}
           onClick={() => onToggle(!on)}
         >
@@ -119,8 +136,12 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
             <Glyph name="power" size={40} stroke={2.2} />
           </span>
           <span className="v-power-copy">
-            <b>{status.inputError ? "不可用" : cloudDown ? "未连接" : on ? "在线" : "离线"}</b>
+            <b>{powerText}</b>
             {status.inputError && <span className="v-power-hint">{status.inputError}</span>}
+            {!status.inputError && !cloudDown && status.relayMs != null && (
+              <span className="v-power-hint">服务器 {status.relayMs} ms</span>
+            )}
+            {cloudDown && <span className="v-power-hint">连不上中继服务器，检查网络或梯子</span>}
           </span>
           <MicWave live={s.voice} icon bars={17} max={54} className="v-wave" />
         </button>
@@ -174,7 +195,7 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
                     title={m.nickname || m.fingerprint}>
                     <span className="v-member-main">
                       <Avatar fingerprint={m.fingerprint} name={m.nickname} avatar={m.avatar} size={28} />
-                      <b>{m.isMe ? "我" : (m.nickname || m.fingerprint)}</b>
+                      <b>{m.isMe ? `${m.nickname || m.fingerprint}（我自己）` : (m.nickname || m.fingerprint)}</b>
                       {m.isOwner && <span className="v-chip">队长</span>}
                     </span>
                     <span className="v-member-os">{m.platform ?? "—"}</span>
@@ -195,8 +216,7 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
               <div className="v-squad-foot">
                 {team.status === "joining" ? (
                   <>
-                    <b className="v-squad-confirm">正在与队伍里的同伴建立连接…</b>
-                    <span className="v-squad-hint">对方在线时几秒内完成；一直不动说明队里现在没人</span>
+                    <b className="v-squad-confirm">正在加入队伍…</b>
                     <button className="v-btn ghost" disabled={busy} onClick={() => run(teamCancel())}>
                       <Glyph name="close" size={16} />取消
                     </button>

@@ -93,14 +93,19 @@ export interface Settings {
   panelRect: PanelRect | null;
 }
 
+/** 云端服务器的连接状态：connecting（刚启动，还在连）/ ok（连上了）/ down（连不上）。 */
+export type CloudState = "connecting" | "ok" | "down";
+
 export interface Status {
   enabled: boolean;
   /** 键鼠监听没起来的原因；正常时为 null。 */
   inputError: string | null;
   /** macOS 上监听没起来，顶部显示授权卡片。 */
   needsPermission: boolean;
-  /** 云端服务器（中继所在的服务器）连得上；断了主页电源区显示红色「未连接」。 */
-  cloud: boolean;
+  /** 云端服务器（中继所在的服务器）的连接状态。 */
+  cloudState: CloudState;
+  /** 中继往返时间（毫秒）；没连上时是 null。 */
+  relayMs: number | null;
 }
 
 export const readSettings = (): Promise<Settings> => invoke("settings_read");
@@ -131,9 +136,9 @@ export const removeEmote = (id: string): Promise<Settings> => invoke("emote_remo
 
 export const onEnabled = (cb: (on: boolean) => void): Promise<UnlistenFn> =>
   listen<boolean>("pings://enabled", (e) => cb(e.payload));
-/** 云端服务器可达性变了（在线状态线程每 5 秒看一次中继）。 */
-export const onCloud = (cb: (ok: boolean) => void): Promise<UnlistenFn> =>
-  listen<boolean>("status://changed", (e) => cb(e.payload));
+/** 云端服务器的连接状态变了（在线状态线程每 5 秒看一次中继）。 */
+export const onCloud = (cb: (state: CloudState) => void): Promise<UnlistenFn> =>
+  listen<CloudState>("status://changed", (e) => cb(e.payload));
 
 // ---- 队伍（和 Rust 的 team.rs 对应） ----
 
@@ -206,7 +211,13 @@ export interface RecentTeam {
   /** 云端统计的现在在线人数（15 分钟内报过心跳）；问不到云端时是 null。 */
   online: number | null;
 }
-export const teamRecent = (): Promise<RecentTeam[]> => invoke("team_recent");
+/** 历史队伍列表 + 当前队伍的在线人数。 */
+export interface RecentTeams {
+  rooms: RecentTeam[];
+  /** 当前队伍现在几个人在线；问不到云端时是 null。 */
+  currentOnline: number | null;
+}
+export const teamRecent = (): Promise<RecentTeams> => invoke("team_recent");
 export const teamCreate = (title: string): Promise<TeamView> => invoke("team_create", { title });
 export const teamJoin = (code: string): Promise<TeamView> => invoke("team_join", { code });
 export const teamCancel = (): Promise<TeamView> => invoke("team_cancel");

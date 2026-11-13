@@ -10,6 +10,7 @@
 //! 3. 返回的 `cpal::Stream` 丢掉就停：麦克风只在按住说话（或试音）时开着，系统的「麦克风在用」提示不会一直亮。
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -70,6 +71,21 @@ pub fn open_mic(id: &str, buffer: MicBuffer) -> Result<Stream, String> {
     Ok(stream)
 }
 
+/// 麦克风的瞬时卡顿：Windows 共享模式下换流、别的程序抢设备时会出现
+/// “A buffer underrun or overrun occurred.”。这是可恢复的抖动，不用每次都刷屏，
+/// 只在第一次和之后每十次提醒一句。
+fn report_mic_error(e: &str) {
+    static GLITCH: AtomicU32 = AtomicU32::new(0);
+    if e.contains("underrun") || e.contains("overrun") {
+        let n = GLITCH.fetch_add(1, Ordering::Relaxed);
+        if n % 10 == 0 {
+            eprintln!("麦克风瞬时卡顿（已自动恢复）：{e}");
+        }
+        return;
+    }
+    eprintln!("麦克风出错：{e}");
+}
+
 fn build_mic<T>(
     dev: &Device,
     config: StreamConfig,
@@ -94,7 +110,7 @@ where
             let mut out = buffer.lock().unwrap_or_else(|e| e.into_inner());
             resampler.process(&mono, &mut out);
         },
-        |e| eprintln!("麦克风出错：{e}"),
+        |e| report_mic_error(&e.to_string()),
         None,
     )
     .map_err(|e| e.to_string())

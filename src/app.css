@@ -669,6 +669,17 @@ input, select, textarea { font: inherit; color: inherit; }
 .v-statusbar.on .v-state-dot { background: var(--cyan); box-shadow: 0 0 8px rgba(0, 231, 255, 0.8); }
 .v-statusbar .v-sb-mid { margin-left: auto; color: var(--muted); }
 .v-statusbar .v-sb-right { margin-left: auto; }
+/* 状态栏里的云端：连接中/已连接是常态色，未连接要看得见 */
+.v-statusbar .v-sb-cloud.down { color: var(--pink); }
+.v-statusbar .v-sb-cloud.ok { color: var(--cyan); }
+
+/* 网络（关于页） */
+.v-net-head { display: flex; align-items: center; gap: 8px; padding: 0 18px 6px; }
+.v-net-head b { font-size: 13px; }
+.v-net-state { font: 600 12px var(--num); color: var(--muted); }
+.v-net-state.ok { color: var(--cyan); }
+.v-net-state.down { color: var(--pink); }
+.v-net .v-note { padding: 0 18px 16px; line-height: 1.7; }
 
 /* ---------- 设置行 ---------- */
 .v-row { display: flex; align-items: center; gap: 12px; min-height: 56px; }

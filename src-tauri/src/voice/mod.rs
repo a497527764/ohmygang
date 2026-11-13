@@ -148,6 +148,7 @@ impl Voice {
             bands: [0.0; BANDS],
             level_ticks: 0,
             monitor_retry: 0,
+            monitor_delay: 0,
         };
         std::thread::Builder::new()
             .name("voice".into())
@@ -226,6 +227,8 @@ struct Runner {
     level_ticks: u32,
     /// 麦克风监听打开失败后的重试倒计时（10 毫秒一跳，约 1 秒再试一次）。
     monitor_retry: u32,
+    /// 刚录完音不要马上开监听：设备状态切换的那一瞬间会卡一下，等 0.3 秒再开。
+    monitor_delay: u32,
 }
 
 impl Runner {
@@ -284,6 +287,7 @@ impl Runner {
                     .is_some_and(|r| r.purpose == Purpose::Talk)
                 {
                     self.rec = None;
+                    self.monitor_delay = 30;
                 }
             }
             VoiceMsg::Remote {
@@ -405,6 +409,10 @@ impl Runner {
     fn start_recording(&mut self, purpose: Purpose) {
         self.take = self.take.wrapping_add(1);
         let take = self.take;
+        // 先把电平监听关掉：同一个麦克风同时开两条采集流会互相抢（Windows 共享模式
+        // 会报 “buffer underrun or overrun”），监听的音量改从录音缓冲里算。
+        self.monitor = None;
+        self.monitor_retry = 0;
         // 预留 1 秒：语音线程每 10 毫秒取一次，正常不会变大
         let captured: audio::MicBuffer = Arc::new(Mutex::new(Vec::with_capacity(RATE as usize)));
         let mic = audio::open_mic(&self.config.mic, captured.clone());
@@ -491,6 +499,8 @@ impl Runner {
         let Some(mut rec) = self.rec.take() else {
             return;
         };
+        // 设备刚用过，等 0.3 秒再开监听，别在切换的瞬间开
+        self.monitor_delay = 30;
         if rec.packer.sent() == 0 && rec.since.elapsed() < Duration::from_millis(TALK_MIN_MS) {
             return;
         }
@@ -522,6 +532,7 @@ impl Runner {
     /// 试音录完：把录下的小帧当成一段本机的话放出来。
     fn finish_test(&mut self) {
         let Some(rec) = self.rec.take() else { return };
+        self.monitor_delay = 30;
         let count = rec.kept.len();
         if let Some(s) = self.incoming(TEST_KEY) {
             s.jitter = Jitter::default();
@@ -536,8 +547,17 @@ impl Runner {
         // 麦克风电平只跟「语音开关」有关：信号暂停、刚启动时也应该能看见自己在说话。
         // 之前把「信号上线」当前置条件，离线时监听关掉后线程又阻塞，波形就永远不动了。
         let want = self.config.enabled && self.rec.is_none();
-        if want && self.monitor.is_none() {
-            if self.monitor_retry == 0 {
+        if !want {
+            self.monitor = None;
+            self.monitor_retry = 0;
+            self.monitor_delay = 0;
+        } else if self.monitor.is_none() {
+            if self.monitor_delay > 0 {
+                // 刚录完音，等设备状态切换完再开监听
+                self.monitor_delay -= 1;
+            } else if self.monitor_retry > 0 {
+                self.monitor_retry -= 1;
+            } else {
                 let captured: audio::MicBuffer =
                     Arc::new(Mutex::new(Vec::with_capacity(RATE as usize / 10)));
                 if let Ok(mic) = audio::open_mic(&self.config.mic, captured.clone()) {
@@ -545,12 +565,7 @@ impl Runner {
                 } else {
                     self.monitor_retry = 100;
                 }
-            } else {
-                self.monitor_retry -= 1;
             }
-        } else if !want {
-            self.monitor = None;
-            self.monitor_retry = 0;
         }
         if let Some((_, captured)) = &self.monitor {
             let mut c = captured.lock().unwrap_or_else(|e| e.into_inner());
