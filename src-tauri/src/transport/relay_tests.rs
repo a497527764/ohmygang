@@ -160,9 +160,18 @@ async fn real_relay_stays_connected() {
         "连不上 {url}"
     );
     // 每 3 秒发一个包，模拟在线状态这种持续的小包。
-    for _ in 0..15 {
+    for i in 0..15 {
         h.publish(R1, vec![1; 40], Priority::Live);
         tokio::time::sleep(Duration::from_secs(3)).await;
+        let s = &h.status()[0];
+        eprintln!(
+            "[{:>2} 秒] 状态={:?} 连接次数={} 回显={:?} 回显成功率={:?}",
+            (i + 1) * 3,
+            s.state,
+            s.connects,
+            s.last_echo_ms,
+            s.echo_pct
+        );
     }
     let st = h.status();
     assert_eq!(st[0].state, RelayState::Ok, "45 秒后还该连着");

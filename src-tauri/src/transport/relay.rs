@@ -14,7 +14,7 @@
 //!    - 发出的事件 25 秒内没从订阅里收到回显，且这条连接连任何消息都收不到，才断开重连；
 //!      只回显超时不等于连接死了——有的中继不回显发布者自己的事件，连接好好的，
 //!      判死会让界面隔几十秒闪一次「未连接」；
-//!    - 连接失败或断开后等待重连，退避 2 秒起、每次翻倍、最多 60 秒；本次连接收到过回显
+//!    - 连接失败或断开后等待重连，退避 2 秒起、每次翻倍、最多 20 秒；本次连接收到过回显
 //!      或心跳 Pong 的，断开后从 2 秒重新算；
 //!    - `OK` 回 `rate-limited`：保持连接继续收，但 30 秒内不往这个中继发；
 //!    - `OK` 或 `CLOSED` 回 `blocked` 等：本次运行不再使用这个中继；
@@ -74,7 +74,9 @@ impl Default for RelayConfig {
     fn default() -> Self {
         RelayConfig {
             echo_timeout: Duration::from_secs(25),
-            backoff: (Duration::from_secs(2), Duration::from_secs(60)),
+            // 退避上限 20 秒：断线后要尽快回来，别让用户干等一分钟。
+            // 连接健康的话（收到过回显或心跳 Pong）退避从头算，只等 2 秒。
+            backoff: (Duration::from_secs(2), Duration::from_secs(20)),
             cooldown: Duration::from_secs(30),
             connect_timeout: Duration::from_secs(10),
             since_back: Duration::from_secs(10),
