@@ -53,6 +53,14 @@ pub struct Store {
 impl Store {
     pub fn open(path: &str) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
+        // 先建表，再补列，最后才建索引——顺序不能换。
+        //
+        // 老库（比如还在跑 v0.2.8 的线上库）的 create_events 表没有 device 列，
+        // 上面那句 CREATE TABLE IF NOT EXISTS 会因为表已存在被跳过、表结构保持原样。
+        // 如果把 CREATE INDEX ... ON create_events(device, created_at) 放在建表那一批里，
+        // 索引会立刻报「no such column: device」，open() 直接失败，
+        // 进程启动即退出 → 容器 CrashLoop → 中继彻底连不上。
+        // 本地测试用的都是全新库，所以这个坑本地测不出来，只有线上老库才会炸。
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS teams (
                 short_code TEXT PRIMARY KEY,
@@ -83,14 +91,11 @@ impl Store {
                 peer       TEXT,
                 device     TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_create_events_at ON create_events(created_at);
-            CREATE INDEX IF NOT EXISTS idx_create_events_device ON create_events(device, created_at);
             -- 回收下来的短码池：建队优先从这里取，短码就不会被白白浪费掉。
             CREATE TABLE IF NOT EXISTS free_codes (
                 code        TEXT PRIMARY KEY,
                 released_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_free_codes_at ON free_codes(released_at);",
+            );",
         )?;
         // 老库补列（每次启动都查一下，缺哪列补哪列）。
         let has = |table: &str, col: &str| -> rusqlite::Result<bool> {
@@ -116,6 +121,12 @@ impl Store {
         if !has("blacklist", "created_at")? {
             let _ = conn.execute("ALTER TABLE blacklist ADD COLUMN created_at INTEGER", []);
         }
+        // 列都补齐了，现在建索引才安全（见上面那段注释）。
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_create_events_at ON create_events(created_at);
+             CREATE INDEX IF NOT EXISTS idx_create_events_device ON create_events(device, created_at);
+             CREATE INDEX IF NOT EXISTS idx_free_codes_at ON free_codes(released_at);",
+        )?;
         Ok(Store {
             conn: Mutex::new(conn),
         })
@@ -588,4 +599,122 @@ pub struct AdminTeamRow {
 pub struct AdminMember {
     pub member_hex: String,
     pub last_seen: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 造一个 v0.2.8 时代的旧库：create_events 没有 device 列，
+    /// blacklist 没有 created_at，teams 没有 code_expires_at，也没有 free_codes 表。
+    fn make_legacy_db(path: &str) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE teams (
+                short_code TEXT PRIMARY KEY,
+                room_secret BLOB NOT NULL,
+                owner_tag  BLOB NOT NULL,
+                room_id   TEXT NOT NULL UNIQUE,
+                created_at INTEGER NOT NULL,
+                last_active INTEGER NOT NULL,
+                low_since  INTEGER,
+                title      TEXT
+            );
+            CREATE TABLE members (
+                room_id   TEXT NOT NULL,
+                member_hex TEXT NOT NULL,
+                last_seen INTEGER NOT NULL,
+                PRIMARY KEY (room_id, member_hex)
+            );
+            CREATE TABLE blacklist (room_id TEXT PRIMARY KEY);
+            CREATE TABLE create_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at INTEGER NOT NULL,
+                peer       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_create_events_at ON create_events(created_at);
+            INSERT INTO create_events (created_at, peer) VALUES (1000, '1.2.3.4');",
+        )
+        .unwrap();
+    }
+
+    fn tmp_path(tag: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!(
+            "{}/ohmygang-{tag}-{}-{nanos}.db",
+            std::env::temp_dir().display(),
+            std::process::id()
+        )
+    }
+
+    /// 老库升级必须成功，不能让服务起不来。
+    ///
+    /// 之前建索引排在补列前面：老库的 create_events 没有 device 列，
+    /// `CREATE INDEX ... ON create_events(device, created_at)` 直接报
+    /// 「no such column: device」，open() 失败，进程退出，容器 CrashLoop，
+    /// 线上中继整个连不上。本地测试用的都是全新库，所以这个坑本地测不出来。
+    #[test]
+    fn an_old_database_upgrades_without_crashing() {
+        let path = tmp_path("legacy");
+        make_legacy_db(&path);
+
+        let store = Store::open(&path).expect("老库升级不该失败");
+
+        // 新列补上了。
+        let conn = Connection::open(&path).unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(create_events)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(cols.iter().any(|c| c == "device"), "device 列没补上");
+
+        // 索引也建起来了（建索引排在补列后面才建得起来）。
+        let idx: Vec<String> = conn
+            .prepare("PRAGMA index_list(create_events)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            idx.iter().any(|i| i == "idx_create_events_device"),
+            "设备索引没建起来：{idx:?}"
+        );
+
+        // 老数据还在（旧的建队流水 device 为 NULL，不能把库清空）。
+        let old: i64 = conn
+            .query_row("SELECT COUNT(*) FROM create_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(old, 1, "老库里的建队流水不该丢");
+
+        // 升级后照常按设备限频：老记录 device 为 NULL，不算在这个设备头上。
+        let limits = CreateLimits {
+            device_hour: 2,
+            device_day: 3,
+            global_hour: 100,
+            global_day: 1000,
+        };
+        let now = 2000;
+        assert_eq!(
+            store.reserve_create(now, "1.2.3.4", "dev-A", limits).unwrap(),
+            Quota::Ok
+        );
+        assert_eq!(
+            store.reserve_create(now, "1.2.3.4", "dev-A", limits).unwrap(),
+            Quota::Ok
+        );
+        assert_eq!(
+            store.reserve_create(now, "5.6.7.8", "dev-A", limits).unwrap(),
+            Quota::Device,
+            "同一台设备换 IP 也该被挡住"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
 }
