@@ -99,9 +99,9 @@ GitHub 直连在国内时通时断，第三方加速镜像寿命不可控。服�
 **启用（两步）**：
 
 1. 在 Zeabur 给服务加环境变量 `UPLOAD_TOKEN=<自定义随机串>`（同时给 GitHub 仓库加 secret `RELAY_UPLOAD_TOKEN` 设同一个值，CI 发版后自动同步）。
-2. 发版后同步：CI 配好 secret 会自动跑；手动跑：
+2. 发版后同步：CI 配好 secret 会自动跑，但**海外 runner 向国内中继传大包容易超时**——CI 里这一步已设为失败不拦截发版，超时后在国内本机补跑即可：
    ```bash
-   # 国内本机加 GH_MIRROR 加速下载 release 产物
+   # 国内本机加 GH_MIRROR 加速下载 release 产物（实测 86MB 约 1 分钟）
    RELAY_UPLOAD_TOKEN=<同值> GH_MIRROR=https://ghfast.top/ node scripts/release.mjs mirror v0.2.1
    ```
 
