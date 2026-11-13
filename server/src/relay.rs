@@ -368,12 +368,20 @@ fn extract_room(event: &Value) -> Option<String> {
 /// 订阅过滤器里的 `#x`（房间列表）。
 fn extract_rooms(filter: &Value) -> HashSet<String> {
     let mut out = HashSet::new();
-    if let Some(arr) = filter.get("#x").and_then(|x| x.as_array()) {
-        for r in arr {
-            if let Some(s) = r.as_str() {
-                out.insert(s.to_lowercase());
+    // "#x" 正常是数组（客户端就是这么发的），但单个字符串的写法也认一下，
+    // 别因为写法不同就订阅成空集——那表现是「能连上却永远收不到消息」，很难查。
+    match filter.get("#x") {
+        Some(Value::Array(arr)) => {
+            for r in arr {
+                if let Some(s) = r.as_str() {
+                    out.insert(s.to_lowercase());
+                }
             }
         }
+        Some(Value::String(s)) => {
+            out.insert(s.to_lowercase());
+        }
+        _ => {}
     }
     out
 }
