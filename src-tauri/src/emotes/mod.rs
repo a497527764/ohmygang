@@ -80,7 +80,7 @@ fn is_known(r: &str, custom: &[CustomEmote]) -> bool {
 }
 
 /// 去掉控制字符和首尾空白，截到 24 个字；空了就用哈希的前 6 位。
-fn clean_name(raw: &str, hash: &str) -> String {
+pub fn clean_name(raw: &str, hash: &str) -> String {
     let name: String = raw
         .chars()
         .filter(|c| !c.is_control())

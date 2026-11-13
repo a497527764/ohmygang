@@ -4,26 +4,31 @@
 //! 实现流程：
 //! 1. 队友的在线状态里报了他轮盘上导入表情的哈希。本机没有的，向他发 Want（广播，`to` 写他）。
 //! 2. 收到发给我的 Want：只给自己在线状态里正在报的哈希，读一次静态图，切成 900 字节一块排队；
-//!    每 100 毫秒最多发 2 块（局域网约 18 KB/s，中继再由发送预算按最低优先级慢慢发）。几个人要同一张只排一份。
+//!    每 100 毫秒最多发 8 块（局域网约 70 KB/s，中继再由发送预算按最低优先级慢慢发）。几个人要同一张只排一份。
 //! 3. 收到分块：只收报过这个哈希的人发来的；凑齐后按顺序拼起来，SHA-256 前 16 字节对得上、
-//!    文件头检查也过了（`store::check_still`）才存，所以谁也换不掉别人的图。
+//!    文件头检查也过了（`store::check_custom_still`）才存，所以谁也换不掉别人的图。
 //! 4. 3 秒没新分块就再要缺的那几块，最多 3 次；60 秒还没齐、或那人不再报这个哈希，就放弃，等下一次在线状态再来。
-//!    同时最多拼 16 张、256 KB。
+//!    补要单最多列 `NEED_MAX` 个块号（要装得进一个包）；缺得比这还多就干脆全要，让对方重发一遍。
+//!    同时最多拼 16 张、16 MB。块号是 u16：自定义表情的静态图最大 1 MB，能切 1166 块。
+//!
+//! 3.4 起直接同步原图（最大 1 MB、1000 像素），不再压回 12 KB 小图。
 
 use std::collections::{BTreeSet, HashMap};
 
 use crate::crypto::MemberId;
 
-use super::store::{self, STILL_MAX_BYTES};
+use super::store::{self, CUSTOM_STILL_MAX_BYTES};
 
 pub const CHUNK_BYTES: usize = 900;
-/// 12 KB 的静态图最多切成这么多块。
-pub const CHUNKS_MAX: u8 = STILL_MAX_BYTES.div_ceil(CHUNK_BYTES) as u8;
+/// 1 MB 的静态图最多切成这么多块（1166）；块号、块数都用 u16。
+pub const CHUNKS_MAX: u16 = (CUSTOM_STILL_MAX_BYTES.div_ceil(CHUNK_BYTES)) as u16;
+/// 补要单里最多列多少个块号：要装得进一个包。缺得比这还多就在补要时留空（等于全要）。
+pub const NEED_MAX: usize = 160;
 pub const TICK_MS: u64 = 100;
-const CHUNKS_PER_TICK: usize = 2;
+const CHUNKS_PER_TICK: usize = 8;
 const MAX_ASSEMBLIES: usize = 16;
-const MAX_PENDING_BYTES: usize = 256 * 1024;
-const ASSEMBLY_TIMEOUT_MS: u64 = 60_000;
+const MAX_PENDING_BYTES: usize = 16 * 1024 * 1024;
+const ASSEMBLY_TIMEOUT_MS: u64 = 120_000;
 const REASK_MS: u64 = 3_000;
 const REASKS_MAX: u32 = 3;
 
@@ -33,12 +38,12 @@ pub enum Out {
     Want {
         to: MemberId,
         hash: String,
-        need: Vec<u8>,
+        need: Vec<u16>,
     },
     Chunk {
         hash: String,
-        i: u8,
-        n: u8,
+        i: u16,
+        n: u16,
         bytes: Vec<u8>,
     },
     /// 收齐、验过了，存进缓存。
@@ -47,8 +52,8 @@ pub enum Out {
 
 struct Assembly {
     /// 一共几块，收到第一块才知道（之前是 0）。
-    n: u8,
-    parts: HashMap<u8, Vec<u8>>,
+    n: u16,
+    parts: HashMap<u16, Vec<u8>>,
     bytes: usize,
     first_ms: u64,
     last_ms: u64,
@@ -59,8 +64,8 @@ struct Assembly {
 
 struct Sending {
     bytes: Vec<u8>,
-    n: u8,
-    need: BTreeSet<u8>,
+    n: u16,
+    need: BTreeSet<u16>,
 }
 
 #[derive(Default)]
@@ -103,7 +108,7 @@ impl Transfer {
     pub fn on_want(
         &mut self,
         hash: &str,
-        need: &[u8],
+        need: &[u16],
         mine: &[String],
         still: impl FnOnce(&str) -> Option<Vec<u8>>,
     ) {
@@ -112,11 +117,12 @@ impl Transfer {
         }
         if !self.sends.contains_key(hash) {
             // 每张图只读一次盘：一大堆 Want 也不会让它反复读
-            let Some(bytes) = still(hash).filter(|b| !b.is_empty() && b.len() <= STILL_MAX_BYTES)
+            let Some(bytes) =
+                still(hash).filter(|b| !b.is_empty() && b.len() <= CUSTOM_STILL_MAX_BYTES)
             else {
                 return;
             };
-            let n = bytes.len().div_ceil(CHUNK_BYTES) as u8;
+            let n = bytes.len().div_ceil(CHUNK_BYTES) as u16;
             self.sends.insert(
                 hash.to_string(),
                 Sending {
@@ -139,7 +145,7 @@ impl Transfer {
         &mut self,
         from: MemberId,
         hash: &str,
-        (i, n): (u8, u8),
+        (i, n): (u16, u16),
         bytes: Vec<u8>,
         have: impl Fn(&str) -> bool,
         now_ms: u64,
@@ -182,7 +188,7 @@ impl Transfer {
         }
         let a = self.assemblies.remove(hash).expect("还在");
         let full: Vec<u8> = (0..a.n).flat_map(|k| a.parts[&k].iter().copied()).collect();
-        if store::hash_of(&full) != hash || store::check_still(&full).is_err() {
+        if store::hash_of(&full) != hash || store::check_custom_still(&full).is_err() {
             return Vec::new();
         }
         vec![Out::Store {
@@ -244,10 +250,16 @@ impl Transfer {
             if a.reasks >= REASKS_MAX {
                 return false;
             }
-            let need = if a.n == 0 {
+            let need: Vec<u16> = if a.n == 0 {
                 Vec::new()
             } else {
                 (0..a.n).filter(|i| !a.parts.contains_key(i)).collect()
+            };
+            // 缺得比 NEED_MAX 还多就留空，等于全要
+            let need = if need.len() > NEED_MAX {
+                Vec::new()
+            } else {
+                need
             };
             out.push(Out::Want {
                 to: a.ask,
@@ -284,7 +296,7 @@ mod tests {
     const A: MemberId = [1u8; 32];
     const B: MemberId = [2u8; 32];
 
-    fn chunks(out: &[Out]) -> Vec<(String, u8, u8, Vec<u8>)> {
+    fn chunks(out: &[Out]) -> Vec<(String, u16, u16, Vec<u8>)> {
         out.iter()
             .filter_map(|o| match o {
                 Out::Chunk { hash, i, n, bytes } => Some((hash.clone(), *i, *n, bytes.clone())),
@@ -353,8 +365,9 @@ mod tests {
 
     #[test]
     fn senders_pace_and_only_serve_what_they_announce() {
-        let still = test_webp(100, 100, STILL_MAX_BYTES);
+        let still = test_webp(100, 100, 12_288);
         let h = hash_of(&still);
+        let expected = still.len().div_ceil(CHUNK_BYTES);
         let mut a = Transfer::default();
         a.on_want(&h, &[], &[], |_| Some(still.clone()));
         assert!(a.tick(100, &[]).is_empty(), "没报的不给");
@@ -366,7 +379,7 @@ mod tests {
         for t in 2..20 {
             total += chunks(&a.tick(t * 100, &mine)).len();
         }
-        assert_eq!(total, usize::from(CHUNKS_MAX), "两个人要也只发一份");
+        assert_eq!(total, expected, "两个人要也只发一份");
         // 补要某几块
         a.on_want(&h, &[3, 99], &mine, |_| Some(still.clone()));
         let again = chunks(&a.tick(5000, &mine));
@@ -477,6 +490,49 @@ mod tests {
         assert!(
             c.announced(A, vec!["ab".repeat(16)], |_| true, 0)
                 .is_empty()
+        );
+    }
+
+    /// 补要单最多列 NEED_MAX 个块号；缺得比这还多就留空（等于全要）。
+    #[test]
+    fn reask_need_list_is_capped() {
+        // 大图：收到 1 块后缺 NEED_MAX+1 块 → 补要单留空
+        let big = test_webp(100, 100, (NEED_MAX + 2) * CHUNK_BYTES);
+        let h = hash_of(&big);
+        let n = (big.len().div_ceil(CHUNK_BYTES)) as u16;
+        let mut b = Transfer::default();
+        b.announced(A, vec![h.clone()], |_| false, 0);
+        b.on_chunk(A, &h, (0, n), big[..CHUNK_BYTES].to_vec(), |_| false, 0);
+        assert_eq!(
+            b.tick(REASK_MS, &[]),
+            vec![Out::Want {
+                to: A,
+                hash: h,
+                need: vec![]
+            }],
+            "缺得比 NEED_MAX 还多就全要"
+        );
+        // 小图：缺的不多就列具体块号
+        let small = test_webp(100, 100, 3 * CHUNK_BYTES);
+        let h2 = hash_of(&small);
+        let mut b2 = Transfer::default();
+        b2.announced(A, vec![h2.clone()], |_| false, 0);
+        b2.on_chunk(
+            A,
+            &h2,
+            (1, 3),
+            small[CHUNK_BYTES..2 * CHUNK_BYTES].to_vec(),
+            |_| false,
+            0,
+        );
+        assert_eq!(
+            b2.tick(REASK_MS, &[]),
+            vec![Out::Want {
+                to: A,
+                hash: h2,
+                need: vec![0, 2]
+            }],
+            "缺得不多就列出来"
         );
     }
 }

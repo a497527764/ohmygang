@@ -30,11 +30,14 @@ input, select, textarea { font: inherit; color: inherit; }
 
 .v-shell {
   height: 100%;
+  user-select: none;
+  -webkit-user-select: none;
   background:
     radial-gradient(1100px 520px at 82% -16%, rgba(0, 231, 255, 0.07), transparent 62%),
     linear-gradient(180deg, rgba(255, 46, 99, 0.05), transparent 34%),
     var(--bg);
 }
+.v-shell input, .v-shell textarea { user-select: text; -webkit-user-select: text; }
 .v-main {
   height: 100%;
   padding: 28px 16px 28px;
@@ -890,6 +893,17 @@ input, select, textarea { font: inherit; color: inherit; }
 .v-mini-slot img { width: 26px; height: 26px; object-fit: contain; pointer-events: none; }
 .v-mini-slot:hover { border-color: var(--cyan); }
 .v-mini-slot.on { border-color: var(--cyan); background: var(--cyan-dim); }
+/* 信号轮盘格子不带外框：图标直接落在盘面上（放大 1.25 倍），选中/悬停用发光提示 */
+.v-mini-wheel:not(.emote) .v-mini-slot {
+  background: transparent;
+  border: 0;
+  clip-path: none;
+}
+.v-mini-wheel:not(.emote) .v-mini-slot img { width: 32.5px; height: 32.5px; }
+.v-mini-wheel:not(.emote) .v-mini-slot:hover,
+.v-mini-wheel:not(.emote) .v-mini-slot.on { background: transparent; border: 0; }
+.v-mini-wheel:not(.emote) .v-mini-slot:hover img,
+.v-mini-wheel:not(.emote) .v-mini-slot.on img { filter: drop-shadow(0 0 6px var(--cyan)); }
 .v-mini-core {
   position: absolute;
   left: 50%;
@@ -910,7 +924,11 @@ input, select, textarea { font: inherit; color: inherit; }
 .v-side-col > :last-child { margin-top: auto; }
 .v-editor-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; align-self: stretch; }
 /* 表情很多：图标网格自己滚，别把卡片撑破 */
-.v-editor-side .v-icon-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 2px; align-content: start; }
+.v-editor-side > .v-icon-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 2px; align-content: start; }
+/* 「默认表情 / 自定义表情」分组小标题 */
+.v-emote-sec-title { color: var(--text-2); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; }
+/* 自定义表情折叠里的摆放网格：自己滚 */
+.v-fold-body .v-icon-grid { max-height: 168px; overflow-y: auto; padding-right: 2px; align-content: start; }
 .v-editor-cur {
   display: flex;
   align-items: center;
@@ -936,6 +954,26 @@ input, select, textarea { font: inherit; color: inherit; }
 .v-icon-cell.on { border-color: var(--cyan); background: var(--cyan-dim); }
 .v-icon-cell.sm { height: 38px; }
 .v-icon-cell.sm img { width: 24px; height: 24px; }
+.v-icon-cell.drag { border-color: var(--orange); background: var(--orange-dim); }
+.v-icon-wrap { position: relative; }
+.v-cell-del {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-hi);
+  background: var(--card);
+  color: var(--text-2);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--fast) var(--ease);
+}
+.v-icon-wrap:hover .v-cell-del { opacity: 1; }
+.v-cell-del:hover { color: var(--red); border-color: var(--red); }
+.v-cell-del.danger { opacity: 1; color: var(--red); border-color: var(--red); }
 .v-inline-pick { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 0 4px; }
 .v-side-col { display: flex; flex-direction: column; gap: 12px; }
 
@@ -1146,9 +1184,10 @@ input, select, textarea { font: inherit; color: inherit; }
   .v-mini-wheel { width: 220px; height: 220px; }
   .v-mini-slot { width: 32px; height: 32px; }
   .v-mini-slot img { width: 21px; height: 21px; }
+  .v-mini-wheel:not(.emote) .v-mini-slot img { width: 26.25px; height: 26.25px; }
   .v-mini-core { width: 42px; height: 42px; font-size: 10px; }
   .v-editor-side { width: 100%; }
-  .v-editor-side .v-icon-grid { flex: none; min-height: 90px; max-height: 190px; }
+  .v-editor-side > .v-icon-grid { flex: none; min-height: 90px; max-height: 190px; }
   .v-side-col > :last-child { margin-top: 0; }
 
   /* 按键规则、关于页都改单列，内容靠 tab-body 自己滚 */

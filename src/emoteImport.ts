@@ -124,9 +124,39 @@ export function fitSize(w: number, h: number, side: number): { width: number; he
 /** 去掉扩展名当默认名字。 */
 export const nameFromFile = (fileName: string): string => fileName.replace(/(.)\.[^.]*$/, "$1");
 
-async function encodeStill(frame: VideoFrame): Promise<Uint8Array | null> {
+/** 解出来的第一帧：ImageDecoder 能数出 GIF/WebP 帧数；WebView2 没有它时退回 createImageBitmap（动图只取第一帧）。 */
+interface DecodedFrame {
+  image: VideoFrame | ImageBitmap;
+  animated: boolean;
+  close: () => void;
+}
+
+async function decodeFirstFrame(bytes: Uint8Array, type: ImageType): Promise<DecodedFrame> {
+  if (typeof ImageDecoder !== "undefined") {
+    const decoder = new ImageDecoder({ data: bytes, type: MIME[type] });
+    await Promise.all([decoder.tracks.ready, decoder.completed]); // 数据都进来了，帧数才准
+    const frames = decoder.tracks.selectedTrack?.frameCount ?? 1;
+    const frame = (await decoder.decode({ frameIndex: 0 })).image;
+    return {
+      image: frame,
+      animated: (type === "gif" || type === "webp") && frames > 1,
+      close: () => {
+        frame.close();
+        decoder.close();
+      },
+    };
+  }
+  const bitmap = await createImageBitmap(new Blob([bytes.slice()], { type: MIME[type] }));
+  return { image: bitmap, animated: false, close: () => bitmap.close() };
+}
+
+const frameSize = (f: VideoFrame | ImageBitmap): { width: number; height: number } =>
+  "displayWidth" in f ? { width: f.displayWidth, height: f.displayHeight } : { width: f.width, height: f.height };
+
+async function encodeStill(frame: VideoFrame | ImageBitmap): Promise<Uint8Array | null> {
+  const { width: fw, height: fh } = frameSize(frame);
   for (const side of STILL_SIDES) {
-    const size = fitSize(frame.displayWidth, frame.displayHeight, side);
+    const size = fitSize(fw, fh, side);
     const canvas = new OffscreenCanvas(size.width, size.height);
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
@@ -141,9 +171,10 @@ async function encodeStill(frame: VideoFrame): Promise<Uint8Array | null> {
 }
 
 /** 自定义表情：保真，最大 1000 像素、1 MB（比例不限）。 */
-async function encodeCustomStill(frame: VideoFrame): Promise<Uint8Array | null> {
+async function encodeCustomStill(frame: VideoFrame | ImageBitmap): Promise<Uint8Array | null> {
   const side = 1000;
-  const size = fitSize(frame.displayWidth, frame.displayHeight, side);
+  const { width: fw, height: fh } = frameSize(frame);
+  const size = fitSize(fw, fh, side);
   const canvas = new OffscreenCanvas(size.width, size.height);
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
@@ -165,25 +196,20 @@ export async function prepareEmote(file: File): Promise<Result<PreparedEmote>> {
   const declared = imageSize(bytes);
   if (!declared) return fail("这张图打不开");
   if (Math.max(declared.width, declared.height) > INPUT_MAX_SIDE) return fail("图片太大了，边长最多 8192 像素");
-  let decoder: ImageDecoder | null = null;
-  let frame: VideoFrame | null = null;
+  let decoded: DecodedFrame | null = null;
   try {
-    decoder = new ImageDecoder({ data: bytes, type: MIME[type] });
-    await Promise.all([decoder.tracks.ready, decoder.completed]); // 数据都进来了，帧数才准
-    const frames = decoder.tracks.selectedTrack?.frameCount ?? 1;
-    frame = (await decoder.decode({ frameIndex: 0 })).image;
-    const animated = (type === "gif" || type === "webp") && frames > 1;
-    if (animated && (bytes.length > ANIM_MAX_BYTES || Math.max(frame.displayWidth, frame.displayHeight) > ANIM_MAX_SIDE)) {
+    decoded = await decodeFirstFrame(bytes, type);
+    const { width, height } = frameSize(decoded.image);
+    if (decoded.animated && (bytes.length > ANIM_MAX_BYTES || Math.max(width, height) > ANIM_MAX_SIDE)) {
       return fail("动图太大了：最多 5 MB、边长 1024 像素");
     }
-    const still = await encodeStill(frame);
+    const still = await encodeStill(decoded.image);
     if (!still) return fail("这张图细节太多，缩不到 12 KB，换一张简单点的");
-    return { ok: true, value: { name: nameFromFile(file.name), still, anim: animated ? bytes : null } };
+    return { ok: true, value: { name: nameFromFile(file.name), still, anim: decoded.animated ? bytes : null } };
   } catch {
     return fail("这张图打不开");
   } finally {
-    frame?.close();
-    decoder?.close();
+    decoded?.close();
   }
 }
 
@@ -203,25 +229,20 @@ export async function prepareCustomEmote(file: File): Promise<Result<PreparedEmo
   const declared = imageSize(bytes);
   if (!declared) return fail("这张图打不开");
   if (Math.max(declared.width, declared.height) > INPUT_MAX_SIDE) return fail("图片太大了，边长最多 8192 像素");
-  let decoder: ImageDecoder | null = null;
-  let frame: VideoFrame | null = null;
+  let decoded: DecodedFrame | null = null;
   try {
-    decoder = new ImageDecoder({ data: bytes, type: MIME[type] });
-    await Promise.all([decoder.tracks.ready, decoder.completed]);
-    const frames = decoder.tracks.selectedTrack?.frameCount ?? 1;
-    frame = (await decoder.decode({ frameIndex: 0 })).image;
-    const animated = (type === "gif" || type === "webp") && frames > 1;
-    if (animated && (bytes.length > ANIM_MAX_BYTES || Math.max(frame.displayWidth, frame.displayHeight) > ANIM_MAX_SIDE)) {
+    decoded = await decodeFirstFrame(bytes, type);
+    const { width, height } = frameSize(decoded.image);
+    if (decoded.animated && (bytes.length > ANIM_MAX_BYTES || Math.max(width, height) > ANIM_MAX_SIDE)) {
       return fail("动图太大了：最多 5 MB、边长 1024 像素");
     }
-    const still = await encodeCustomStill(frame);
+    const still = await encodeCustomStill(decoded.image);
     if (!still) return fail("这张图压不到 1 MB，换一张简单点的");
-    return { ok: true, value: { name: nameFromFile(file.name), still, anim: animated ? bytes : null } };
+    return { ok: true, value: { name: nameFromFile(file.name), still, anim: decoded.animated ? bytes : null } };
   } catch {
     return fail("这张图打不开");
   } finally {
-    frame?.close();
-    decoder?.close();
+    decoded?.close();
   }
 }
 

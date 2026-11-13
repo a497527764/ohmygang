@@ -317,6 +317,8 @@ pub fn overlay_idle(window: WebviewWindow, state: State<'_, AppState>, idle: boo
 
 /// 导入一个表情：静态图（控制面板缩好的 WebP）必有，动画、音效可选，都是 base64。
 /// 文件检查过写进 `emotes/`，再加进设置里的导入列表（同一张图再导入一次就换掉原来那条）。
+/// `replace_id` 传了就替换那一条（拖到已有表情上），不传就新增（拖到空白处）。
+/// 名字后台自动生成，出场效果用全局设置里的 `emote_fx`。
 #[tauri::command]
 pub fn emote_import(
     app: AppHandle,
@@ -324,8 +326,7 @@ pub fn emote_import(
     still: String,
     anim: Option<String>,
     sound: Option<String>,
-    name: String,
-    fx: u8,
+    replace_id: Option<String>,
 ) -> Result<Settings, String> {
     let decode = |s: &str| {
         use base64::Engine;
@@ -337,14 +338,24 @@ pub fn emote_import(
     let anim = anim.as_deref().map(decode).transpose()?;
     let sound = sound.as_deref().map(decode).transpose()?;
     let mut s = state.settings();
-    let id = format!("c:{}", emotes::store::hash_of(&still));
-    if s.custom_emotes.len() >= emotes::MAX_CUSTOM && !s.custom_emotes.iter().any(|c| c.id == id) {
+    let hash = emotes::store::hash_of(&still);
+    let id = format!("c:{hash}");
+    let fx = s.emote_fx;
+    // 替换模式：老的那条不占新名额
+    let replacing = replace_id
+        .as_deref()
+        .is_some_and(|rid| s.custom_emotes.iter().any(|c| c.id == rid));
+    if s.custom_emotes.len() >= emotes::MAX_CUSTOM
+        && !replacing
+        && !s.custom_emotes.iter().any(|c| c.id == id)
+    {
         return Err(emotes::store::ImportError::Full.to_string());
     }
     state
         .emotes
         .import_custom(&still, anim.as_deref(), sound.as_deref())
         .map_err(|e| e.to_string())?;
+    let name = emotes::clean_name("", &hash);
     let entry = emotes::CustomEmote {
         id: id.clone(),
         name,
@@ -352,9 +363,31 @@ pub fn emote_import(
         sound: sound.is_some(),
         fx,
     };
-    match s.custom_emotes.iter_mut().find(|c| c.id == id) {
-        Some(c) => *c = entry,
-        None => s.custom_emotes.push(entry),
+    if let Some(rid) = replace_id.as_deref() {
+        // 拖到已有表情上：原地替换，轮盘引用跟着换
+        if let Some(pos) = s.custom_emotes.iter().position(|c| c.id == rid) {
+            if rid != id {
+                for slot in &mut s.emote_wheel {
+                    if slot == rid {
+                        *slot = id.clone();
+                    }
+                }
+                if s.click_emote == rid {
+                    s.click_emote = id.clone();
+                }
+                if let Some(hash) = emotes::custom_hash(rid) {
+                    state.emotes.remove(hash);
+                }
+            }
+            s.custom_emotes[pos] = entry;
+        } else {
+            s.custom_emotes.push(entry);
+        }
+    } else {
+        match s.custom_emotes.iter_mut().find(|c| c.id == id) {
+            Some(c) => *c = entry,
+            None => s.custom_emotes.push(entry),
+        }
     }
     let raw = serde_json::to_value(&s).map_err(|e| e.to_string())?;
     apply_settings(&app, &state, &raw)
@@ -433,7 +466,7 @@ pub fn text_preview(state: State<'_, AppState>, style: String, size: u32, effect
     if ok {
         state.overlays.send(Msg::TextPreview {
             style,
-            size: size.clamp(16, 56),
+            size: size.clamp(16, 100),
             effect,
         });
     }

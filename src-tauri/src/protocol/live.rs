@@ -102,8 +102,8 @@ pub enum LiveBody {
         to: MemberId,
         #[serde(rename = "h", with = "serde_bytes")]
         hash: [u8; 16],
-        #[serde(rename = "n", with = "serde_bytes")]
-        need: Vec<u8>,
+        #[serde(rename = "n")]
+        need: Vec<u16>,
     },
     /// 静态图的一块：第 i 块、共 n 块。
     #[serde(rename = "H")]
@@ -111,9 +111,9 @@ pub enum LiveBody {
         #[serde(rename = "h", with = "serde_bytes")]
         hash: [u8; 16],
         #[serde(rename = "i")]
-        i: u8,
+        i: u16,
         #[serde(rename = "n")]
-        n: u8,
+        n: u16,
         #[serde(rename = "b", with = "serde_bytes")]
         bytes: Vec<u8>,
     },
@@ -419,15 +419,15 @@ mod tests {
         );
     }
 
-    /// 最大的分块、报满 9 个哈希的在线状态都要装得进一个包。
+    /// 最大的分块、补要单和报满 9 个哈希的在线状态都要装得进一个包。
     #[test]
     fn biggest_frames_fit_one_packet() {
-        use crate::emotes::transfer::{CHUNK_BYTES, CHUNKS_MAX};
+        use crate::emotes::transfer::{CHUNK_BYTES, CHUNKS_MAX, NEED_MAX};
         use crate::protocol::frame::MAX_FRAME_LEN;
         let chunk = LiveBody::Chunk {
             hash: [0xff; 16],
-            i: 255,
-            n: 255,
+            i: CHUNKS_MAX - 1,
+            n: CHUNKS_MAX,
             bytes: vec![0xff; CHUNK_BYTES],
         };
         assert!(
@@ -438,9 +438,13 @@ mod tests {
         let want = LiveBody::Want {
             to: [0xff; 32],
             hash: [0xff; 16],
-            need: (0..CHUNKS_MAX).collect(),
+            need: (0..NEED_MAX as u16).collect(),
         };
-        assert!(wire_len(&want) <= MAX_FRAME_LEN);
+        assert!(
+            wire_len(&want) <= MAX_FRAME_LEN,
+            "补要单帧 {} 字节",
+            wire_len(&want)
+        );
         let presence = LiveBody::Presence {
             status: Status::Online,
             laning: false,

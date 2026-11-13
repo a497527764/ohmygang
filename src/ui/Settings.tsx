@@ -1,12 +1,12 @@
 // 3.3 设置页：唯一二级页，顶部一排 HUD tab，分区承载原来的信号 / 表情 / 队伍 / 按键 / 功能 / 关于。
 // 轮盘编辑器（信号、表情各一个）从旧独立页搬进来；说明文字只保留在 title 里。
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   importEmote, onUpdate, onVoice, previewEmote, previewPing, removeEmote, textPreview,
   updateCheck, updateInstall, updateView, voiceTest, voiceView,
   type KeyClash, type Settings, type Status, type TextEffect, type UpdateView, type VoiceStatus,
 } from "../api";
-import { prepareCustomEmote, prepareSound, toBase64, type PreparedEmote } from "../emoteImport";
+import { prepareCustomEmote, toBase64 } from "../emoteImport";
 import { KeyCapture } from "../components/KeyCapture";
 import { vkLabel } from "../shared/keys";
 import { ALL_PINGS, pingById, type PingId } from "../shared/pings";
@@ -152,10 +152,6 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
   // ---- 表情轮盘编辑 ----
   const emoteSlot = useState(0);
   const emoteIcon = (ref: string) => emoteIconStyled(ref, s.iconStyle);
-  const allEmoteRefs: string[] = useMemo(
-    () => [...EMOTE_CATALOG.map((e) => e.slug), ...s.customEmotes.map((c) => c.id)],
-    [s.customEmotes],
-  );
   const placeEmote = (ref: string, slot: number) => {
     const next = [...s.emoteWheel];
     const from = next.indexOf(ref);
@@ -164,86 +160,62 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
     return next;
   };
 
-  // ---- 表情导入 ----
+  // ---- 表情导入：即拖即导，无暂存区 ----
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [picked, setPicked] = useState<PreparedEmote | null>(null);
-  const [sound, setSound] = useState<Uint8Array | null>(null);
-  const [name, setName] = useState("");
-  const [fx, setFx] = useState(0);
   const [confirm, setConfirm] = useState<string | null>(null);
-  const previewUrl = useMemo(
-    () => (picked ? URL.createObjectURL(new Blob([picked.still.slice()], { type: "image/webp" })) : null),
-    [picked],
-  );
-  useEffect(() => () => (previewUrl ? URL.revokeObjectURL(previewUrl) : undefined), [previewUrl]);
-  const pickImage = async (file: File | undefined) => {
+  const [dragTarget, setDragTarget] = useState<string | null>(null); // "new" = 拖到空白处，否则 = 拖到某个表情上
+
+  const doImport = useCallback(async (file: File | undefined, replaceId?: string) => {
     if (!file) return;
-    const r = await prepareCustomEmote(file);
-    if (!r.ok) return setError(r.error);
-    setPicked(r.value);
-    setName(r.value.name.slice(0, 24));
+    setBusy(true);
     setError(null);
-  };
-  const pickSound = async (file: File | undefined) => {
-    if (!file) return;
-    const r = await prepareSound(file);
-    if (r.ok) setSound(r.value);
-    else setError(r.error);
-  };
-  const saveEmote = () => {
-    if (!picked) return;
-    const atLimit = s.customEmotes.length >= MAX_CUSTOM_EMOTES;
-    const go = () => {
-      setBusy(true);
-      importEmote({
-        still: toBase64(picked.still),
-        anim: picked.anim ? toBase64(picked.anim) : null,
-        sound: sound ? toBase64(sound) : null,
-        name,
-        fx,
-      })
-        .then((saved) => {
-          onSaved(saved);
-          setPicked(null);
-          setSound(null);
-          setName("");
-          setFx(0);
-          setError(null);
-        }, (e) => setError(String(e)))
-        .finally(() => setBusy(false));
-    };
-    // 到了上限：先问，再删最早导入的那一个，再导入新的
-    if (atLimit) {
-      if (!window.confirm(`自定义表情已有 ${MAX_CUSTOM_EMOTES} 个，继续导入会删除最早导入的那一个，确定吗？`)) return;
-      const earliest = s.customEmotes[0]?.id;
-      if (earliest) {
-        removeEmote(earliest).then(go).catch((e) => setError(String(e)));
-        return;
-      }
+    try {
+      const r = await prepareCustomEmote(file);
+      if (!r.ok) { setError(r.error); return; }
+      const saved = await importEmote({
+        still: toBase64(r.value.still),
+        anim: r.value.anim ? toBase64(r.value.anim) : null,
+        sound: null,
+        replaceId: replaceId ?? null,
+      });
+      onSaved(saved);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
     }
-    go();
-  };
-  const [drag, setDrag] = useState(false);
-  const onDrop = (e: React.DragEvent) => {
+  }, [onSaved]);
+
+  const onDrop = useCallback((e: React.DragEvent, replaceId?: string) => {
     e.preventDefault();
-    setDrag(false);
+    e.stopPropagation();
+    setDragTarget(null);
     const f = e.dataTransfer.files?.[0];
-    if (f) void pickImage(f);
-  };
-  const onPaste = (e: React.ClipboardEvent) => {
-    const item = Array.from(e.clipboardData.items).find((i) => i.type.startsWith("image/"));
-    const f = item?.getAsFile();
-    if (f) {
-      e.preventDefault();
-      void pickImage(f);
-    }
-  };
+    if (f) void doImport(f, replaceId);
+  }, [doImport]);
+
+  // 粘贴导入挂到 window 上：dropzone 是普通 div 收不到 paste；正在输入的框里粘贴不抢
+  useEffect(() => {
+    if (tab !== "emotes") return;
+    const onPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      const item = Array.from(e.clipboardData?.items ?? []).find((i) => i.type.startsWith("image/"));
+      const f = item?.getAsFile();
+      if (f) {
+        e.preventDefault();
+        void doImport(f);
+      }
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [tab, doImport]);
 
   return (
     <div className="v-page">
       <header className="v-page-head">
-        <button type="button" className="v-back" onClick={onBack} title="返回主页 · Ctrl+E">
+        <button type="button" className="v-back" onClick={onBack} title="返回主页 · Ctrl+E / Esc">
           <Glyph name="chevron" size={22} />
         </button>
         <h1>设置</h1>
@@ -447,15 +419,59 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                   <b>{emoteName(s.emoteWheel[emoteSlot[0]], s.customEmotes)}</b>
                   <span>{DIRS[emoteSlot[0]]}</span>
                 </div>
+                <div className="v-emote-sec-title">默认表情</div>
                 <div className="v-icon-grid emote">
-                  {allEmoteRefs.map((ref) => (
-                    <button key={ref} className={`v-icon-cell${ref === s.emoteWheel[emoteSlot[0]] ? " on" : ""}`}
-                      title={emoteName(ref, s.customEmotes)}
-                      onClick={() => onChange({ emoteWheel: placeEmote(ref, emoteSlot[0]) })}>
-                      <img src={emoteIcon(ref)} alt="" />
+                  {EMOTE_CATALOG.map((e) => (
+                    <button key={e.slug} className={`v-icon-cell${e.slug === s.emoteWheel[emoteSlot[0]] ? " on" : ""}`}
+                      title={emoteName(e.slug, s.customEmotes)}
+                      onClick={() => onChange({ emoteWheel: placeEmote(e.slug, emoteSlot[0]) })}>
+                      <img src={emoteIcon(e.slug)} alt="" />
                     </button>
                   ))}
                 </div>
+                <Fold icon="smile" label="自定义表情" count={s.customEmotes.length} defaultOpen>
+                  {error && <p className="v-error">{error}</p>}
+                  {s.customEmotes.length > 0 && (
+                    <div className="v-icon-grid emote">
+                      {s.customEmotes.map((c: CustomEmote) => (
+                        <div key={c.id} className="v-icon-wrap"
+                          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragTarget(c.id); }}
+                          onDragLeave={() => setDragTarget(null)}
+                          onDrop={(e) => onDrop(e, c.id)}>
+                          <button className={`v-icon-cell${c.id === s.emoteWheel[emoteSlot[0]] ? " on" : ""}${dragTarget === c.id ? " drag" : ""}`}
+                            title={emoteName(c.id, s.customEmotes)}
+                            onClick={() => onChange({ emoteWheel: placeEmote(c.id, emoteSlot[0]) })}>
+                            <img src={emoteIcon(c.id)} alt="" />
+                          </button>
+                          {confirm === c.id ? (
+                            <button className="v-cell-del danger" title="确定删除"
+                              onClick={(e) => { e.stopPropagation(); setConfirm(null); removeEmote(c.id).then(onSaved, (e2) => setError(String(e2))); }}>
+                              <Glyph name="check" size={11} />
+                            </button>
+                          ) : (
+                            <button className="v-cell-del" title="删除"
+                              onClick={(e) => { e.stopPropagation(); setConfirm(c.id); }}>
+                              <Glyph name="close" size={11} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div
+                    className={`v-dropzone${dragTarget === "new" ? " drag" : ""}`}
+                    onDragOver={(e) => { e.preventDefault(); setDragTarget("new"); }}
+                    onDragLeave={() => setDragTarget(null)}
+                    onDrop={(e) => onDrop(e)}
+                  >
+                    <label className={`v-btn ghost${busy ? " disabled" : ""}`}>
+                      <Glyph name="image" size={18} />
+                      {busy ? "导入中…" : "选图 / 拖拽 / 粘贴"}
+                      <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden disabled={busy} onChange={(e) => void doImport(e.target.files?.[0])} />
+                    </label>
+                    <span className="v-note">{s.customEmotes.length} / {MAX_CUSTOM_EMOTES} · 拖到表情上替换 · 最多 1000×1000、1 MB</span>
+                  </div>
+                </Fold>
               </div>
             </section>
             <div className="v-side-col">
@@ -475,6 +491,11 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                 <Row icon="target" label="表情大小">
                   <Range label="表情大小" value={s.emoteSizePx} min={80} max={300} unit="px" onChange={(emoteSizePx) => onChange({ emoteSizePx })} />
                 </Row>
+                <Row icon="bolt" label="弹出方式" title="导入表情的出场效果，全部统一用这一个">
+                  <select className="v-select" aria-label="弹出方式" value={s.emoteFx} onChange={(e) => onChange({ emoteFx: Number(e.target.value) })}>
+                    {FX_NAMES.map((n, i) => <option key={n} value={i}>{n}</option>)}
+                  </select>
+                </Row>
                 <Row icon="volume" label="音效">
                   <Toggle label="表情音效" checked={s.emoteSound} onChange={(emoteSound) => onChange({ emoteSound })} />
                 </Row>
@@ -482,66 +503,6 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                   <Toggle label="队友表情" checked={s.friendEmotes} onChange={(friendEmotes) => onChange({ friendEmotes })} />
                 </Row>
               </section>
-              <Fold icon="smile" label="自定义表情" count={s.customEmotes.length}>
-                {error && <p className="v-error">{error}</p>}
-                {s.customEmotes.length > 0 && (
-                  <div className="v-custom-list">
-                    {s.customEmotes.map((c: CustomEmote) => (
-                      <div className="v-custom" key={c.id}>
-                        <img src={emoteIcon(c.id)} alt="" />
-                        <input value={c.name} maxLength={24} aria-label="名字"
-                          onChange={(e) => onChange({ customEmotes: s.customEmotes.map((x) => (x.id === c.id ? { ...x, name: e.target.value } : x)) })} />
-                        <select value={c.fx} aria-label="出场效果"
-                          onChange={(e) => onChange({ customEmotes: s.customEmotes.map((x) => (x.id === c.id ? { ...x, fx: Number(e.target.value) } : x)) })}>
-                          {FX_NAMES.map((n, i) => <option key={n} value={i}>{n}</option>)}
-                        </select>
-                        {confirm === c.id ? (
-                          <button className="v-icon-btn danger" title="确定删除" onClick={() => {
-                            setConfirm(null);
-                            removeEmote(c.id).then(onSaved, (e) => setError(String(e)));
-                          }}><Glyph name="check" size={18} /></button>
-                        ) : (
-                          <button className="v-icon-btn" title="删除" onClick={() => setConfirm(c.id)}><Glyph name="trash" size={18} /></button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div
-                  className={`v-dropzone${drag ? " drag" : ""}${picked ? " has" : ""}`}
-                  onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-                  onDragLeave={() => setDrag(false)}
-                  onDrop={onDrop}
-                  onPaste={onPaste}
-                >
-                  <label className="v-btn ghost">
-                    <Glyph name="image" size={18} />
-                    {picked ? "换图" : "选图 / 拖拽 / 粘贴"}
-                    <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden onChange={(e) => void pickImage(e.target.files?.[0])} />
-                  </label>
-                  {picked && (
-                    <>
-                      {previewUrl && <img className="v-import-preview" src={previewUrl} alt="" />}
-                      <input value={name} maxLength={24} aria-label="名字" placeholder="名字" onChange={(e) => setName(e.target.value)} />
-                      <select value={fx} aria-label="出场效果" onChange={(e) => setFx(Number(e.target.value))}>
-                        {FX_NAMES.map((n, i) => <option key={n} value={i}>{n}</option>)}
-                      </select>
-                      <label className="v-btn ghost">
-                        <Glyph name="volume" size={18} />
-                        {sound ? "已加音效" : "音效"}
-                        <input type="file" accept="audio/ogg,audio/mpeg,audio/wav,.ogg,.mp3,.wav" hidden onChange={(e) => void pickSound(e.target.files?.[0])} />
-                      </label>
-                      <Action icon="check" label="导入" onClick={saveEmote} />
-                    </>
-                  )}
-                  <span className="v-note">{s.customEmotes.length} / {MAX_CUSTOM_EMOTES} · 最多 1000×1000、1 MB</span>
-                  {picked && (
-                    <button type="button" className="v-icon-btn" disabled={busy} title="取消" onClick={() => { setPicked(null); setSound(null); }}>
-                      <Glyph name="close" size={18} />
-                    </button>
-                  )}
-                </div>
-              </Fold>
             </div>
           </div>
         )}
@@ -559,7 +520,7 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                       onChange={(textStyle) => onChange({ textStyle })} />
                   </Row>
                   <Row icon="text" label="字号">
-                    <Range label="字号" value={s.textSizePx} min={16} max={56} unit="px" onChange={(textSizePx) => onChange({ textSizePx })} />
+                    <Range label="字号" value={s.textSizePx} min={16} max={100} unit="px" onChange={(textSizePx) => onChange({ textSizePx })} />
                   </Row>
                   <Row icon="brush" label="特效">
                     <select className="v-select" aria-label="字幕特效" value={s.textEffect} onChange={(e) => onChange({ textEffect: e.target.value as TextEffect })}>

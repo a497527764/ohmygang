@@ -26,6 +26,8 @@ interface OverlaySettings {
   clickEmote: string;
   emoteSizePx: number;
   emoteSound: boolean;
+  /** 导入表情统一的出场效果。 */
+  emoteFx: number;
   customEmotes: CustomEmote[];
   friendEmotes: boolean;
   /** league / vector：和设置页一致，一处切换全窗口生效。 */
@@ -86,7 +88,7 @@ function artOf(p: EmoteSpawn, s: OverlaySettings): EmoteArt {
   const hash = customHash(p.emote);
   if (!hash) return { kind: "placeholder" };
   const own = s.customEmotes.find((c) => c.id === p.emote);
-  if (own) return { kind: "custom", url: customUrl(hash, own.animated ? "anim" : "webp"), fx: own.fx };
+  if (own) return { kind: "custom", url: customUrl(hash, own.animated ? "anim" : "webp"), fx: p.fx };
   if (p.mine || !s.friendEmotes) return { kind: "placeholder" };
   return { kind: "custom", url: customUrl(hash, "webp"), fx: p.fx };
 }

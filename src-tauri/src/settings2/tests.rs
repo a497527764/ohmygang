@@ -76,6 +76,7 @@ fn a_saved_file_reads_back_the_same() {
         click_emote: "c:0123456789abcdef0123456789abcdef".into(),
         emote_size_px: 200,
         emote_sound: false,
+        emote_fx: 0,
         custom_emotes: vec![CustomEmote {
             id: "c:0123456789abcdef0123456789abcdef".into(),
             name: "阿钢".into(),
@@ -543,7 +544,7 @@ fn overlay_text_is_bigger_by_default_with_a_known_effect() {
         normalize(&json!({ "textEffect": "rainbow" })).text_effect,
         "neon"
     );
-    assert_eq!(normalize(&json!({ "textSizePx": 200 })).text_size_px, 56);
+    assert_eq!(normalize(&json!({ "textSizePx": 200 })).text_size_px, 100);
     assert_eq!(normalize(&json!({ "textSizePx": 3 })).text_size_px, 16);
     let o = normalize(&json!({ "textSizePx": 40, "textEffect": "neon" })).overlay();
     assert_eq!((o.text_size_px, o.text_effect.as_str()), (40, "neon"));

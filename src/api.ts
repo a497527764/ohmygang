@@ -53,6 +53,8 @@ export interface Settings {
   clickEmote: string;
   emoteSizePx: number;
   emoteSound: boolean;
+  /** 导入表情统一的出场效果（0–5）。 */
+  emoteFx: number;
   customEmotes: CustomEmote[];
   /** 显示队友导入的表情（要传图）。 */
   friendEmotes: boolean;
@@ -119,7 +121,7 @@ export const openAccessibilitySettings = (): Promise<void> => invoke("open_acces
 export const relaunchApp = (): Promise<void> => invoke("app_relaunch");
 export const previewEmote = (emote: string): Promise<void> => invoke("emote_preview", { emote });
 /** 导入表情：文件都是 base64，返回存好后的设置。 */
-export const importEmote = (args: { still: string; anim: string | null; sound: string | null; name: string; fx: number }): Promise<Settings> =>
+export const importEmote = (args: { still: string; anim: string | null; sound: string | null; replaceId?: string | null }): Promise<Settings> =>
   invoke("emote_import", args);
 export const removeEmote = (id: string): Promise<Settings> => invoke("emote_remove", { id });
 

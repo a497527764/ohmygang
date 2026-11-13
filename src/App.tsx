@@ -3,6 +3,7 @@
 // 数据流沿用旧版：启动读设置和状态 → 改设置先更新界面，停手 300ms 后整份写回 Rust（Rust 修正的值回填）；
 // 信号开关在托盘或快捷键处变化时由 "pings://enabled" 推过来。
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { DEFAULT_THEME, getStatus, onEnabled, onNavigate, readSettings, setEnabled, writeSettings, type KeyClash, type Settings, type Status } from "./api";
 import { PermissionCard } from "./components/PermissionCard";
 import { Home } from "./ui/Home";
@@ -49,12 +50,16 @@ export default function App() {
     return () => { void off.then((f) => f()); void offNav.then((f) => f()); };
   }, []);
 
-  // Ctrl+E：主页 ↔ 设置。窗口有焦点时有效（和页面里的输入框互不打架）。
+  // Ctrl+E：主页 ↔ 设置；Esc：设置页退回主页。窗口有焦点时有效（和页面里的输入框互不打架）。
+  // 录快捷键时 KeyCapture 在捕获阶段就把 Esc 拦掉，不会误触发返回。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === "e" || e.key === "E")) {
         e.preventDefault();
         setPage((p) => (p === "settings" ? "home" : "settings"));
+      }
+      if (e.key === "Escape" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.isComposing) {
+        setPage((p) => (p === "settings" ? "home" : p));
       }
     };
     window.addEventListener("keydown", onKey);
@@ -97,8 +102,16 @@ export default function App() {
     void setEnabled(on);
   };
 
+  // 空白拖窗：在非交互元素上按住鼠标就能拖动窗口（替代标题栏）。
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    const t = e.target as HTMLElement;
+    // 交互元素不触发拖窗：按钮、输入框、下拉、链接、标签、快捷键、tab、滑块、带 no-drag 标记的
+    if (t.closest("button,input,select,textarea,a,label,kbd,[role=tab],[role=button],[data-no-drag]")) return;
+    void getCurrentWindow().startDragging();
+  }, []);
+
   return (
-    <div className="v-shell">
+    <div className="v-shell" onMouseDown={onDragStart}>
       <main className="v-main">
         {error && <p className="v-error">{error}</p>}
         {status?.needsPermission && status.inputError && <PermissionCard reason={status.inputError} />}

@@ -215,6 +215,8 @@ pub struct Settings {
     pub click_emote: String,
     pub emote_size_px: u32,
     pub emote_sound: bool,
+    /// 导入表情的出场效果（0–5），全部导入表情统一用这一个。
+    pub emote_fx: u8,
     /// 导入的表情，最多 24 个，文件在数据目录的 `emotes/`。
     pub custom_emotes: Vec<CustomEmote>,
     /// 显示队友导入的表情（要传图）；关掉就不收也不发，队友的导入表情显示成问号。
@@ -283,6 +285,7 @@ impl Default for Settings {
             click_emote: emotes::DEFAULT_CLICK.into(),
             emote_size_px: 150,
             emote_sound: true,
+            emote_fx: 0,
             custom_emotes: Vec::new(),
             friend_emotes: true,
             team_text: true,
@@ -322,6 +325,7 @@ pub struct OverlaySettings {
     pub click_emote: String,
     pub emote_size_px: u32,
     pub emote_sound: bool,
+    pub emote_fx: u8,
     pub custom_emotes: Vec<CustomEmote>,
     pub friend_emotes: bool,
     /// 和 Settings::icon_style 一致，浮层据此挑原图还是矢量图。
@@ -364,12 +368,17 @@ const VOLUME: Limit = Limit {
 };
 const TEXT_SIZE: Limit = Limit {
     min: 16.0,
-    max: 56.0,
+    max: 100.0,
     step: 1.0,
 };
 const EMOTE_SIZE: Limit = Limit {
     min: 80.0,
     max: 300.0,
+    step: 1.0,
+};
+const FX_LIMIT: Limit = Limit {
+    min: 0.0,
+    max: 5.0,
     step: 1.0,
 };
 
@@ -697,6 +706,7 @@ pub fn normalize_keys(raw: &Value) -> (Settings, Vec<KeyClash>) {
         click_emote: emotes::normalize_click(get("clickEmote"), &custom),
         emote_size_px: num(get("emoteSizePx"), &EMOTE_SIZE, f64::from(d.emote_size_px)) as u32,
         emote_sound: bool_or(get("emoteSound"), d.emote_sound),
+        emote_fx: num(get("emoteFx"), &FX_LIMIT, f64::from(d.emote_fx)) as u8,
         custom_emotes: custom,
         friend_emotes: bool_or(get("friendEmotes"), d.friend_emotes),
         team_text: bool_or(get("teamText"), d.team_text),
@@ -792,6 +802,7 @@ impl Settings {
             click_emote: self.click_emote.clone(),
             emote_size_px: self.emote_size_px,
             emote_sound: self.emote_sound,
+            emote_fx: self.emote_fx,
             custom_emotes: self.custom_emotes.clone(),
             friend_emotes: self.friend_emotes,
             icon_style: self.icon_style.clone(),

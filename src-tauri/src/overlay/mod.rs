@@ -377,13 +377,9 @@ impl Actor {
         Some((display, to_ratio(lx, w), to_ratio(ly, h)))
     }
 
-    /// 导入表情自己选的出场效果；内置表情是 0。
-    fn own_fx(&self, emote: &str) -> u8 {
-        self.settings
-            .custom_emotes
-            .iter()
-            .find(|c| c.id == emote)
-            .map_or(0, |c| c.fx)
+    /// 导入表情的出场效果：统一用全局设置里的那一个。
+    fn own_fx(&self, _emote: &str) -> u8 {
+        self.settings.emote_fx
     }
 
     /// 本人的表情：画在这里，同时交给队伍。

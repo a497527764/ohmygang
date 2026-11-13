@@ -26,13 +26,13 @@ pub enum NetMsg {
         from: MemberId,
         to: MemberId,
         hash: String,
-        need: Vec<u8>,
+        need: Vec<u16>,
     },
     Chunk {
         from: MemberId,
         hash: String,
-        i: u8,
-        n: u8,
+        i: u16,
+        n: u16,
         bytes: Vec<u8>,
     },
     /// 队员离开或退出程序。
