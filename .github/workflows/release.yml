@@ -53,7 +53,13 @@ jobs:
         run: |
           if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then echo "::error::TAURI_SIGNING_PRIVATE_KEY secret 未配置"; exit 1; fi
           if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" ]; then echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD secret 未配置"; exit 1; fi
-          echo "签名密钥已配置"
+          echo "---"
+          echo "密钥前 20 字符（仅显示前缀）："
+          echo -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" | head -c 20
+          echo "..."
+          echo "密钥总长度：$(echo -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" | wc -c) 字节"
+          echo "密钥首行：$(echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" | head -1)"
+          echo "密钥行数：$(echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" | wc -l)"
       - name: 打包并签名
         shell: bash
         run: |
