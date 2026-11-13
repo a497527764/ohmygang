@@ -142,10 +142,12 @@ async fn handle_conn(
     let mut it = first_line.split_whitespace();
     let method = it.next().unwrap_or("");
     let path = it.next().unwrap_or("");
-    let is_ws = head_str.contains("Upgrade: websocket")
-        && head_str
-            .to_ascii_lowercase()
-            .contains("connection: upgrade");
+    // HTTP 头字段名按 RFC 7230 本来就不区分大小写（"Upgrade: websocket"、
+    // "upgrade: websocket"、"UPGRADE: WebSocket" 都应该认），所以这里先整体小写再判断。
+    // 之前第一段用的是大小写敏感的 contains，只有恰好发标准大小写的客户端能连上，
+    // 别的写法会被当成普通 HTTP 请求处理、握手直接失败。
+    let head_lower = head_str.to_ascii_lowercase();
+    let is_ws = head_lower.contains("upgrade: websocket") && head_lower.contains("connection: upgrade");
 
     if is_ws {
         let prefixed = PrefixStream::new(head, stream);
