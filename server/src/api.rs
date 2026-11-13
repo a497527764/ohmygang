@@ -31,10 +31,10 @@ struct Limit {
     window: i64,
 }
 
-/// 建队：同一 IP 一小时最多 10 次（全局额度之外再加一层，防单点刷）。
+/// 建队：同一 IP 一小时最多 30 次（设备维度的额度之外再加一层，防单点刷）。
 const L_CREATE: Limit = Limit {
     bucket: "create",
-    max: 10,
+    max: 30,
     window: 3600,
 };
 /// 进队：换码。正常用户偶尔用一次，一分钟 60 次足够。
@@ -80,19 +80,40 @@ const L_ADMIN: Limit = Limit {
     window: 60,
 };
 
-/// 全局建队配额：一小时 10 支、24 小时 20 支。
-/// 走环境变量可以调紧或放宽（比如自用想多建几支）。
-fn create_quota() -> (u32, u32) {
-    let hour = std::env::var("CREATE_PER_HOUR")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10);
-    let day = std::env::var("CREATE_PER_DAY")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20);
-    (hour, day)
+/// 建队额度。两层，都能用环境变量调，不用改代码：
+/// - 设备层：同一台设备（按 `member_id` 认设备）一小时 10 支、24 小时 20 支。
+///   认设备不认 IP——换网络、换梯子出口，额度还是你的。
+/// - 全局层：整个服务器合计一小时 200 支、24 小时 1000 支。
+///   设备层挡不住「每次换一个 member_id」的脚本，全局层才是防攻击的底线。
+fn create_quota() -> (u32, u32, u32, u32) {
+    let env = |k: &str, d: u32| {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d)
+    };
+    (
+        env("DEVICE_PER_HOUR", 10),
+        env("DEVICE_PER_DAY", 20),
+        env("CREATE_PER_HOUR", 200),
+        env("CREATE_PER_DAY", 1000),
+    )
 }
+
+/// 短码有效期（秒）：默认 30 天。
+/// 队伍里有人在用（最近 24 小时内 2 个以上成员报过心跳）就自动续期；
+/// 一个人建了队再也没人用，到期就把短码收回来，别让码白占着。
+pub fn code_ttl() -> i64 {
+    std::env::var("CODE_TTL_DAYS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(30)
+        * 86400
+}
+
+/// 短码复用冷却期（秒）：回收下来的码先在池子里放 7 天再发出去。
+/// 免得「刚过期的码马上被别人捡走」，拿着旧码的队友会稀里糊涂进到新队伍里。
+const CODE_REUSE_COOLDOWN: i64 = 7 * 86400;
 
 /// 管理后台登录凭证（自用后台，硬编码即可）。
 const ADMIN_USER: &str = "zhaopeng";
@@ -138,6 +159,31 @@ fn gen_short() -> String {
             SHORT_ALPHABET[i] as char
         })
         .collect()
+}
+
+/// 生成一个当前没被占用的短码。
+///
+/// 撞码的概率极低（32 个字符选 6 位），但万一撞了还得能继续，所以重试有上限——
+/// 原来是无条件死循环，数据库一读失败就卡住整个建队接口。
+fn gen_unique_short(store: &Arc<Store>) -> String {
+    for _ in 0..64 {
+        let c = gen_short();
+        if !store.team_exists(&c).unwrap_or(true) {
+            return c;
+        }
+    }
+    // 64 次都撞上（或数据库读不出来）：随机换掉其中一位再来一轮。
+    for _ in 0..64 {
+        let mut chars: Vec<char> = gen_short().chars().collect();
+        let pos = (rand::random::<u32>() % 6) as usize;
+        chars[pos] =
+            SHORT_ALPHABET[(rand::random::<u32>() % SHORT_ALPHABET.len() as u32) as usize] as char;
+        let c: String = chars.into_iter().collect();
+        if !store.team_exists(&c).unwrap_or(true) {
+            return c;
+        }
+    }
+    gen_short()
 }
 
 /// 记一次请求并判断是否超额。超额时返回 false，且不计数（放行额度内的部分）。
@@ -311,16 +357,39 @@ async fn create(
         Some(b) => b.try_into().unwrap(),
         None => return (400, json!({ "error": "member_id 非法" })),
     };
-    // 全局建队配额：一小时 10 支、24 小时 20 支（所有 IP 合计）。
+    // 建队额度。两层：设备（member_id）和整个服务器。
     // 校验通过才记账，参数都错就没必要占额度。
-    let (per_hour, per_day) = create_quota();
-    match store.reserve_create(now_secs(), peer, per_hour, per_day) {
-        Ok(true) => {}
-        Ok(false) => {
+    let (dev_hour, dev_day, glob_hour, glob_day) = create_quota();
+    match store.reserve_create(
+        now_secs(),
+        peer,
+        &member_hex,
+        crate::store::CreateLimits {
+            device_hour: dev_hour,
+            device_day: dev_day,
+            global_hour: glob_hour,
+            global_day: glob_day,
+        },
+    ) {
+        Ok(crate::store::Quota::Ok) => {}
+        Ok(crate::store::Quota::Device) => {
             return (
                 429,
                 json!({
-                    "error": format!("服务器建队额度已用尽（1 小时 {per_hour} 支 / 24 小时 {per_day} 支），请稍后再试"),
+                    "error": format!(
+                        "这台设备的建队额度已用尽（1 小时 {dev_hour} 支 / 24 小时 {dev_day} 支），请稍后再试"
+                    ),
+                    "retry_after_seconds": 3600,
+                }),
+            );
+        }
+        Ok(crate::store::Quota::Global) => {
+            return (
+                429,
+                json!({
+                    "error": format!(
+                        "服务器建队额度已用尽（1 小时 {glob_hour} 支 / 24 小时 {glob_day} 支），请稍后再试"
+                    ),
                     "retry_after_seconds": 3600,
                 }),
             );
@@ -332,14 +401,12 @@ async fn create(
     let owner_tag = crate::protocol::owner_tag_of(&member_id);
     let (_key, room_id) = crate::protocol::derive_room_keys(&secret, &owner_tag);
     let room_id_hex = crate::protocol::hex(&room_id);
-    // 6 位大写字母数字短码（去掉 0/O/1/I 等易混字符），确保不重复（短码池很大，冲突概率极低）
-    let short = loop {
-        let c = gen_short();
-        if !store.team_exists(&c).unwrap_or(true) {
-            break c;
-        }
-    };
     let now = now_secs();
+    // 短码：优先从回收池里取（省得白浪费码空间），池子里没有就现生成一个。
+    let short = match store.take_free_code(now, CODE_REUSE_COOLDOWN) {
+        Ok(Some(c)) if !store.team_exists(&c).unwrap_or(true) => c,
+        _ => gen_unique_short(store),
+    };
     let title = v
         .get("title")
         .and_then(|x| x.as_str())
@@ -354,6 +421,7 @@ async fn create(
             now,
             &member_hex,
             title.as_deref(),
+            now + code_ttl(),
         )
         .is_err()
     {
@@ -461,6 +529,8 @@ async fn heartbeat(body: &[u8], store: &Arc<Store>, server: &Arc<RelayServer>) -
 }
 
 /// 主页「加入过的队伍」的在线人数：15 分钟内报过心跳（每 10 分钟一次）就算在线。
+/// 顺带把每个房间的短码状态带回去：短码会被回收（到期没人用），
+/// 客户端要知道「这个码已经失效了」，不然用户还拿着旧码去分享。
 async fn stats(body: &[u8], store: &Arc<Store>) -> (u16, Value) {
     let v: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
@@ -474,6 +544,7 @@ async fn stats(body: &[u8], store: &Arc<Store>) -> (u16, Value) {
     }
     let since = now_secs() - 15 * 60;
     let mut out = serde_json::Map::new();
+    let mut codes = serde_json::Map::new();
     for r in rooms {
         let Some(room) = r.as_str() else { continue };
         if parse_hex(room, 16).is_none() {
@@ -482,8 +553,21 @@ async fn stats(body: &[u8], store: &Arc<Store>) -> (u16, Value) {
         if let Ok(n) = store.room_online(room, since) {
             out.insert(room.to_string(), json!(n));
         }
+        // null = 这个房间的短码已经没了（回收或过期）；有值 = 还能用。
+        match store.short_by_room(room) {
+            Ok(Some(short)) => {
+                codes.insert(room.to_string(), json!(short));
+            }
+            Ok(None) => {
+                codes.insert(room.to_string(), Value::Null);
+            }
+            Err(_) => {}
+        }
     }
-    (200, json!({ "stats": Value::Object(out) }))
+    (
+        200,
+        json!({ "stats": Value::Object(out), "codes": Value::Object(codes) }),
+    )
 }
 
 async fn code_lookup(path: &str, store: &Arc<Store>) -> (u16, Value) {

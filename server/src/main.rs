@@ -9,7 +9,7 @@ mod protocol;
 mod relay;
 mod store;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,6 +21,10 @@ use store::Store;
 const DAY: i64 = 86400;
 const IDLE_DAYS: i64 = 5; // 超过这么久无活动 → 回收
 const FEW_DAYS: i64 = 5; // 连续这么久不足 2 人 → 回收
+/// 黑名单保留多久。room_id 是 32 字节随机值，留 30 天足够挡住「拿旧房间复活」。
+const BLACKLIST_DAYS: i64 = 30;
+/// 短码池最多留多少个回收下来的码：多了没意义，池子是用来复用的，不是仓库。
+const FREE_CODE_KEEP: usize = 20_000;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,7 +35,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = std::env::var("DATA_DIR").unwrap_or_else(|_| "ohmygang.db".to_string());
 
     let store = Arc::new(Store::open(&db_path)?);
-    let blacklist: HashSet<String> = store.load_blacklist()?.into_iter().collect();
+    // 黑名单带回收时刻，久了可以老化清理。
+    let blacklist: HashMap<String, i64> = store.load_blacklist()?.into_iter().collect();
     let blacklist = Arc::new(Mutex::new(blacklist));
     let registry = relay::registry_from_store(&store);
     let server = RelayServer::new(registry, store.clone(), blacklist);
@@ -57,6 +62,12 @@ async fn reap(server: &Arc<RelayServer>, store: &Arc<Store>) {
     let now = api::now_secs();
     // 建队配额只看最近 24 小时，更早的流水清掉，表才不会一直长。
     let _ = store.prune_create_events(now - DAY);
+    // 短码池留太多没意义，裁到最近的若干个。
+    let _ = store.prune_free_codes(FREE_CODE_KEEP);
+    // 黑名单只增不减的话，内存和表都会一直涨。老到一定程度的条目清掉。
+    let _ = store.prune_blacklist(now - BLACKLIST_DAYS * DAY);
+    server.prune_blacklist(now - BLACKLIST_DAYS * DAY);
+    reap_expired_codes(server, store, now);
     let teams = store.list_teams().unwrap_or_default();
     for t in teams {
         let activity = server
@@ -105,6 +116,36 @@ async fn reap(server: &Arc<RelayServer>, store: &Arc<Store>) {
     }
 }
 
+/// 短码回收：一支队伍要「有人在用」才配继续占着短码。
+///
+/// 「有人在用」= 最近 24 小时内有 2 个以上成员报过心跳。一个人开着软件挂机
+/// 不会续命——不然建了队再也不用的话，短码会永远占着，码池就这么被吃光了。
+/// 回收下来的短码进池子等着复用（有过冷却期，不会立刻发给别人）。
+fn reap_expired_codes(server: &Arc<RelayServer>, store: &Arc<Store>, now: i64) {
+    let ttl = api::code_ttl();
+    let expired = store.expired_codes(now).unwrap_or_default();
+    for (room_id, short) in expired {
+        let recent = store.recent_member_count(&room_id, now - DAY).unwrap_or(0);
+        if recent >= 2 {
+            // 有人在用：给短码续期。
+            let _ = store.extend_code_expiry(&room_id, now + ttl);
+            continue;
+        }
+        // 没人用了：把短码收回来。队伍在中继上还能互相发消息（不进黑名单），
+        // 只是服务器不再发这个短码了，别人拿旧码来会得到「已过期」。
+        if store.release_code(&room_id, now).unwrap_or(None).is_some() {
+            eprintln!("回收短码（{days} 天没人用）：{short}", days = ttl / DAY);
+            // 内存登记表也清掉：这个房间服务器不再承认了，后面会按死队回收掉。
+            if let Ok(mut a) = server.registry().activity.lock() {
+                a.remove(&room_id);
+            }
+            if let Ok(mut m) = server.registry().members.lock() {
+                m.remove(&room_id);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,7 +162,7 @@ mod tests {
 
     async fn test_server() -> (Arc<RelayServer>, Arc<Store>, std::net::SocketAddr) {
         let store = Arc::new(Store::open(":memory:").unwrap());
-        let blacklist: StdMutex<HashSet<String>> = StdMutex::new(HashSet::new());
+        let blacklist: StdMutex<HashMap<String, i64>> = StdMutex::new(HashMap::new());
         let registry = relay::registry_from_store(&store);
         let server = RelayServer::new(registry, store.clone(), Arc::new(blacklist));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -291,7 +332,16 @@ mod tests {
         // 6 天前就无活动
         let old = api::now_secs() - 6 * DAY;
         store
-            .create_team("123456", &secret, &owner, &room_hex, old, &me_hex, None)
+            .create_team(
+                "123456",
+                &secret,
+                &owner,
+                &room_hex,
+                old,
+                &me_hex,
+                None,
+                old + api::code_ttl(),
+            )
             .unwrap();
         reap(&server, &store).await;
         assert!(
@@ -355,14 +405,14 @@ mod tests {
 
     // ---------- 防攻击与配额 ----------
 
-    /// 全局建队配额：一小时最多 10 支。第 11 支必须被拒，哪怕来自完全不同的 IP。
+    /// 建队额度按设备算：一台设备一小时内最多 10 支，**换 IP 也没用**。
+    /// 认设备不认 IP——换网络、换梯子出口，额度还是你的。
     #[tokio::test]
-    async fn create_quota_blocks_the_eleventh_team() {
+    async fn device_quota_blocks_the_eleventh_team_even_with_a_new_ip() {
         let (server, store, _addr) = test_server().await;
         let me = hex(32);
-        // 每个请求用不同的 IP：这样卡住的才是全局配额，而不是单 IP 限流。
         for i in 0..10 {
-            let peer = format!("10.0.0.{i}");
+            let peer = format!("10.4.0.{i}");
             let (status, _v) = api::handle_json(
                 "POST",
                 "/api/team/create",
@@ -376,6 +426,7 @@ mod tests {
             .await;
             assert_eq!(status, 200, "第 {} 支应建得出来", i + 1);
         }
+        // 换了个 IP，还是同一台设备
         let (status, v) = api::handle_json(
             "POST",
             "/api/team/create",
@@ -384,18 +435,243 @@ mod tests {
                 .as_slice(),
             &server,
             &store,
-            "10.0.0.200",
+            "10.4.0.200",
         )
         .await;
-        assert_eq!(status, 429, "第 11 支应被配额拦下");
+        assert_eq!(status, 429, "第 11 支应被设备额度拦下");
         assert!(
-            v["error"].as_str().unwrap_or("").contains("额度"),
-            "错误提示要说清是额度用尽：{}",
+            v["error"].as_str().unwrap_or("").contains("设备"),
+            "提示要说清是这台设备的额度用完了：{}",
             v["error"]
         );
     }
 
-    /// 单个 IP 反复建队要被打掉（IP 限流比全局配额更早触发）。
+    /// 你的额度用满了，不连累别的设备。
+    #[tokio::test]
+    async fn another_device_still_has_its_own_quota() {
+        let (server, store, _addr) = test_server().await;
+        let me_a = hex(32);
+        let me_b = format!("cd{}", &hex(32)[..62]);
+        for i in 0..10 {
+            let peer = format!("10.5.0.{i}");
+            let (status, _v) = api::handle_json(
+                "POST",
+                "/api/team/create",
+                serde_json::to_vec(&json!({ "member_id": me_a }))
+                    .unwrap()
+                    .as_slice(),
+                &server,
+                &store,
+                &peer,
+            )
+            .await;
+            assert_eq!(status, 200);
+        }
+        // 另一台设备，同一个 IP：该建得出来
+        let (status, _v) = api::handle_json(
+            "POST",
+            "/api/team/create",
+            serde_json::to_vec(&json!({ "member_id": me_b }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "10.5.0.1",
+        )
+        .await;
+        assert_eq!(status, 200, "别的设备不该被连累");
+    }
+
+    /// 全局额度是防脚本的底线：一堆「全新设备」也不行。
+    /// 设备层挡不住「每次换一个 member_id」的脚本，这一层才是真防线。
+    #[tokio::test]
+    async fn global_quota_stops_a_script_with_fresh_devices() {
+        let store = Store::open(":memory:").unwrap();
+        let now = api::now_secs();
+        // 假装全局上限是 3 支（设备层宽松，测的确实是全局层）
+        let limits = store::CreateLimits {
+            device_hour: 10,
+            device_day: 20,
+            global_hour: 3,
+            global_day: 10,
+        };
+        for i in 0..3 {
+            let dev = format!("dev{i}");
+            assert_eq!(
+                store.reserve_create(now, "1.1.1.1", &dev, limits).unwrap(),
+                store::Quota::Ok
+            );
+        }
+        // 第 4 支：新设备，设备层没超 → 全局层拦下
+        assert_eq!(
+            store
+                .reserve_create(now, "1.1.1.1", "dev9", limits)
+                .unwrap(),
+            store::Quota::Global
+        );
+    }
+
+    /// 短码回收：队伍没人用了，短码要收回来，不能一直占着。
+    #[tokio::test]
+    async fn unused_short_codes_are_recycled() {
+        let (server, store, _addr) = test_server().await;
+        let me = hex(32);
+        let (_s, v) = api::handle_json(
+            "POST",
+            "/api/team/create",
+            serde_json::to_vec(&json!({ "member_id": me }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "10.6.0.1",
+        )
+        .await;
+        let short = v["short_code"].as_str().unwrap().to_string();
+        let room = v["room_id"].as_str().unwrap().to_string();
+
+        // 把到期时间调到过去（模拟到期），队伍里只有创建者一个人
+        store
+            .extend_code_expiry(&room, api::now_secs() - 10)
+            .unwrap();
+        reap_expired_codes(&server, &store, api::now_secs());
+
+        // 短码被收走了：拿它进队要不到
+        let (status, _v) = api::handle_json(
+            "POST",
+            "/api/team/join",
+            serde_json::to_vec(&json!({ "code": short }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "10.6.0.2",
+        )
+        .await;
+        assert_eq!(status, 404, "过期的短码不该还能进队");
+
+        // 收回来的码在池子里：冷却期内不发出，冷却期过了就能复用
+        let now = api::now_secs();
+        assert!(
+            store.take_free_code(now, 7 * 86400).unwrap().is_none(),
+            "刚回收的码不该立刻发给别人"
+        );
+        assert!(
+            store.take_free_code(now, 0).unwrap().is_some(),
+            "过了冷却期就该能复用，短码不能白浪费"
+        );
+    }
+
+    /// 队伍真有人在用，短码就一直有效，不会被收走。
+    #[tokio::test]
+    async fn an_active_team_keeps_its_short_code() {
+        let (server, store, _addr) = test_server().await;
+        let me = hex(32);
+        let (_s, v) = api::handle_json(
+            "POST",
+            "/api/team/create",
+            serde_json::to_vec(&json!({ "member_id": me }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "10.7.0.1",
+        )
+        .await;
+        let short = v["short_code"].as_str().unwrap().to_string();
+        let room = v["room_id"].as_str().unwrap().to_string();
+
+        // 第二个成员报心跳：队伍里有两个真人
+        let other = format!("cd{}", &hex(32)[..62]);
+        let (s, _) = api::handle_json(
+            "POST",
+            "/api/team/heartbeat",
+            serde_json::to_vec(&json!({ "room_id": room, "member_id": other }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "10.7.0.2",
+        )
+        .await;
+        assert_eq!(s, 200);
+
+        store
+            .extend_code_expiry(&room, api::now_secs() - 10)
+            .unwrap();
+        reap_expired_codes(&server, &store, api::now_secs());
+
+        let (status, _v) = api::handle_json(
+            "POST",
+            "/api/team/join",
+            serde_json::to_vec(&json!({ "code": short }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "10.7.0.3",
+        )
+        .await;
+        assert_eq!(status, 200, "有人在用的队伍，短码不该被回收");
+    }
+
+    /// 中继必须给发布者自己回显。
+    ///
+    /// 客户端把「等得到回显」当成连接还活着的信号，不回显的话每发一个包
+    /// （包括定时发的在线状态）就隔 25 秒断一次线，界面跟着闪「未连接」。
+    #[tokio::test]
+    async fn ws_relay_echoes_back_to_the_publisher() {
+        let (server, store, addr) = test_server().await;
+        let url = format!("ws://{addr}");
+        let me = hex(32);
+        let (_status, v) = api::handle_json(
+            "POST",
+            "/api/team/create",
+            serde_json::to_vec(&json!({ "member_id": me }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "1.2.3.4",
+        )
+        .await;
+        let room = v["room_id"].as_str().unwrap().to_string();
+
+        let (a_ws, _) = connect_async(url).await.unwrap();
+        let (mut a_tx, mut a_rx) = a_ws.split();
+        a_tx.send(
+            json!(["REQ", "s1", { "kinds": [24810], "#x": [room] }])
+                .to_string()
+                .into(),
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let event = json!({
+            "id": "e1", "pubkey": "aa", "created_at": 1, "kind": 24810,
+            "tags": [["x", room]], "content": "AAAA", "sig": "00"
+        });
+        a_tx.send(json!(["EVENT", event]).to_string().into())
+            .await
+            .unwrap();
+
+        let mut echoed = false;
+        for _ in 0..30 {
+            match a_rx.next().await {
+                Some(Ok(Message::Text(t))) => {
+                    if t.to_string().contains("\"id\":\"e1\"") {
+                        echoed = true;
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(echoed, "发布者自己应该收到回显");
+    }
+
+    /// 单个 IP 反复建队要被打掉（IP 限流比设备额度更早触发）。
     #[tokio::test]
     async fn create_flood_from_one_ip_is_blocked() {
         let (server, store, _addr) = test_server().await;

@@ -56,7 +56,9 @@ struct Subscription {
 pub struct RelayServer {
     registry: Arc<Registry>,
     store: Arc<Store>,
-    blacklist: Arc<Mutex<HashSet<String>>>,
+    /// 已回收的房间：room_id → 回收时刻。带时刻是为了能老化清理，
+    /// 不然这个名单只增不减，内存和表都会一直涨。
+    blacklist: Arc<Mutex<HashMap<String, i64>>>,
     conns: Mutex<HashMap<usize, Tx>>,
     subs: Mutex<HashMap<usize, Vec<Subscription>>>,
     events: Mutex<HashMap<String, VecDeque<Value>>>,
@@ -67,7 +69,7 @@ impl RelayServer {
     pub fn new(
         registry: Arc<Registry>,
         store: Arc<Store>,
-        blacklist: Arc<Mutex<HashSet<String>>>,
+        blacklist: Arc<Mutex<HashMap<String, i64>>>,
     ) -> Arc<Self> {
         Arc::new(RelayServer {
             registry,
@@ -94,7 +96,7 @@ impl RelayServer {
     fn is_blacklisted(&self, room_hex: &str) -> bool {
         self.blacklist
             .lock()
-            .map(|b| b.contains(room_hex))
+            .map(|b| b.contains_key(room_hex))
             .unwrap_or(false)
     }
 
@@ -102,7 +104,7 @@ impl RelayServer {
     pub fn dissolve_room(&self, room_hex: &str) {
         let _ = self.store.dissolve(room_hex);
         if let Ok(mut b) = self.blacklist.lock() {
-            b.insert(room_hex.to_string());
+            b.insert(room_hex.to_string(), Self::now_secs());
         }
         if let Ok(mut a) = self.registry.activity.lock() {
             a.remove(room_hex);
@@ -115,9 +117,26 @@ impl RelayServer {
         }
     }
 
-    /// 收到一条事件：登记活跃、入内存缓冲，转发给订阅了该房间的其它连接。
+    /// 清掉过老的黑名单条目。
+    ///
+    /// room_id 是 32 字节随机值，撞车概率可以忽略，所以黑名单只需要挡住
+    /// 「拿刚被回收的房间复活」这一小段时间，留几十天足够。
+    pub fn prune_blacklist(&self, before: i64) {
+        if let Ok(mut b) = self.blacklist.lock() {
+            b.retain(|_, at| *at >= before);
+        }
+    }
+
+    /// 收到一条事件：登记活跃、入内存缓冲，转发给订阅了该房间的连接（含发布者自己）。
+    ///
+    /// 发布者自己也要收到回显：Nostr 的标准语义就是这样，而且客户端的健康判定
+    /// 靠回显判断连接是否还活着。之前这里跳过了发布者（`if cid == from { continue }`），
+    /// 结果客户端每发一个包（包括定时发的在线状态）就永远等不到回显，25 秒后
+    /// 必然判定「连接死了」并重连——界面上就是隔几十秒闪一次「未连接」。
+    /// 客户端按事件公钥去重，收到自己的回显不会变成重复投递。
+    ///
     /// 返回是否接受（被黑名单拒收返回 false）。
-    fn publish(&self, from: usize, room_hex: &str, event: Value) -> bool {
+    fn publish(&self, room_hex: &str, event: Value) -> bool {
         if self.is_blacklisted(room_hex) {
             return false;
         }
@@ -133,9 +152,6 @@ impl RelayServer {
         }
         if let (Ok(conns), Ok(subs)) = (self.conns.lock(), self.subs.lock()) {
             for (cid, tx) in conns.iter() {
-                if *cid == from {
-                    continue; // 自己的事件不回显（客户端也会按公钥去重，这里顺手省带宽）
-                }
                 if let Some(list) = subs.get(cid) {
                     for s in list {
                         if s.rooms.contains(room_hex) {
@@ -291,7 +307,7 @@ impl RelayServer {
                         .await;
                     return;
                 }
-                let accepted = self.publish(conn_id, &room_hex, event.clone());
+                let accepted = self.publish(&room_hex, event.clone());
                 let notice = if accepted {
                     None
                 } else {

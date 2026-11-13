@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -19,6 +20,30 @@ pub struct TeamRow {
     pub room_id_hex: String,
     pub last_active: i64,
     pub low_since: Option<i64>,
+}
+
+/// 建队额度的四层限制。
+#[derive(Clone, Copy, Debug)]
+pub struct CreateLimits {
+    /// 单台设备每小时最多建几支。
+    pub device_hour: u32,
+    /// 单台设备每天最多建几支。
+    pub device_day: u32,
+    /// 整个服务器每小时最多建几支。
+    pub global_hour: u32,
+    /// 整个服务器每天最多建几支。
+    pub global_day: u32,
+}
+
+/// 建队配额用完了没有，以及是哪一层用完的。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quota {
+    /// 还有额度。
+    Ok,
+    /// 这台设备（按 member_id 认设备）超了：换 IP 也没用。
+    Device,
+    /// 整个服务器超了：防脚本狂刷的底线。
+    Global,
 }
 
 pub struct Store {
@@ -36,7 +61,8 @@ impl Store {
                 room_id   TEXT NOT NULL UNIQUE,
                 created_at INTEGER NOT NULL,
                 last_active INTEGER NOT NULL,
-                low_since  INTEGER
+                low_since  INTEGER,
+                code_expires_at INTEGER
             );
             CREATE TABLE IF NOT EXISTS members (
                 room_id   TEXT NOT NULL,
@@ -45,29 +71,50 @@ impl Store {
                 PRIMARY KEY (room_id, member_hex)
             );
             CREATE TABLE IF NOT EXISTS blacklist (
-                room_id TEXT PRIMARY KEY
+                room_id TEXT PRIMARY KEY,
+                created_at INTEGER
             );
-            -- 建队配额流水：全局一小时内最多建 10 支、24 小时内最多建 20 支。
+            -- 建队配额流水：按设备（member_id）记，同时留一份 IP 便于排查。
             -- 单独记账而不是数 teams 表：队伍被回收后 teams 行会消失，
             -- 那样「建了再删」就能把额度退回来，等于留了个绕过后门。
             CREATE TABLE IF NOT EXISTS create_events (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at INTEGER NOT NULL,
-                peer       TEXT
+                peer       TEXT,
+                device     TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_create_events_at ON create_events(created_at);",
+            CREATE INDEX IF NOT EXISTS idx_create_events_at ON create_events(created_at);
+            CREATE INDEX IF NOT EXISTS idx_create_events_device ON create_events(device, created_at);
+            -- 回收下来的短码池：建队优先从这里取，短码就不会被白白浪费掉。
+            CREATE TABLE IF NOT EXISTS free_codes (
+                code        TEXT PRIMARY KEY,
+                released_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_free_codes_at ON free_codes(released_at);",
         )?;
-        // 队名存服务器：中继的事件缓存是内存的，服务器一重启，队名就找不回来了。
-        // 老库补一列 title。
-        let has_title = {
-            let mut stmt = conn.prepare("PRAGMA table_info(teams)")?;
+        // 老库补列（每次启动都查一下，缺哪列补哪列）。
+        let has = |table: &str, col: &str| -> rusqlite::Result<bool> {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
             let cols = stmt
                 .query_map([], |r| r.get::<_, String>(1))?
                 .collect::<Result<Vec<String>, _>>()?;
-            cols.iter().any(|c| c == "title")
+            Ok(cols.iter().any(|c| c == col))
         };
-        if !has_title {
+        // 队名存服务器：中继的事件缓存是内存的，服务器一重启，队名就找不回来了。
+        if !has("teams", "title")? {
             let _ = conn.execute("ALTER TABLE teams ADD COLUMN title TEXT", []);
+        }
+        // 短码到期时间：给短码一个独立的寿命，不用队伍解散来顺带释放。
+        if !has("teams", "code_expires_at")? {
+            let _ = conn.execute("ALTER TABLE teams ADD COLUMN code_expires_at INTEGER", []);
+        }
+        // 配额流水里的设备号：设备维度的限额靠它统计。
+        if !has("create_events", "device")? {
+            let _ = conn.execute("ALTER TABLE create_events ADD COLUMN device TEXT", []);
+        }
+        // 黑名单的记录时间：黑名单不能只增不减，过老的要清掉。
+        if !has("blacklist", "created_at")? {
+            let _ = conn.execute("ALTER TABLE blacklist ADD COLUMN created_at INTEGER", []);
         }
         Ok(Store {
             conn: Mutex::new(conn),
@@ -85,12 +132,13 @@ impl Store {
         now: i64,
         creator_hex: &str,
         title: Option<&str>,
+        code_expires_at: i64,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
         conn.execute(
-            "INSERT INTO teams (short_code, room_secret, owner_tag, room_id, created_at, last_active, low_since, title)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)",
-            params![short, secret, owner_tag, room_id_hex, now, now, title],
+            "INSERT INTO teams (short_code, room_secret, owner_tag, room_id, created_at, last_active, low_since, title, code_expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)",
+            params![short, secret, owner_tag, room_id_hex, now, now, title, code_expires_at],
         )?;
         conn.execute(
             "INSERT OR REPLACE INTO members (room_id, member_hex, last_seen) VALUES (?1, ?2, ?3)",
@@ -99,7 +147,11 @@ impl Store {
         Ok(())
     }
 
-    /// 预留一次建队配额：全局一小时内不超过 `per_hour` 支、24 小时内不超过 `per_day` 支。
+    /// 预留一次建队配额。两层限制：
+    /// - 设备层（member_id）：一小时 `device_hour` 支、24 小时 `device_day` 支。
+    ///   认设备而不是认 IP——换个网络、换个梯子出口，额度还是你的。
+    /// - 全局层：所有设备合计一小时 `global_hour` 支、24 小时 `global_day` 支。
+    ///   设备层挡不住「每次换一个 member_id」的脚本，全局层才是防攻击的底线。
     ///
     /// 检查和记账在同一把 SQLite 锁里完成，并发建队不会超发。
     /// 额度一旦预留就记账，即使后面建队失败也不退——防的是「故意失败来试探额度」。
@@ -107,31 +159,48 @@ impl Store {
         &self,
         now: i64,
         peer: &str,
-        per_hour: u32,
-        per_day: u32,
-    ) -> rusqlite::Result<bool> {
+        device: &str,
+        limits: CreateLimits,
+    ) -> rusqlite::Result<Quota> {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
-        let hour = conn.query_row(
-            "SELECT COUNT(*) FROM create_events WHERE created_at >= ?1",
-            params![now - HOUR],
-            |r| r.get::<_, i64>(0),
+        let count = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> rusqlite::Result<i64> {
+            conn.query_row(sql, p, |r| r.get(0))
+        };
+        // 设备层
+        let dev_h = count(
+            "SELECT COUNT(*) FROM create_events WHERE device = ?1 AND created_at >= ?2",
+            &[&device, &(now - HOUR)],
         )?;
-        if hour >= per_hour as i64 {
-            return Ok(false);
+        if dev_h >= limits.device_hour as i64 {
+            return Ok(Quota::Device);
         }
-        let day = conn.query_row(
-            "SELECT COUNT(*) FROM create_events WHERE created_at >= ?1",
-            params![now - DAY],
-            |r| r.get::<_, i64>(0),
+        let dev_d = count(
+            "SELECT COUNT(*) FROM create_events WHERE device = ?1 AND created_at >= ?2",
+            &[&device, &(now - DAY)],
         )?;
-        if day >= per_day as i64 {
-            return Ok(false);
+        if dev_d >= limits.device_day as i64 {
+            return Ok(Quota::Device);
+        }
+        // 全局层
+        let glob_h = count(
+            "SELECT COUNT(*) FROM create_events WHERE created_at >= ?1",
+            &[&(now - HOUR)],
+        )?;
+        if glob_h >= limits.global_hour as i64 {
+            return Ok(Quota::Global);
+        }
+        let glob_d = count(
+            "SELECT COUNT(*) FROM create_events WHERE created_at >= ?1",
+            &[&(now - DAY)],
+        )?;
+        if glob_d >= limits.global_day as i64 {
+            return Ok(Quota::Global);
         }
         conn.execute(
-            "INSERT INTO create_events (created_at, peer) VALUES (?1, ?2)",
-            params![now, peer],
+            "INSERT INTO create_events (created_at, peer, device) VALUES (?1, ?2, ?3)",
+            params![now, peer, device],
         )?;
-        Ok(true)
+        Ok(Quota::Ok)
     }
 
     /// 清掉 24 小时前的建队流水（配额只看最近 24 小时，更早的留着只会让表无限长）。
@@ -139,6 +208,113 @@ impl Store {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
         conn.execute(
             "DELETE FROM create_events WHERE created_at < ?1",
+            params![before],
+        )?;
+        Ok(())
+    }
+
+    // ---------- 短码的回收与复用 ----------
+
+    /// 回收一支队伍在服务器上的登记：删掉队伍与成员记录，短码进池子等着复用。
+    ///
+    /// 和 `dissolve` 的区别是**不进黑名单**——队伍在中继上还能互相发消息，
+    /// 只是服务器不再发这个短码了（别人拿旧码来会得到「已过期」）。
+    /// 返回被回收的短码。
+    pub fn release_code(&self, room_id_hex: &str, now: i64) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+        let short: Option<String> = conn
+            .query_row(
+                "SELECT short_code FROM teams WHERE room_id = ?1",
+                [room_id_hex],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(short) = short else {
+            return Ok(None);
+        };
+        conn.execute("DELETE FROM teams WHERE room_id = ?1", [room_id_hex])?;
+        conn.execute("DELETE FROM members WHERE room_id = ?1", [room_id_hex])?;
+        conn.execute(
+            "INSERT OR IGNORE INTO free_codes (code, released_at) VALUES (?1, ?2)",
+            params![short, now],
+        )?;
+        Ok(Some(short))
+    }
+
+    /// 从池子里取一个可复用的短码：冷却期已过的、按回收先后排队取最早的。
+    ///
+    /// 冷却期（默认 7 天）是防「刚过期的码马上被别人捡走」——那会让拿着旧码的
+    /// 队友稀里糊涂进到一支新队伍里。过了冷却期，码空间大得很，不怕撞。
+    pub fn take_free_code(&self, now: i64, cooldown: i64) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+        let code: Option<String> = conn
+            .query_row(
+                "SELECT code FROM free_codes WHERE released_at <= ?1 ORDER BY released_at LIMIT 1",
+                params![now - cooldown],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(code) = code else {
+            return Ok(None);
+        };
+        conn.execute("DELETE FROM free_codes WHERE code = ?1", [&code])?;
+        Ok(Some(code))
+    }
+
+    /// 短码池留太多没意义：只留最近释放的 `keep` 个，剩下的丢掉。
+    pub fn prune_free_codes(&self, keep: usize) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+        let total: i64 = conn.query_row("SELECT COUNT(*) FROM free_codes", [], |r| r.get(0))?;
+        if total as usize <= keep {
+            return Ok(());
+        }
+        let drop = total as usize - keep;
+        conn.execute(
+            "DELETE FROM free_codes WHERE code IN (
+                 SELECT code FROM free_codes ORDER BY released_at LIMIT ?1
+             )",
+            params![drop as i64],
+        )?;
+        Ok(())
+    }
+
+    /// 短码到期的队伍（房间、短码）。
+    pub fn expired_codes(&self, now: i64) -> rusqlite::Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+        let mut stmt = conn.prepare(
+            "SELECT room_id, short_code FROM teams
+             WHERE code_expires_at IS NOT NULL AND code_expires_at <= ?1",
+        )?;
+        let rows = stmt.query_map(params![now], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>()
+    }
+
+    /// 给短码续期：队伍还在真用着，短码就继续有效。
+    pub fn extend_code_expiry(&self, room_id_hex: &str, expires_at: i64) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+        conn.execute(
+            "UPDATE teams SET code_expires_at = ?2 WHERE room_id = ?1",
+            params![room_id_hex, expires_at],
+        )?;
+        Ok(())
+    }
+
+    /// 最近 `since` 秒内报过心跳的不同成员数：判断这支队伍是不是「真有人在用」。
+    pub fn recent_member_count(&self, room_id_hex: &str, since: i64) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+        conn.query_row(
+            "SELECT COUNT(DISTINCT member_hex) FROM members WHERE room_id = ?1 AND last_seen >= ?2",
+            params![room_id_hex, since],
+            |r| r.get::<_, i64>(0).map(|n| n as usize),
+        )
+    }
+
+    /// 黑名单不能只增不减：清掉 `before` 之前的记录。
+    /// room_id 是 32 字节随机值，留几十天足够挡住「拿旧房间复活」这类操作。
+    pub fn prune_blacklist(&self, before: i64) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+        conn.execute(
+            "DELETE FROM blacklist WHERE created_at IS NOT NULL AND created_at < ?1",
             params![before],
         )?;
         Ok(())
@@ -285,22 +461,34 @@ impl Store {
         rows.collect::<Result<HashMap<_, _>, _>>()
     }
 
-    pub fn load_blacklist(&self) -> rusqlite::Result<Vec<String>> {
+    pub fn load_blacklist(&self) -> rusqlite::Result<Vec<(String, i64)>> {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
-        let mut stmt = conn.prepare("SELECT room_id FROM blacklist")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut stmt = conn.prepare("SELECT room_id, created_at FROM blacklist")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+            ))
+        })?;
         rows.collect::<Result<Vec<_>, _>>()
     }
 
-    /// 回收一支队伍：删掉队伍与成员，room_id 进黑名单，短码随之释放可复用。
+    /// 回收一支队伍：删掉队伍与成员，room_id 进黑名单，短码进池子等着复用。
     pub fn dissolve(&self, room_id_hex: &str) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
-        conn.execute(
-            "INSERT OR IGNORE INTO blacklist (room_id) VALUES (?1)",
-            [room_id_hex],
-        )?;
-        conn.execute("DELETE FROM teams WHERE room_id = ?1", [room_id_hex])?;
-        conn.execute("DELETE FROM members WHERE room_id = ?1", [room_id_hex])?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        {
+            let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+            conn.execute(
+                "INSERT OR IGNORE INTO blacklist (room_id, created_at) VALUES (?1, ?2)",
+                params![room_id_hex, now],
+            )?;
+        }
+        // 短码别浪费：回收下来进池子，以后建队优先复用。
+        // （锁要放掉再调 release_code——SQLite 锁不可重入。）
+        self.release_code(room_id_hex, now)?;
         Ok(())
     }
 
