@@ -482,9 +482,19 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                 {s.emoteClick && (
                   <Row icon="smile" label="单击放">
                     <select className="v-select" aria-label="单击放的表情" value={s.clickEmote} onChange={(e) => onChange({ clickEmote: e.target.value })}>
-                      {[...new Set([...s.emoteWheel, ...s.customEmotes.map((c) => c.id)])].map((r) => (
-                        <option key={r} value={r}>{r.startsWith("c:") ? r.slice(2, 10) : r}</option>
-                      ))}
+                      {(() => {
+                        const options = [...new Set([...s.emoteWheel, ...s.customEmotes.map((c) => c.id)])];
+                        const label = (r: string) => (r.startsWith("c:") ? r.slice(2, 10) : r);
+                        return (
+                          <>
+                            {/* 引用的表情已被删：给个兜底项，别让下拉显示成空白 */}
+                            {!options.includes(s.clickEmote) && (
+                              <option value={s.clickEmote}>{label(s.clickEmote)}（已删除）</option>
+                            )}
+                            {options.map((r) => <option key={r} value={r}>{label(r)}</option>)}
+                          </>
+                        );
+                      })()}
                     </select>
                   </Row>
                 )}

@@ -363,6 +363,9 @@ pub fn emote_import(
         sound: sound.is_some(),
         fx,
     };
+    // 替换掉的旧条目的文件先记下来，等设置写盘成功后再删——
+    // 顺序反了的话，设置写入失败会让列表还挂着已删文件的条目。
+    let mut stale_hash = None;
     if let Some(rid) = replace_id.as_deref() {
         // 拖到已有表情上：原地替换，轮盘引用跟着换
         if let Some(pos) = s.custom_emotes.iter().position(|c| c.id == rid) {
@@ -375,9 +378,7 @@ pub fn emote_import(
                 if s.click_emote == rid {
                     s.click_emote = id.clone();
                 }
-                if let Some(hash) = emotes::custom_hash(rid) {
-                    state.emotes.remove(hash);
-                }
+                stale_hash = emotes::custom_hash(rid);
             }
             s.custom_emotes[pos] = entry;
         } else {
@@ -390,7 +391,11 @@ pub fn emote_import(
         }
     }
     let raw = serde_json::to_value(&s).map_err(|e| e.to_string())?;
-    apply_settings(&app, &state, &raw)
+    let saved = apply_settings(&app, &state, &raw)?;
+    if let Some(hash) = stale_hash {
+        state.emotes.remove(hash);
+    }
+    Ok(saved)
 }
 
 /// 删掉一个导入的表情：先从设置里拿掉（轮盘上的那格换回默认），再删文件。

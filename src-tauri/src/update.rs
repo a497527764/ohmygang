@@ -171,8 +171,17 @@ pub async fn check(app: &AppHandle, quiet: bool) -> UpdateView {
                 }
                 return view(app);
             }
-            // 其余是真故障（断网、证书之类）：说成人话
-            let reason = e;
+            // 网络连不上（GitHub 直连和镜像都不通）：说成人话，别把一长串 URL 甩给用户
+            let offline = e.contains("error sending request")
+                || e.contains("dns")
+                || e.contains("timeout")
+                || e.contains("timed out")
+                || e.contains("connection");
+            let reason = if offline {
+                "网络连不上更新服务器（GitHub），请检查网络后稍后重试".to_string()
+            } else {
+                e
+            };
             set(app, |i| {
                 i.phase = Some(Phase::Failed);
                 i.note = None;
@@ -259,7 +268,16 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
     match result {
         Ok(()) => app.restart(),
         Err(e) => {
-            let message = format!("更新没装上：{e}");
+            // 下载走 GitHub 直连，连不上时给可操作的说法
+            let offline = e.to_string().contains("error sending request")
+                || e.to_string().contains("timeout")
+                || e.to_string().contains("timed out")
+                || e.to_string().contains("connection");
+            let message = if offline {
+                "更新没装上：下载更新包失败，网络连不上 GitHub，请稍后重试".to_string()
+            } else {
+                format!("更新没装上：{e}")
+            };
             set(&app, |i| {
                 i.phase = Some(Phase::Failed);
                 i.progress = None;

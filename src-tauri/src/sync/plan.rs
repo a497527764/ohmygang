@@ -45,6 +45,14 @@ impl Holdings {
         self.by_author.get(author).map_or(0, contiguous_max)
     }
 
+    /// 本机在 [1, up_to] 里实际持有多少个序号。遍历的是本机持有的集合，
+    /// 不是 up_to 本身——对方报一个天文数字的 max 也不会把这里拖死。
+    pub fn count_within(&self, author: &ShortId, up_to: u64) -> u64 {
+        self.by_author
+            .get(author)
+            .map_or(0, |s| s.range(1..=up_to).count() as u64)
+    }
+
     pub fn vector(&self) -> Vec<HaveEntry> {
         self.by_author
             .iter()
@@ -90,9 +98,11 @@ pub fn state_gaps(mine: &Holdings, peer: &[HaveEntry]) -> Vec<WantRange> {
 }
 
 /// 对方有、本机缺的事件总数，不受 64 的限制（判断在途的 Want 有没有进展用）。
+/// 算法：[1, max] 共 max 个槽位，减去本机在范围内的持有数。不逐个遍历序号，
+/// 恶意或异常的超大 max（比如 u64 上限）不会拖死接收方。
 pub fn missing_total(mine: &Holdings, peer: &[HaveEntry]) -> u64 {
     peer.iter()
-        .map(|e| (1..=e.max).filter(|s| !mine.has(&e.author, *s)).count() as u64)
+        .map(|e| e.max.saturating_sub(mine.count_within(&e.author, e.max)))
         .sum()
 }
 
@@ -179,6 +189,21 @@ mod tests {
     fn missing_total_is_not_capped() {
         let mine = holdings(&[(A, &[1])]);
         assert_eq!(missing_total(&mine, &[have(A, 100)]), 99);
+    }
+
+    #[test]
+    fn missing_total_survives_absurd_max() {
+        // 恶意节点报一个天文数字的 max：不能逐序号遍历（会卡死），数数就得出结果
+        let mine = holdings(&[(A, &[1, 2, 3])]);
+        assert_eq!(
+            missing_total(&mine, &[have(A, u64::MAX - 3)]),
+            u64::MAX - 3 - 3
+        );
+        // 超过本机持有的部分也按持有数扣减，不会溢出
+        assert_eq!(
+            missing_total(&Holdings::default(), &[have(A, u64::MAX)]),
+            u64::MAX
+        );
     }
 
     #[test]
