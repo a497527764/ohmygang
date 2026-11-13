@@ -133,7 +133,14 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
   const forget = (roomId: string) => {
     setBusy(true);
     teamForget(roomId).then(
-      (r) => { setRecent(r.rooms); setCurrentOnline(r.currentOnline); setError(null); setHistoryErr(null); },
+      (r) => {
+        // 这次的结果是最新的：在途的旧请求回来也不许把刚删掉的行又带回来。
+        recentApplied.current = ++recentSeq.current;
+        setRecent(r.rooms);
+        setCurrentOnline(r.currentOnline);
+        setError(null);
+        setHistoryErr(null);
+      },
       (e) => {
         setError(String(e));
         // 删失败就重拉一次：别让列表停在半新半旧的状态。

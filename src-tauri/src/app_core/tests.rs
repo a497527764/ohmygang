@@ -107,6 +107,25 @@ fn only_one_team_at_a_time() {
 }
 
 #[test]
+fn locally_minted_team_falls_back_to_the_long_code() {
+    // 云端不给短码时（额度用尽、连不上），客户端退回本地铸一个 GT2 长码。
+    // 这条路必须和正常建队一样能用：队友拿长码能进，界面显示的也是长码。
+    let mut a = new_core();
+    let created = a.create_room("开黑", 1000).unwrap();
+    assert!(created.code.starts_with("GT2-"), "本地铸的应该是 GT2 长码");
+    assert_eq!(
+        a.display_code(&created.summary.room_id).unwrap(),
+        created.code,
+        "没有 6 位短码时，界面显示的应该是长码"
+    );
+    // 队友拿长码进来，进的还是同一支队伍
+    let mut b = new_core();
+    let (s, _) = b.join_room(&created.code, 2000).unwrap();
+    assert_eq!(s.room_id, created.summary.room_id);
+    assert_eq!(s.status, RoomStatus::Active);
+}
+
+#[test]
 fn join_parses_code_and_enters_the_team_right_away() {
     let mut a = new_core();
     let created = a.create_room("开黑", 1000).unwrap();
