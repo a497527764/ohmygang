@@ -231,3 +231,39 @@ fn m1_database_upgrades_and_keeps_settings() {
     }
     remove_db(&path);
 }
+
+#[test]
+fn v5_rooms_with_32_byte_owner_tag_upgrade_to_10() {
+    let path = temp_db("v6");
+    let old_room: [u8; 16] = [9u8; 16];
+    {
+        // 第 5 版的库：rooms.owner_tag 是早期版本的 32 字节完整摘要
+        let c = Connection::open(&path).unwrap();
+        for sql in schema::MIGRATIONS.iter().take(5) {
+            c.execute_batch(sql).unwrap();
+        }
+        c.pragma_update(None, "user_version", 5).unwrap();
+        c.execute(
+            "INSERT INTO rooms (room_id, code_cipher, owner_tag, status, last_active)
+             VALUES (?1, ?2, ?3, 1, 100)",
+            rusqlite::params![&old_room[..], vec![0u8; 52], vec![7u8; 32]],
+        )
+        .unwrap();
+    }
+    {
+        // 升级后旧 tag 截成 10 字节，get_room 不再报
+        //「Cannot read 10 byte value out of 32 byte blob」
+        let c = open(&path).unwrap();
+        let r = rooms::get_room(&c, &old_room).unwrap().unwrap();
+        assert_eq!(r.owner_tag, [7u8; 10]);
+        assert_eq!(r.status, RoomStatus::Active);
+        // 新写入的 10 字节 tag 不受影响
+        let new_room: [u8; 16] = [3u8; 16];
+        rooms::insert_room(&c, &new_room, b"c", &[4u8; 10], RoomStatus::Joining, 7).unwrap();
+        assert_eq!(
+            rooms::get_room(&c, &new_room).unwrap().unwrap().owner_tag,
+            [4u8; 10]
+        );
+    }
+    remove_db(&path);
+}
