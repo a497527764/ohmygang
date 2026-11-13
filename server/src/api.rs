@@ -11,8 +11,88 @@ use serde_json::{Value, json};
 use crate::relay::RelayServer;
 use crate::store::Store;
 
-/// 限流：同一 IP 每小时最多 30 次建队，防有人把短码池占满。
-static RATE: OnceLock<Mutex<std::collections::HashMap<String, (i64, u32)>>> = OnceLock::new();
+/// 分接口的限流桶：按 (接口, IP) 固定窗口计数。
+///
+/// 每个接口单独计数——防止有人拿「刷 join」当跳板把服务端打满，
+/// 也不会因为某个接口正常用得多就把另一个接口的额度吃掉。
+static RATE: OnceLock<Mutex<std::collections::HashMap<(String, &'static str), Bucket>>> =
+    OnceLock::new();
+
+struct Bucket {
+    start: i64,
+    count: u32,
+    window: i64,
+}
+
+/// 一个接口的限流额度。
+struct Limit {
+    bucket: &'static str,
+    max: u32,
+    window: i64,
+}
+
+/// 建队：同一 IP 一小时最多 10 次（全局额度之外再加一层，防单点刷）。
+const L_CREATE: Limit = Limit {
+    bucket: "create",
+    max: 10,
+    window: 3600,
+};
+/// 进队：换码。正常用户偶尔用一次，一分钟 60 次足够。
+const L_JOIN: Limit = Limit {
+    bucket: "join",
+    max: 60,
+    window: 60,
+};
+/// 心跳：客户端每 10 分钟一次，一分钟 120 次是极宽松的上限。
+const L_HEARTBEAT: Limit = Limit {
+    bucket: "heartbeat",
+    max: 120,
+    window: 60,
+};
+/// 在线人数查询。
+const L_STATS: Limit = Limit {
+    bucket: "stats",
+    max: 60,
+    window: 60,
+};
+/// 改队名。
+const L_RENAME: Limit = Limit {
+    bucket: "rename",
+    max: 20,
+    window: 60,
+};
+/// 按 room_id 反查短码。
+const L_CODE: Limit = Limit {
+    bucket: "code",
+    max: 60,
+    window: 60,
+};
+/// 后台登录：密码只有 6 位，爆破成本极低，必须卡死。一分钟 10 次足够手输。
+const L_ADMIN_LOGIN: Limit = Limit {
+    bucket: "admin_login",
+    max: 10,
+    window: 60,
+};
+/// 后台接口本身（列表 / 删除 / 批量）。
+const L_ADMIN: Limit = Limit {
+    bucket: "admin",
+    max: 120,
+    window: 60,
+};
+
+/// 全局建队配额：一小时 10 支、24 小时 20 支。
+/// 走环境变量可以调紧或放宽（比如自用想多建几支）。
+fn create_quota() -> (u32, u32) {
+    let hour = std::env::var("CREATE_PER_HOUR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let day = std::env::var("CREATE_PER_DAY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20);
+    (hour, day)
+}
 
 /// 管理后台登录凭证（自用后台，硬编码即可）。
 const ADMIN_USER: &str = "zhaopeng";
@@ -32,18 +112,18 @@ fn check_admin(path: &str, body: &[u8]) -> bool {
     // 先从 query string 取
     if let Some(q) = path.split('?').nth(1) {
         for p in q.split('&') {
-            if let Some(t) = p.strip_prefix("token=") {
-                if t == admin_token() {
-                    return true;
-                }
+            if let Some(t) = p.strip_prefix("token=")
+                && t == admin_token()
+            {
+                return true;
             }
         }
     }
     // 再从 body 取（POST 时前端用 JSON 传 token）
-    if let Ok(v) = serde_json::from_slice::<Value>(body) {
-        if v.get("token").and_then(|x| x.as_str()) == Some(admin_token()) {
-            return true;
-        }
+    if let Ok(v) = serde_json::from_slice::<Value>(body)
+        && v.get("token").and_then(|x| x.as_str()) == Some(admin_token())
+    {
+        return true;
     }
     false
 }
@@ -60,22 +140,44 @@ fn gen_short() -> String {
         .collect()
 }
 
-fn rate_ok(peer: &str) -> bool {
-    const LIMIT: u32 = 30;
-    const WINDOW: i64 = 3600;
+/// 记一次请求并判断是否超额。超额时返回 false，且不计数（放行额度内的部分）。
+fn rate_ok(peer: &str, lim: &Limit) -> bool {
     let now = now_secs();
     let map = RATE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
     let mut map = map.lock().expect("限流锁没有中毒");
-    let e = map.entry(peer.to_string()).or_insert((now, 0));
-    if now - e.0 >= WINDOW {
-        *e = (now, 0);
+    // 桶会随 IP 数量增长，顺手清掉过期桶，别让它无限长。
+    if map.len() > 4096 {
+        map.retain(|_, b| now - b.start < b.window);
     }
-    if e.1 >= LIMIT {
+    let e = map.entry((peer.to_string(), lim.bucket)).or_insert(Bucket {
+        start: now,
+        count: 0,
+        window: lim.window,
+    });
+    if now - e.start >= e.window {
+        *e = Bucket {
+            start: now,
+            count: 0,
+            window: lim.window,
+        };
+    }
+    if e.count >= lim.max {
         false
     } else {
-        e.1 += 1;
+        e.count += 1;
         true
     }
+}
+
+/// 超额时的统一响应。带一个 retry_after，前端可以照着提示用户。
+fn too_many(lim: &Limit) -> (u16, Value) {
+    (
+        429,
+        json!({
+            "error": "请求过于频繁，请稍后再试",
+            "retry_after_seconds": lim.window,
+        }),
+    )
 }
 
 pub fn now_secs() -> i64 {
@@ -109,6 +211,7 @@ pub async fn handle(
 }
 
 /// 测试 / 内部入口：只返回 JSON 结构体与状态码，不含 HTTP 头部。
+#[allow(dead_code)] // 只有测试在用，正式构建里没人调它
 pub async fn handle_json(
     method: &str,
     path: &str,
@@ -129,6 +232,24 @@ async fn route(
     peer: &str,
 ) -> (u16, Value) {
     let route = path.split('?').next().unwrap_or(path);
+    // 分接口的 IP 限流：在进业务逻辑之前统一拦掉，省得每个 handler 各写一遍。
+    let limit = match (method, route) {
+        ("POST", "/api/team/create") => Some(&L_CREATE),
+        ("POST", "/api/team/join") => Some(&L_JOIN),
+        ("POST", "/api/team/heartbeat") => Some(&L_HEARTBEAT),
+        ("POST", "/api/team/stats") => Some(&L_STATS),
+        ("POST", "/api/team/rename") => Some(&L_RENAME),
+        ("GET", "/api/team/code") => Some(&L_CODE),
+        ("POST", "/api/admin/login") => Some(&L_ADMIN_LOGIN),
+        ("GET", "/api/admin/teams")
+        | ("POST", "/api/admin/teams/delete")
+        | ("POST", "/api/admin/teams/delete_batch") => Some(&L_ADMIN),
+        _ => None,
+    };
+    match limit {
+        Some(lim) if !rate_ok(peer, lim) => return too_many(lim),
+        _ => {}
+    }
     match (method, route) {
         ("GET", "/") | ("GET", "/health") => (200, json!({ "ok": true })),
         ("POST", "/api/team/create") => create(body, store, server, peer).await,
@@ -153,6 +274,14 @@ async fn route(
                 (401, json!({ "error": "未登录" }))
             }
         }
+        // 批量删除：一次删多支队伍
+        ("POST", "/api/admin/teams/delete_batch") => {
+            if check_admin(path, body) {
+                admin_delete_batch(body, store, server)
+            } else {
+                (401, json!({ "error": "未登录" }))
+            }
+        }
         // 更新包上传（发版后由 CI 或本机推送）：body 是原始文件字节，token 在环境变量 UPLOAD_TOKEN
         ("POST", "/api/admin/update") => upload_update(path, body),
         _ => (404, json!({ "error": "not found" })),
@@ -170,9 +299,6 @@ async fn create(
     server: &Arc<RelayServer>,
     peer: &str,
 ) -> (u16, Value) {
-    if !rate_ok(peer) {
-        return (429, json!({ "error": "请求过于频繁，请稍后再试" }));
-    }
     let v: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => return (400, json!({ "error": "bad json" })),
@@ -185,6 +311,22 @@ async fn create(
         Some(b) => b.try_into().unwrap(),
         None => return (400, json!({ "error": "member_id 非法" })),
     };
+    // 全局建队配额：一小时 10 支、24 小时 20 支（所有 IP 合计）。
+    // 校验通过才记账，参数都错就没必要占额度。
+    let (per_hour, per_day) = create_quota();
+    match store.reserve_create(now_secs(), peer, per_hour, per_day) {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                429,
+                json!({
+                    "error": format!("服务器建队额度已用尽（1 小时 {per_hour} 支 / 24 小时 {per_day} 支），请稍后再试"),
+                    "retry_after_seconds": 3600,
+                }),
+            );
+        }
+        Err(_) => return (500, json!({ "error": "internal" })),
+    }
     // 铸造房间密钥材料
     let secret: [u8; 16] = rand::random();
     let owner_tag = crate::protocol::owner_tag_of(&member_id);
@@ -396,6 +538,8 @@ fn admin_teams(store: &Arc<Store>) -> (u16, Value) {
                 .map(|t| {
                     json!({
                         "short_code": t.short_code,
+                        "code": t.code,
+                        "title": t.title,
                         "room_id": t.room_id_hex,
                         "created_at": t.created_at,
                         "last_active": t.last_active,
@@ -413,22 +557,15 @@ fn admin_teams(store: &Arc<Store>) -> (u16, Value) {
     }
 }
 
-fn admin_delete(body: &[u8], store: &Arc<Store>, server: &Arc<RelayServer>) -> (u16, Value) {
-    let v: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(_) => return (400, json!({ "error": "bad json" })),
-    };
-    let short = match v.get("short_code").and_then(|x| x.as_str()) {
-        Some(s) => s.to_string(),
-        None => return (400, json!({ "error": "缺少 short_code" })),
-    };
+/// 回收一支队伍并清掉内存登记表（管理后台删除用）。
+fn dissolve_short(store: &Arc<Store>, server: &Arc<RelayServer>, short: &str) -> bool {
     // 先查 room_id 用于清理内存登记表
     let room_id = store
         .list_all_teams()
         .ok()
         .and_then(|list| list.into_iter().find(|t| t.short_code == short))
         .map(|t| t.room_id_hex);
-    match store.dissolve_by_short(&short) {
+    match store.dissolve_by_short(short) {
         Ok(true) => {
             if let Some(room) = room_id {
                 if let Ok(mut a) = server.registry().activity.lock() {
@@ -438,11 +575,67 @@ fn admin_delete(body: &[u8], store: &Arc<Store>, server: &Arc<RelayServer>) -> (
                     m.remove(&room);
                 }
             }
-            (200, json!({ "ok": true }))
+            true
         }
-        Ok(false) => (404, json!({ "error": "队伍码不存在" })),
-        Err(_) => (500, json!({ "error": "internal" })),
+        _ => false,
     }
+}
+
+fn admin_delete(body: &[u8], store: &Arc<Store>, server: &Arc<RelayServer>) -> (u16, Value) {
+    let v: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return (400, json!({ "error": "bad json" })),
+    };
+    let short = match v.get("short_code").and_then(|x| x.as_str()) {
+        Some(s) => s.to_string(),
+        None => return (400, json!({ "error": "缺少 short_code" })),
+    };
+    if dissolve_short(store, server, &short) {
+        (200, json!({ "ok": true, "deleted": 1 }))
+    } else {
+        (404, json!({ "error": "队伍码不存在" }))
+    }
+}
+
+/// 批量删除：一次处理多支队伍。已不存在的不算失败，单独列出来给前端提示。
+fn admin_delete_batch(body: &[u8], store: &Arc<Store>, server: &Arc<RelayServer>) -> (u16, Value) {
+    let v: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return (400, json!({ "error": "bad json" })),
+    };
+    let codes = match v.get("short_codes").and_then(|x| x.as_array()) {
+        Some(a) => a,
+        None => return (400, json!({ "error": "缺少 short_codes" })),
+    };
+    if codes.is_empty() {
+        return (400, json!({ "error": "没有选中任何队伍" }));
+    }
+    if codes.len() > 500 {
+        return (400, json!({ "error": "一次最多删 500 支" }));
+    }
+    let mut deleted: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for c in codes {
+        let Some(code) = c.as_str() else { continue };
+        let code = code.trim().to_uppercase();
+        if code.is_empty() {
+            continue;
+        }
+        if dissolve_short(store, server, &code) {
+            deleted.push(code);
+        } else {
+            missing.push(code);
+        }
+    }
+    (
+        200,
+        json!({
+            "ok": true,
+            "deleted": deleted.len(),
+            "deleted_codes": deleted,
+            "missing": missing,
+        }),
+    )
 }
 
 /// 管理后台的单页 HTML（登录 + 队伍列表 + 删除）。

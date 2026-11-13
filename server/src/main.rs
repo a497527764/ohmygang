@@ -55,6 +55,8 @@ async fn run_reaper(server: Arc<RelayServer>, store: Arc<Store>) {
 
 async fn reap(server: &Arc<RelayServer>, store: &Arc<Store>) {
     let now = api::now_secs();
+    // 建队配额只看最近 24 小时，更早的流水清掉，表才不会一直长。
+    let _ = store.prune_create_events(now - DAY);
     let teams = store.list_teams().unwrap_or_default();
     for t in teams {
         let activity = server
@@ -349,5 +351,251 @@ mod tests {
             }
         }
         assert!(got, "订阅方 B 应收到发布方 A 的事件");
+    }
+
+    // ---------- 防攻击与配额 ----------
+
+    /// 全局建队配额：一小时最多 10 支。第 11 支必须被拒，哪怕来自完全不同的 IP。
+    #[tokio::test]
+    async fn create_quota_blocks_the_eleventh_team() {
+        let (server, store, _addr) = test_server().await;
+        let me = hex(32);
+        // 每个请求用不同的 IP：这样卡住的才是全局配额，而不是单 IP 限流。
+        for i in 0..10 {
+            let peer = format!("10.0.0.{i}");
+            let (status, _v) = api::handle_json(
+                "POST",
+                "/api/team/create",
+                serde_json::to_vec(&json!({ "member_id": me }))
+                    .unwrap()
+                    .as_slice(),
+                &server,
+                &store,
+                &peer,
+            )
+            .await;
+            assert_eq!(status, 200, "第 {} 支应建得出来", i + 1);
+        }
+        let (status, v) = api::handle_json(
+            "POST",
+            "/api/team/create",
+            serde_json::to_vec(&json!({ "member_id": me }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "10.0.0.200",
+        )
+        .await;
+        assert_eq!(status, 429, "第 11 支应被配额拦下");
+        assert!(
+            v["error"].as_str().unwrap_or("").contains("额度"),
+            "错误提示要说清是额度用尽：{}",
+            v["error"]
+        );
+    }
+
+    /// 单个 IP 反复建队要被打掉（IP 限流比全局配额更早触发）。
+    #[tokio::test]
+    async fn create_flood_from_one_ip_is_blocked() {
+        let (server, store, _addr) = test_server().await;
+        let me = hex(32);
+        let mut last = 200;
+        for _ in 0..12 {
+            let (status, _v) = api::handle_json(
+                "POST",
+                "/api/team/create",
+                serde_json::to_vec(&json!({ "member_id": me }))
+                    .unwrap()
+                    .as_slice(),
+                &server,
+                &store,
+                "172.16.0.9",
+            )
+            .await;
+            if status != 200 {
+                last = status;
+                break;
+            }
+        }
+        assert_eq!(last, 429, "同一 IP 狂建队应被限流");
+    }
+
+    /// 配额是记账的：队伍被回收删除也不能把额度退回来。
+    #[tokio::test]
+    async fn dissolving_a_team_does_not_refund_the_quota() {
+        let (server, store, _addr) = test_server().await;
+        let me = hex(32);
+        let mut codes = Vec::new();
+        for i in 0..10 {
+            let peer = format!("10.1.0.{i}");
+            let (_s, v) = api::handle_json(
+                "POST",
+                "/api/team/create",
+                serde_json::to_vec(&json!({ "member_id": me }))
+                    .unwrap()
+                    .as_slice(),
+                &server,
+                &store,
+                &peer,
+            )
+            .await;
+            codes.push(v["short_code"].as_str().unwrap().to_string());
+        }
+        // 删掉一支，额度不还
+        store.dissolve_by_short(&codes[0]).unwrap();
+        let (status, _v) = api::handle_json(
+            "POST",
+            "/api/team/create",
+            serde_json::to_vec(&json!({ "member_id": me }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "10.1.0.200",
+        )
+        .await;
+        assert_eq!(status, 429, "删掉队伍不应把建队额度退回来");
+    }
+
+    /// 进队接口刷太多要被打掉，不能被当成放大器。
+    #[tokio::test]
+    async fn join_flood_is_blocked() {
+        let (server, store, _addr) = test_server().await;
+        let mut last = 200;
+        for _ in 0..80 {
+            let (status, _v) = api::handle_json(
+                "POST",
+                "/api/team/join",
+                serde_json::to_vec(&json!({ "code": "ZZZZZZ" }))
+                    .unwrap()
+                    .as_slice(),
+                &server,
+                &store,
+                "192.168.7.7",
+            )
+            .await;
+            if status == 429 {
+                last = status;
+                break;
+            }
+        }
+        assert_eq!(last, 429, "狂刷进队接口应被限流");
+    }
+
+    /// 后台登录要限流：密码只有 6 位，不能让人一路爆破。
+    #[tokio::test]
+    async fn admin_login_flood_is_blocked() {
+        let (server, store, _addr) = test_server().await;
+        let mut last = 200;
+        for _ in 0..20 {
+            let (status, _v) = api::handle_json(
+                "POST",
+                "/api/admin/login",
+                serde_json::to_vec(&json!({ "username": "zhaopeng", "password": "000000" }))
+                    .unwrap()
+                    .as_slice(),
+                &server,
+                &store,
+                "192.168.9.9",
+            )
+            .await;
+            if status == 429 {
+                last = status;
+                break;
+            }
+        }
+        assert_eq!(last, 429, "狂试后台登录应被限流");
+    }
+
+    // ---------- 后台批量管理 ----------
+
+    /// 批量删除：一次删多支，删完列表里就没有了。
+    #[tokio::test]
+    async fn admin_batch_delete_removes_many_teams() {
+        let (server, store, _addr) = test_server().await;
+        let me = hex(32);
+        let mut codes = Vec::new();
+        for i in 0..3 {
+            let peer = format!("10.2.0.{i}");
+            let (_s, v) = api::handle_json(
+                "POST",
+                "/api/team/create",
+                serde_json::to_vec(&json!({ "member_id": me }))
+                    .unwrap()
+                    .as_slice(),
+                &server,
+                &store,
+                &peer,
+            )
+            .await;
+            codes.push(v["short_code"].as_str().unwrap().to_string());
+        }
+
+        // 登录拿 token
+        let (status, v) = api::handle_json(
+            "POST",
+            "/api/admin/login",
+            serde_json::to_vec(&json!({ "username": "zhaopeng", "password": "000000" }))
+                .unwrap()
+                .as_slice(),
+            &server,
+            &store,
+            "10.2.0.100",
+        )
+        .await;
+        assert_eq!(status, 200);
+        let token = v["token"].as_str().unwrap().to_string();
+
+        // 列表里能看到队名和完整邀请码
+        let path = format!("/api/admin/teams?token={token}");
+        let (status, v) = api::handle_json("GET", &path, b"", &server, &store, "10.2.0.101").await;
+        assert_eq!(status, 200);
+        let teams = v["teams"].as_array().unwrap();
+        assert_eq!(teams.len(), 3);
+        assert!(
+            teams[0]["code"].as_str().unwrap_or("").starts_with("GT2-"),
+            "后台列表要带完整邀请码，方便一键复制"
+        );
+
+        // 批量删前两支
+        let body = serde_json::to_vec(&json!({
+            "short_codes": [codes[0], codes[1]],
+            "token": token,
+        }))
+        .unwrap();
+        let (status, v) = api::handle_json(
+            "POST",
+            "/api/admin/teams/delete_batch",
+            body.as_slice(),
+            &server,
+            &store,
+            "10.2.0.102",
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(v["deleted"], 2);
+
+        // 只剩一支
+        let path = format!("/api/admin/teams?token={token}");
+        let (_s, v) = api::handle_json("GET", &path, b"", &server, &store, "10.2.0.103").await;
+        assert_eq!(v["teams"].as_array().unwrap().len(), 1);
+    }
+
+    /// 批量删除必须校验 token，不能谁都能删。
+    #[tokio::test]
+    async fn admin_batch_delete_needs_token() {
+        let (server, store, _addr) = test_server().await;
+        let body = serde_json::to_vec(&json!({ "short_codes": ["AAAAAA"] })).unwrap();
+        let (status, _v) = api::handle_json(
+            "POST",
+            "/api/admin/teams/delete_batch",
+            body.as_slice(),
+            &server,
+            &store,
+            "10.3.0.1",
+        )
+        .await;
+        assert_eq!(status, 401, "没 token 不许批量删");
     }
 }

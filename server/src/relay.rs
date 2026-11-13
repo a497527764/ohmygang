@@ -189,10 +189,10 @@ impl RelayServer {
     }
 
     fn handle_close(&self, conn_id: usize, sub_id: &str) {
-        if let Ok(mut subs) = self.subs.lock() {
-            if let Some(list) = subs.get_mut(&conn_id) {
-                list.retain(|s| s.sub_id != sub_id);
-            }
+        if let Ok(mut subs) = self.subs.lock()
+            && let Some(list) = subs.get_mut(&conn_id)
+        {
+            list.retain(|s| s.sub_id != sub_id);
         }
     }
 

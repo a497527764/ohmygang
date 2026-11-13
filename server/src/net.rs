@@ -17,6 +17,14 @@ use tokio::net::TcpStream;
 use crate::relay::RelayServer;
 use crate::store::Store;
 
+/// 普通 API 的 body 上限。更新包单独放宽（见 MAX_UPLOAD_BODY）。
+/// 不设上限的话，一个伪造的 Content-Length 就能把内存吃光。
+const MAX_BODY: usize = 64 * 1024;
+/// 更新包（几十 MB 的安装包）走独立的额度。
+const MAX_UPLOAD_BODY: usize = 256 * 1024 * 1024;
+/// 同时在线的连接数上限：有人拿一堆连接占着不放，服务器也扛不住。
+const MAX_CONNS: usize = 512;
+
 /// 把已被读走的握手头包回去的流：先吐 prefix 里的字节，再转交内层 TcpStream。
 pub struct PrefixStream {
     prefix: Cursor<Vec<u8>>,
@@ -75,15 +83,23 @@ pub async fn serve(
     server: Arc<RelayServer>,
     store: Arc<Store>,
 ) -> io::Result<()> {
+    // 连接数闸门：超出上限的新连接直接丢掉，不给它分配任务。
+    let gate = Arc::new(tokio::sync::Semaphore::new(MAX_CONNS));
     loop {
         let (stream, peer) = listener.accept().await?;
         let server = server.clone();
         let store = store.clone();
-        let peer = peer.to_string();
+        // 限流按 IP 算，不带端口：带端口的话每次连接都是新桶，等于没限。
+        let peer = peer.ip().to_string();
+        let gate = gate.clone();
         tokio::spawn(async move {
+            let Ok(permit) = gate.acquire_owned().await else {
+                return;
+            };
             if let Err(e) = handle_conn(stream, server, store, peer).await {
                 eprintln!("连接处理出错: {e}");
             }
+            drop(permit);
         });
     }
 }
@@ -97,6 +113,7 @@ async fn handle_conn(
     // 只读握手头，不消耗 body
     let mut head = Vec::with_capacity(2048);
     let mut byte = [0u8; 1];
+    let mut head_done = false;
     loop {
         let n = stream.read(&mut byte).await?;
         if n == 0 {
@@ -104,11 +121,21 @@ async fn handle_conn(
         }
         head.push(byte[0]);
         if head.len() >= 4 && &head[head.len() - 4..] == b"\r\n\r\n" {
+            head_done = true;
             break;
         }
         if head.len() > 16384 {
             break;
         }
+    }
+    if !head_done {
+        // 头都没写完就断了（或超长）：这是畸形请求，别拿半截头去解析。
+        let _ = stream
+            .write_all(
+                b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await;
+        return Ok(());
     }
     let head_str = String::from_utf8_lossy(&head);
     let first_line = head_str.lines().next().unwrap_or("");
@@ -145,6 +172,22 @@ async fn handle_conn(
         })
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0);
+    // body 大小要有上限：伪造一个巨大的 Content-Length 就能把内存吃光。
+    // 更新包是几十 MB 的安装包，单独放宽额度。
+    let max_body = if path.starts_with("/api/admin/update") {
+        MAX_UPLOAD_BODY
+    } else {
+        MAX_BODY
+    };
+    if content_length > max_body {
+        let msg = "{\"error\":\"请求体太大\"}";
+        let resp = format!(
+            "HTTP/1.1 413 Payload Too Large\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{msg}",
+            msg.len()
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+        return Ok(());
+    }
     let mut body = vec![0u8; content_length];
     if content_length > 0 {
         stream.read_exact(&mut body).await?;

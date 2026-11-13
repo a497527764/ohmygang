@@ -7,22 +7,26 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; background: #0f1923; color: #c8d6e5; min-height: 100vh; }
-.container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+.container { max-width: 1180px; margin: 0 auto; padding: 24px 16px; }
 h1 { font-size: 22px; color: #f0e6d2; margin-bottom: 24px; border-bottom: 1px solid #2a3a4a; padding-bottom: 12px; }
 .card { background: #1a2634; border: 1px solid #2a3a4a; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
 label { display: block; margin-bottom: 6px; font-size: 13px; color: #8899aa; }
-input { width: 100%; padding: 10px 12px; border: 1px solid #2a3a4a; border-radius: 6px; background: #0f1923; color: #c8d6e5; font-size: 15px; margin-bottom: 12px; outline: none; }
+input { width: 100%; padding: 10px 12px; border: 1px solid #2a3a4a; border-radius: 6px; background: #0f1923; color: #c8d6e5; font-size: 15px; outline: none; }
 input:focus { border-color: #c8aa6e; }
 button { padding: 10px 24px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; transition: opacity .15s; }
 button:hover { opacity: .85; }
+button:disabled { opacity: .4; cursor: not-allowed; }
 .btn-primary { background: #c8aa6e; color: #0f1923; font-weight: 600; }
-.btn-danger { background: #e74c3c; color: #fff; padding: 6px 14px; font-size: 13px; }
+.btn-danger { background: #e74c3c; color: #fff; }
 .btn-sm { padding: 5px 12px; font-size: 12px; }
+.btn-ghost { background: #37474f; color: #c8d6e5; }
+.btn-gold { background: #2a3a4a; color: #c8aa6e; }
 .error { color: #e74c3c; font-size: 13px; margin-top: 8px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #2a3a4a; }
-th { color: #8899aa; font-weight: 600; font-size: 12px; text-transform: uppercase; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #2a3a4a; vertical-align: top; }
+th { color: #8899aa; font-weight: 600; font-size: 12px; text-transform: uppercase; white-space: nowrap; }
 tr:hover td { background: #1e2e3e; }
+tr.selected td { background: #223449; }
 .code { font-family: "Cascadia Code", Consolas, monospace; font-size: 15px; font-weight: 700; color: #c8aa6e; letter-spacing: 2px; }
 .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; color: #667788; word-break: break-all; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
@@ -30,9 +34,28 @@ tr:hover td { background: #1e2e3e; }
 .badge-idle { background: #37474f; color: #90a4ae; }
 .member-list { margin: 6px 0 0 0; padding: 0; list-style: none; }
 .member-list li { padding: 5px 0; border-top: 1px dashed #2a3a4a; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
-.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+.toolbar-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.toolbar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .stats { font-size: 13px; color: #8899aa; }
+.stats b { color: #c8aa6e; }
+.search { width: 220px; padding: 7px 12px; font-size: 13px; }
 .empty { text-align: center; padding: 40px; color: #556677; }
+.check { width: 15px; height: 15px; accent-color: #c8aa6e; cursor: pointer; vertical-align: middle; }
+.col-check { width: 36px; }
+.code-cell { display: flex; align-items: center; gap: 8px; }
+.code-cell .code { white-space: nowrap; }
+.copy-btn { background: transparent; border: 1px solid #2a3a4a; color: #8899aa; padding: 3px 9px; font-size: 11px; border-radius: 4px; }
+.copy-btn:hover { border-color: #c8aa6e; color: #c8aa6e; }
+.copy-btn.done { border-color: #4caf50; color: #81c784; }
+.longcode { margin-top: 4px; font-size: 11px; color: #556677; word-break: break-all; }
+.team-title { color: #c8d6e5; font-weight: 600; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-title.none { color: #556677; font-weight: 400; }
+.bulk-bar { display: none; align-items: center; gap: 10px; background: #223449; border: 1px solid #3a5372; border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; flex-wrap: wrap; }
+.bulk-bar.show { display: flex; }
+.bulk-bar .hint { color: #8899aa; font-size: 12px; }
+.toast { position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%) translateY(20px); background: #223449; border: 1px solid #c8aa6e; color: #f0e6d2; padding: 10px 22px; border-radius: 6px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 99; }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 </style>
 </head>
 <body>
@@ -52,16 +75,38 @@ tr:hover td { background: #1e2e3e; }
   <!-- 管理面板 -->
   <div id="admin-view" style="display:none">
     <div class="toolbar">
-      <div class="stats" id="stats"></div>
-      <div>
+      <div class="toolbar-left">
+        <div class="stats" id="stats">共 0 支队伍</div>
+        <input class="search" id="search" placeholder="搜队伍码 / 队名" oninput="render()">
+      </div>
+      <div class="toolbar-right">
         <button class="btn-primary btn-sm" onclick="loadTeams()">刷新</button>
-        <button class="btn-sm" style="background:#37474f;color:#c8d6e5" onclick="doLogout()">退出</button>
+        <button class="btn-sm btn-ghost" onclick="doLogout()">退出</button>
       </div>
     </div>
+
+    <!-- 批量操作条：选中东西才出现 -->
+    <div class="bulk-bar" id="bulk-bar">
+      <span class="hint">已选 <b id="sel-count">0</b> 支</span>
+      <button class="btn-sm btn-gold" onclick="copySelected()">复制选中队伍码</button>
+      <button class="btn-sm btn-gold" onclick="copySelectedLong()">复制完整邀请码</button>
+      <button class="btn-sm btn-danger" onclick="deleteSelected()">批量删除</button>
+      <button class="btn-sm btn-ghost" onclick="clearSelection()">取消选择</button>
+    </div>
+
     <div class="card" style="padding:0;overflow-x:auto">
       <table>
         <thead>
-          <tr><th>队伍码</th><th>创建时间</th><th>最后活跃</th><th>人数</th><th>成员（机器码）</th><th>操作</th></tr>
+          <tr>
+            <th class="col-check"><input type="checkbox" class="check" id="check-all" onchange="toggleAll(this.checked)"></th>
+            <th>队伍码</th>
+            <th>队名</th>
+            <th>创建时间</th>
+            <th>最后活跃</th>
+            <th>人数</th>
+            <th>成员（机器码）</th>
+            <th>操作</th>
+          </tr>
         </thead>
         <tbody id="team-body"></tbody>
       </table>
@@ -70,8 +115,12 @@ tr:hover td { background: #1e2e3e; }
   </div>
 </div>
 
+<div class="toast" id="toast"></div>
+
 <script>
 let TOKEN = localStorage.getItem('admin_token') || '';
+let TEAMS = [];        // 全部队伍
+let SELECTED = new Set(); // 选中的短码
 
 function fmtTime(ts) {
   if (!ts) return '—';
@@ -85,6 +134,56 @@ function fmtAgo(ts) {
   if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
   if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
   return Math.floor(diff / 86400) + ' 天前';
+}
+
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+// 复制到剪贴板。
+// 后台是通过 IP 直连的 http://，不是安全上下文，navigator.clipboard 用不了，
+// 所以必须留 execCommand 这条降级路，不然「一键复制」就是摆设。
+async function copyText(text) {
+  try {
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* 落到降级 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+// 单条复制：按钮变成「已复制」，1.4 秒后还原
+async function copyOne(text, btn, label) {
+  const ok = await copyText(text);
+  if (ok) {
+    const old = btn.textContent;
+    btn.textContent = '已复制';
+    btn.classList.add('done');
+    setTimeout(() => { btn.textContent = old; btn.classList.remove('done'); }, 1400);
+    toast(label + ' 已复制到剪贴板');
+  } else {
+    toast('复制失败，请手动选中复制');
+  }
 }
 
 async function doLogin() {
@@ -115,6 +214,7 @@ async function doLogin() {
 function doLogout() {
   TOKEN = '';
   localStorage.removeItem('admin_token');
+  SELECTED.clear();
   document.getElementById('admin-view').style.display = 'none';
   document.getElementById('login-view').style.display = '';
 }
@@ -129,36 +229,132 @@ async function loadTeams() {
     const r = await fetch('/api/admin/teams?token=' + encodeURIComponent(TOKEN));
     if (r.status === 401) { doLogout(); return; }
     const d = await r.json();
-    const tbody = document.getElementById('team-body');
-    const empty = document.getElementById('empty-msg');
-    tbody.innerHTML = '';
-    if (!d.teams || d.teams.length === 0) {
-      empty.style.display = '';
-      document.getElementById('stats').textContent = '共 0 支队伍';
-      return;
-    }
-    empty.style.display = 'none';
-    document.getElementById('stats').textContent = '共 ' + d.teams.length + ' 支队伍';
-    for (const t of d.teams) {
-      const tr = document.createElement('tr');
-      const isRecent = (Date.now() / 1000 - t.last_active) < 3600;
-      let memberHtml = '<ul class="member-list">';
-      for (const m of t.members) {
-        memberHtml += '<li><span class="mono">' + m.member_hex.slice(0, 16) + '…</span><span style="color:#556677">' + fmtAgo(m.last_seen) + '</span></li>';
-      }
-      memberHtml += '</ul>';
-      tr.innerHTML =
-        '<td><span class="code">' + t.short_code + '</span></td>' +
-        '<td>' + fmtTime(t.created_at) + '</td>' +
-        '<td>' + fmtAgo(t.last_active) + '</td>' +
-        '<td><span class="badge ' + (isRecent ? 'badge-online' : 'badge-idle') + '">' + t.member_count + ' 人</span></td>' +
-        '<td>' + memberHtml + '</td>' +
-        '<td><button class="btn-danger" onclick="deleteTeam(\'' + t.short_code + '\')">删除</button></td>';
-      tbody.appendChild(tr);
-    }
+    TEAMS = d.teams || [];
+    // 队伍被回收后，选中的项要跟着消失，不然批量删除会对不上
+    const alive = new Set(TEAMS.map(t => t.short_code));
+    for (const c of Array.from(SELECTED)) if (!alive.has(c)) SELECTED.delete(c);
+    render();
   } catch (e) {
-    alert('加载失败：' + e.message);
+    toast('加载失败：' + e.message);
   }
+}
+
+// 当前搜索条件下能看到的队伍
+function visibleTeams() {
+  const q = document.getElementById('search').value.trim().toUpperCase();
+  if (!q) return TEAMS;
+  return TEAMS.filter(t =>
+    t.short_code.toUpperCase().includes(q) ||
+    (t.title || '').toUpperCase().includes(q) ||
+    (t.code || '').toUpperCase().includes(q)
+  );
+}
+
+function render() {
+  const list = visibleTeams();
+  const tbody = document.getElementById('team-body');
+  const empty = document.getElementById('empty-msg');
+  tbody.innerHTML = '';
+  if (TEAMS.length === 0) {
+    empty.style.display = '';
+    empty.textContent = '暂无队伍';
+    document.getElementById('stats').textContent = '共 0 支队伍';
+    updateBulkBar();
+    return;
+  }
+  empty.style.display = 'none';
+  const q = document.getElementById('search').value.trim();
+  document.getElementById('stats').innerHTML = q
+    ? '共 <b>' + TEAMS.length + '</b> 支队伍（筛出 ' + list.length + ' 支）'
+    : '共 <b>' + TEAMS.length + '</b> 支队伍';
+
+  for (const t of list) {
+    const tr = document.createElement('tr');
+    if (SELECTED.has(t.short_code)) tr.className = 'selected';
+    const isRecent = (Date.now() / 1000 - t.last_active) < 3600;
+    let memberHtml = '<ul class="member-list">';
+    for (const m of t.members) {
+      memberHtml += '<li><span class="mono">' + m.member_hex.slice(0, 16) + '…</span><span style="color:#556677">' + fmtAgo(m.last_seen) + '</span></li>';
+    }
+    memberHtml += '</ul>';
+    if (!t.members.length) memberHtml = '<span style="color:#556677;font-size:12px">—</span>';
+
+    const title = t.title
+      ? '<span class="team-title" title="' + escapeHtml(t.title) + '">' + escapeHtml(t.title) + '</span>'
+      : '<span class="team-title none">未命名</span>';
+
+    tr.innerHTML =
+      '<td class="col-check"><input type="checkbox" class="check" ' + (SELECTED.has(t.short_code) ? 'checked' : '') +
+        ' onchange="toggleOne(\'' + t.short_code + '\', this.checked)"></td>' +
+      '<td><div class="code-cell"><span class="code">' + t.short_code + '</span>' +
+        '<button class="copy-btn" onclick="copyOne(\'' + t.short_code + '\', this, \'队伍码\')">复制</button></div>' +
+        '<div class="longcode">' + escapeHtml(t.code || '') + '</div></td>' +
+      '<td>' + title + '</td>' +
+      '<td>' + fmtTime(t.created_at) + '</td>' +
+      '<td>' + fmtAgo(t.last_active) + '</td>' +
+      '<td><span class="badge ' + (isRecent ? 'badge-online' : 'badge-idle') + '">' + t.member_count + ' 人</span></td>' +
+      '<td>' + memberHtml + '</td>' +
+      '<td><button class="btn-danger btn-sm" onclick="deleteTeam(\'' + t.short_code + '\')">删除</button></td>';
+    tbody.appendChild(tr);
+  }
+  syncCheckAll();
+  updateBulkBar();
+}
+
+// 队名是用户自己填的，渲染前先转义，免得带标签的内容把表格撑坏
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function toggleOne(code, checked) {
+  if (checked) SELECTED.add(code); else SELECTED.delete(code);
+  render();
+}
+
+function toggleAll(checked) {
+  for (const t of visibleTeams()) {
+    if (checked) SELECTED.add(t.short_code); else SELECTED.delete(t.short_code);
+  }
+  render();
+}
+
+// 表头全选框要跟着「当前筛出来的行」走
+function syncCheckAll() {
+  const list = visibleTeams();
+  const on = list.filter(t => SELECTED.has(t.short_code)).length;
+  const box = document.getElementById('check-all');
+  box.checked = list.length > 0 && on === list.length;
+  box.indeterminate = on > 0 && on < list.length;
+}
+
+function updateBulkBar() {
+  const bar = document.getElementById('bulk-bar');
+  const n = SELECTED.size;
+  bar.classList.toggle('show', n > 0);
+  document.getElementById('sel-count').textContent = n;
+}
+
+function clearSelection() {
+  SELECTED.clear();
+  render();
+}
+
+// 复制选中的短码：每行一个，方便直接贴给别人
+async function copySelected() {
+  const codes = TEAMS.filter(t => SELECTED.has(t.short_code)).map(t => t.short_code);
+  if (!codes.length) return;
+  await copyText(codes.join('\n'));
+  toast('已复制 ' + codes.length + ' 个队伍码');
+}
+
+// 复制选中的完整 GT2 邀请码（能直接用的那种）
+async function copySelectedLong() {
+  const codes = TEAMS.filter(t => SELECTED.has(t.short_code)).map(t => t.code).filter(Boolean);
+  if (!codes.length) return;
+  await copyText(codes.join('\n'));
+  toast('已复制 ' + codes.length + ' 个完整邀请码');
 }
 
 async function deleteTeam(code) {
@@ -171,12 +367,41 @@ async function deleteTeam(code) {
     });
     const d = await r.json();
     if (d.ok) {
+      SELECTED.delete(code);
+      toast('已删除 ' + code);
       loadTeams();
     } else {
-      alert(d.error || '删除失败');
+      toast(d.error || '删除失败');
     }
   } catch (e) {
-    alert('删除失败：' + e.message);
+    toast('删除失败：' + e.message);
+  }
+}
+
+// 批量删除：一次清掉选中的所有队伍
+async function deleteSelected() {
+  const codes = TEAMS.filter(t => SELECTED.has(t.short_code)).map(t => t.short_code);
+  if (!codes.length) return;
+  if (!confirm('确定要删除选中的 ' + codes.length + ' 支队伍吗？\n\n' +
+               codes.join(', ') + '\n\n此操作不可撤销。')) return;
+  try {
+    const r = await fetch('/api/admin/teams/delete_batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ short_codes: codes, token: TOKEN }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      SELECTED.clear();
+      let msg = '已删除 ' + d.deleted + ' 支队伍';
+      if (d.missing && d.missing.length) msg += '（' + d.missing.length + ' 支本来就不存在）';
+      toast(msg);
+      loadTeams();
+    } else {
+      toast(d.error || '批量删除失败');
+    }
+  } catch (e) {
+    toast('批量删除失败：' + e.message);
   }
 }
 

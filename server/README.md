@@ -144,7 +144,13 @@ pub const CLOUD_RELAY: &str = "ws://14.103.234.253:31818";
 | POST | `/api/team/join` | 用 6 位短码换回 GT2 长码与 room_id，并带回队名 |
 | POST | `/api/team/rename` | 改队名（房主），名字落库 |
 | POST | `/api/team/heartbeat` | 上报房间活跃度与成员，供回收判定 |
+| POST | `/api/team/stats` | 批量查各房间当前在线人数 |
 | GET | `/api/team/code?room=<room_id_hex>` | 用 room_id 反查当前短码 |
+| GET | `/admin` | 后台管理页面（登录后可用） |
+| POST | `/api/admin/login` | 后台登录，返回会话 token |
+| GET | `/api/admin/teams?token=` | 全部队伍 + 成员（含完整邀请码、队名） |
+| POST | `/api/admin/teams/delete` | 删除一支队伍 |
+| POST | `/api/admin/teams/delete_batch` | **批量**删除多支队伍 |
 
 ### POST /api/team/create
 请求：
@@ -155,10 +161,15 @@ pub const CLOUD_RELAY: &str = "ws://14.103.234.253:31818";
 ```json
 { "short_code": "123456", "code": "GT2-XXXX-XXXX-...", "room_id": "<32 位十六进制>" }
 ```
-- 限流：同一 IP 每小时最多 30 次建队，超出返回 `429`。
+- **全局配额：整个服务器一小时内最多建 10 支队伍，24 小时内最多建 20 支**（所有 IP 合计），超出返回 `429`。
+  - 额度记在 `create_events` 表里，**队伍被回收删掉也不退额度**——否则「建了再删」就成��绕过后门。
+  - 额度用环境变量调：`CREATE_PER_HOUR`（默认 `10`）、`CREATE_PER_DAY`（默认 `20`）。
+    自用嫌紧的话，Zeabur 上加这两个变量重启即可，不用改代码。
+- 单 IP 另有限流：每小时最多 10 次建队，超出返回 `429`。
 - `member_id` 非法（非 32 字节十六进制）返回 `400`。
 - `title` 会存进数据库（队伍表）：中继的事件缓存只在内存里，服务器一重启房主的建队事件就没了，
   名字存在服务器上，新加入的人才拿得到队名。
+- 客户端兜底：云端拒绝时客户端会退回本地铸一个 GT2 长码，**队伍照样建得起来**，只是没有 6 位短码。
 
 ### POST /api/team/join
 请求：
@@ -203,10 +214,52 @@ pub const CLOUD_RELAY: &str = "ws://14.103.234.253:31818";
 
 ## 六、安全与限流
 
-- 建队接口按来源 IP 限流（每小时 30 次），防止有人用脚本把 6 位短码池占满。
+### 建队配额（全局，防刷）
+
+| 维度 | 额度 | 说明 |
+| --- | --- | --- |
+| 全局 | 1 小时 **10 支** / 24 小时 **20 支** | 所有 IP 合计，记账落库，重启不丢 |
+| 单 IP | 1 小时 10 支 | 在全局配额之外再加一层，单点刷不动服务器 |
+
+额度记在 `create_events` 表，回收任务每 10 分钟清掉 24 小时前的流水。
+用 `CREATE_PER_HOUR` / `CREATE_PER_DAY` 环境变量可调。
+
+### 各接口的防刷限流（按 IP）
+
+| 接口 | 额度 |
+| --- | --- |
+| `POST /api/team/create` | 10 次 / 小时 |
+| `POST /api/team/join` | 60 次 / 分钟 |
+| `POST /api/team/heartbeat` | 120 次 / 分钟 |
+| `POST /api/team/stats` | 60 次 / 分钟 |
+| `POST /api/team/rename` | 20 次 / 分钟 |
+| `GET /api/team/code` | 60 次 / 分钟 |
+| `POST /api/admin/login` | 10 次 / 分钟 |
+| `/api/admin/*` | 120 次 / 分钟 |
+
+超出返回 `429`，响应体里带 `retry_after_seconds`。
+
+### 其他加固
+
+- **限流按 IP 不按端口**：TCP `peer` 带端口号，早期按整串限流等于没限（每次连接一个新桶），现在只取 IP 部分。
+- **请求体上限**：普通接口 64 KB，更新包接口单独放宽到 256 MB；超了返回 `413`，防伪造大 `Content-Length` 撑爆内存。
+- **连接数上限**：同时在线连接不超过 512，超出的新连接直接丢弃。
+- **畸形请求**：握手头没写完（超过 16 KB 仍未见 `\r\n\r\n`）直接回 `400`，不拿半截头去解析。
 - 中继层对 `content` 做 Base64 解码并限制体积（≤ 1200 字节），拒绝畸形包。
 - 端到端加密不变：服务器只保管 `room_secret + owner_tag` 到短码的映射，从不接触明文消息内容，也无法解密房间消息。
 - `blacklist` 机制确保已回收房间不可被重新激活。
+
+---
+
+## 六之二、后台管理页
+
+访问 `http://<服务器>:<端口>/admin`，用 `zhaopeng` / `000000` 登录（凭证在 `api.rs` 顶部的常量里）。
+
+- **批量管理**：表格左侧有复选框，表头是全选；选中后上方浮出操作条，可以「复制选中队伍码」「复制完整邀请码」「批量删除」。全选只作用于当前搜索结果，删掉的队伍会从列表消失。
+- **一键复制**：每支队伍旁边有「复制」按钮，点了按钮变「已复制」。
+  后台走的是 `http://IP:端口`，**不是安全上下文**，`navigator.clipboard` 用不了，
+  所以代码里留了 `execCommand` 降级路径——只写 clipboard API 的话这个按钮在真机上就是摆设。
+- **搜索**：可以按短码、队名或完整邀请码过滤。
 
 ---
 
@@ -220,9 +273,10 @@ server/
 ├── README.md           # 本文件
 └── src/
     ├── main.rs         # 入口：绑定端口、启动回收任务、集成测试
-    ├── net.rs          # 单端口同时分流 WebSocket 中继与 HTTP 短码 API
+    ├── net.rs          # 单端口同时分流 WebSocket 中继与 HTTP 短码 API（含 body 上限、连接数上限）
     ├── relay.rs        # Nostr 风格中继 + 内存成员/活跃登记表
-    ├── api.rs          # 短码 create / join / heartbeat / code 接口 + 限流
-    ├── store.rs        # SQLite 持久化（teams / members / blacklist）
+    ├── api.rs          # 短码 create / join / heartbeat / code 接口 + 分接口限流 + 后台批量管理
+    ├── store.rs        # SQLite 持久化（teams / members / blacklist / create_events）
+    ├── admin.html      # 后台管理单页（批量管理 + 一键复制）
     └── protocol.rs     # 复刻客户端 GT2 长码与 room_id 派生（逐字节一致）
 ```
