@@ -195,6 +195,8 @@ export interface Relay {
   echoMs: number | null;
   /** 现在的包发给它（只发回显最好的 3 个）。 */
   sending: boolean;
+  /** 累计连过几次。一直连着就是 1；数字很大说明在反复断开重连。 */
+  connects: number;
 }
 
 export const teamView = (): Promise<TeamView> => invoke("team_view");

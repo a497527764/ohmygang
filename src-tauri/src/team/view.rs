@@ -176,6 +176,8 @@ pub struct RelayDto {
     pub echo_ms: Option<u64>,
     /// 现在的包发给它（只发回显最好的 3 个）。
     pub sending: bool,
+    /// 累计连过几次。一直连着就是 1；数字很大说明在反复断开重连。
+    pub connects: u64,
 }
 
 fn relay_dto(r: &RelayHealth) -> RelayDto {
@@ -190,6 +192,7 @@ fn relay_dto(r: &RelayHealth) -> RelayDto {
         echo_pct: r.echo_pct,
         echo_ms: r.echo_avg_ms,
         sending: r.sending,
+        connects: r.connects,
     }
 }
 
