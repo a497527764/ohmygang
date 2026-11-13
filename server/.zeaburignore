@@ -1,0 +1,5 @@
+# 上传构建上下文时忽略的东西（Zeabur CLI 认这个文件）
+# target 有几百 MB，传不上去，构建镜像时本来也会重新编译
+target
+.git
+*.rs.bk
