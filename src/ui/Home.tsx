@@ -59,6 +59,8 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
   };
 
   const on = status.enabled && !status.inputError;
+  // 云端服务器（中继所在的服务器）连不上：电源区红色「未连接」，盖过在线/离线的说法
+  const cloudDown = !status.cloud && !status.inputError;
   // 阵容表固定留到 5 个位置，空位是虚线格，能把卡片高度摊满
   const slots = Math.max(0, 5 - (view?.members.length ?? 0));
   const team = view?.team ?? null;
@@ -79,6 +81,8 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
         shortCode: null,
         title: team.title ?? null,
         isOwner: team.isOwner,
+        // 自己、以及 15 秒内报过在线状态的队友算「在线」
+        online: view?.members.filter((m) => m.isMe || m.status).length ?? 0,
         members: view?.members.length ?? 0,
         status: team.status,
         current: true,
@@ -103,11 +107,11 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
 
   return (
     <div className="v-home">
-      <section className={`v-power${on ? " on" : ""}${status.inputError ? " bad" : ""}`}>
+      <section className={`v-power${on && !cloudDown ? " on" : ""}${status.inputError || cloudDown ? " bad" : ""}`}>
         <button
           type="button"
           className="v-power-btn"
-          aria-label={on ? "下线" : "上线"}
+          aria-label={status.inputError ? "不可用" : cloudDown ? "未连接" : on ? "在线" : "离线"}
           aria-pressed={on}
           onClick={() => onToggle(!on)}
         >
@@ -115,7 +119,7 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
             <Glyph name="power" size={40} stroke={2.2} />
           </span>
           <span className="v-power-copy">
-            <b>{status.inputError ? "不可用" : on ? "在线" : "离线"}</b>
+            <b>{status.inputError ? "不可用" : cloudDown ? "未连接" : on ? "在线" : "离线"}</b>
             {status.inputError && <span className="v-power-hint">{status.inputError}</span>}
           </span>
           <MicWave live={s.voice} icon bars={17} max={54} className="v-wave" />
@@ -145,7 +149,7 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
           <b>队伍</b>
           {team && <span className="v-squad-name">{team.title ?? code_}</span>}
           <span className="v-page-spacer" />
-          {team?.status === "active" && (
+          {team && (
             <button type="button" className="v-code" onClick={copy} title="复制队伍码">
               <span className="v-code-text">{code_}</span>
               <Glyph name={copied ? "check" : "copy"} size={16} />
@@ -156,7 +160,7 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
         <div className="v-squad-body">
           {error && <p className="v-error">{error}</p>}
 
-          {team?.status === "active" && (
+          {team && (
             <>
               <div className="v-members">
                 <div className="v-members-head" aria-hidden="true">
@@ -189,7 +193,15 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
                 ))}
               </div>
               <div className="v-squad-foot">
-                {confirm === null ? (
+                {team.status === "joining" ? (
+                  <>
+                    <b className="v-squad-confirm">正在与队伍里的同伴建立连接…</b>
+                    <span className="v-squad-hint">对方在线时几秒内完成；一直不动说明队里现在没人</span>
+                    <button className="v-btn ghost" disabled={busy} onClick={() => run(teamCancel())}>
+                      <Glyph name="close" size={16} />取消
+                    </button>
+                  </>
+                ) : confirm === null ? (
                   <>
                     <button className="v-btn ghost" disabled={busy} onClick={() => setConfirm("leave")}>
                       <Glyph name="close" size={16} />退出
@@ -214,15 +226,6 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
                 )}
               </div>
             </>
-          )}
-
-          {team?.status === "joining" && (
-            <div className="v-squad-foot">
-              <b className="v-squad-confirm">加入中 · {team.title ?? code_}</b>
-              <button className="v-btn ghost" disabled={busy} onClick={() => run(teamCancel())}>
-                <Glyph name="close" size={16} />取消
-              </button>
-            </div>
           )}
 
           {!team && (
@@ -270,7 +273,7 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
                       {r.isOwner && <span className="v-chip">队长</span>}
                       <span className="v-recent-flag">{team?.status === "active" ? "当前" : "加入中"}</span>
                     </span>
-                    <span className="v-recent-num">{r.members} 人</span>
+                    <span className="v-recent-num" title="在线 / 总人数">{r.online ?? "—"}/{r.members}</span>
                     <span className="v-recent-go"><Glyph name="check" size={16} /></span>
                   </div>
                 ) : (
@@ -282,7 +285,7 @@ export function Home({ settings: s, status, onToggle, onOpenSettings }: Props) {
                       <span className="v-recent-code">{codeLabel(r)}</span>
                       {r.isOwner && <span className="v-chip">队长</span>}
                     </span>
-                    <span className="v-recent-num">{r.members} 人</span>
+                    <span className="v-recent-num" title="在线 / 总人数">{r.online ?? "—"}/{r.members}</span>
                     <span className="v-recent-go"><Glyph name="chevron" size={16} /></span>
                   </button>
                 ),

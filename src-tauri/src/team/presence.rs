@@ -18,14 +18,21 @@ pub fn watch(app: &AppHandle) {
     };
     let room = *state.team.room.lock().expect("队伍锁没有中毒");
     let node = state.node.clone();
-    let net = tauri::async_runtime::block_on(node.inspect(move |n| {
+    let (paths, relay_ok, relay_total) = tauri::async_runtime::block_on(node.inspect(move |n| {
+        let relays = n.relay_status().unwrap_or_default();
         (
             room.map(|r| n.member_paths(&r)).unwrap_or_default(),
-            n.relay_status()
-                .map(|l| l.iter().filter(|r| r.state == RelayState::Ok).count())
-                .unwrap_or(0),
+            relays.iter().filter(|r| r.state == RelayState::Ok).count(),
+            relays.len(),
         )
-    }));
+    }))
+    .unwrap_or((Vec::new(), 0, 0));
+    // 云端服务器与中继一体（同一台）：一个中继都没连上 = 未连接；
+    // 一个中继都没配（关了互联网）不算断，别把用户自己关的说成掉线。
+    let cloud = relay_total == 0 || relay_ok > 0;
+    if state.cloud_ok.swap(cloud, Ordering::Relaxed) != cloud {
+        let _ = app.emit_to("main", "status://changed", cloud);
+    }
     let mut fresh: Vec<(MemberId, bool)> = state
         .team
         .presence
@@ -35,7 +42,7 @@ pub fn watch(app: &AppHandle) {
         .map(|(m, s)| (*m, s.at.elapsed() < PRESENCE_STALE))
         .collect();
     fresh.sort();
-    let now = format!("{net:?}{fresh:?}");
+    let now = format!("{relay_ok:?}{paths:?}{fresh:?}");
     let mut watched = state.team.watched.lock().expect("队伍锁没有中毒");
     if watched.as_deref() != Some(now.as_str()) {
         *watched = Some(now);

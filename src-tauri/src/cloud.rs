@@ -65,6 +65,18 @@ pub async fn team_heartbeat(room_id_hex: &str, member_id_hex: &str) -> Result<()
     Ok(())
 }
 
+/// 一批队伍现在各有多少人在线（15 分钟内报过心跳）。给主页「加入过的队伍」显示 在线/总数。
+pub async fn team_stats(room_ids: &[String]) -> Result<std::collections::HashMap<String, usize>, String> {
+    let v = post_json("/api/team/stats", &json!({ "room_ids": room_ids })).await?;
+    let Some(map) = v.get("stats").and_then(|s| s.as_object()) else {
+        return Err("云端响应格式不对".to_string());
+    };
+    Ok(map
+        .into_iter()
+        .filter_map(|(k, x)| x.as_u64().map(|n| (k.clone(), n as usize)))
+        .collect())
+}
+
 /// 给所有活跃队伍报一次心跳。
 pub async fn heartbeat_all(node: &NodeHandle) {
     let list = node

@@ -7,9 +7,10 @@ import {
   type AvatarInput, type KeyClash, type Me, type Settings, type Status, type TextEffect,
   type UpdateView, type VoiceStatus,
 } from "../api";
-import { base64OfDataUrl, prepareAvatar, randomPreset } from "../avatarImport";
+import { base64OfDataUrl, randomPreset } from "../avatarImport";
 import { prepareCustomEmote, toBase64 } from "../emoteImport";
 import { Avatar } from "../components/Avatar";
+import { AvatarCrop } from "./AvatarCrop";
 import { KeyCapture } from "../components/KeyCapture";
 import { vkLabel } from "../shared/keys";
 import { ALL_PINGS, pingById, type PingId } from "../shared/pings";
@@ -22,9 +23,8 @@ import { MicWave } from "./MicWave";
 import { THEME_PRESETS, type Theme } from "./themes";
 import { Action, Choice, Fold, Range, Row, Toggle } from "./controls";
 
-export type SettingsTab = "profile" | "common" | "keys" | "pings" | "emotes" | "team" | "voice" | "about";
+export type SettingsTab = "common" | "keys" | "pings" | "emotes" | "team" | "voice" | "about";
 const TABS: { id: SettingsTab; label: string; icon: GlyphName }[] = [
-  { id: "profile", label: "资料", icon: "users" },
   { id: "common", label: "常用", icon: "bolt" },
   { id: "keys", label: "按键", icon: "keyboard" },
   { id: "pings", label: "信号", icon: "target" },
@@ -223,7 +223,7 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
   const [profileBusy, setProfileBusy] = useState(false);
 
   useEffect(() => {
-    if (tab !== "profile") return;
+    if (tab !== "common") return;
     void teamView().then((v) => {
       setMe(v.me);
       setNick(v.me.nickname);
@@ -261,15 +261,15 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
     void saveProfile(n, avatar, avatarImage);
   };
 
-  const pickAvatarFile = useCallback(async (file: File | undefined) => {
-    if (!file) return;
-    const r = await prepareAvatar(file);
-    if (!r.ok) { setProfileErr(r.error); return; }
-    void saveProfile(nick.trim(), null, r.value.data);
-  }, [nick, saveProfile]);
-
   const pickRandomPreset = useCallback(() => {
     void saveProfile(nick.trim(), randomPreset(), null);
+  }, [nick, saveProfile]);
+
+  // 选了图先进裁剪框（任意图片都行），裁好确认才保存
+  const [cropFile, setCropFile] = useState<File | null>(null);
+  const onCropDone = useCallback((r: { data: string; dataUrl: string }) => {
+    setCropFile(null);
+    void saveProfile(nick.trim(), null, r.data);
   }, [nick, saveProfile]);
 
   return (
@@ -296,8 +296,13 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
 
       <div className="v-settings-main">
         <div className="v-tab-body">
-          {tab === "profile" && (
+
+        {tab === "common" && (
+          <>
           <section className="v-tile v-profile">
+            {cropFile ? (
+              <AvatarCrop file={cropFile} onCancel={() => setCropFile(null)} onDone={onCropDone} />
+            ) : (
             <div className="v-profile-face">
               <Avatar fingerprint={me?.fingerprint ?? ""} name={nick || me?.nickname || null} avatar={me?.avatar ?? null} size={88} />
               <div className="v-profile-side">
@@ -305,14 +310,15 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
                   <label className={`v-btn ghost${profileBusy ? " disabled" : ""}`}>
                     <Glyph name="image" size={18} />
                     {profileBusy ? "保存中…" : "选头像"}
-                    <input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={profileBusy}
-                      onChange={(e) => { void pickAvatarFile(e.target.files?.[0]); e.currentTarget.value = ""; }} />
+                    <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden disabled={profileBusy}
+                      onChange={(e) => { setCropFile(e.target.files?.[0] ?? null); e.currentTarget.value = ""; }} />
                   </label>
                   <Action icon="smile" label="随机头像" tone="ghost" disabled={profileBusy} onClick={pickRandomPreset} />
                 </div>
-                <span className="v-note">正方形 PNG / JPEG / WebP，最长边 ≤500、≤200 KB；同步给队友时统一 200×200</span>
+                <span className="v-note">任意图片都能选，裁剪框选好位置自动压成 200×200 同步给队友</span>
               </div>
             </div>
+            )}
             <Row icon="users" label="昵称" title="进队后显示在队友的成员列表里；不设就显示编号">
               <input className="v-input v-profile-nick" value={nick} maxLength={32} placeholder="不设就显示编号"
                 onChange={(e) => setNick(e.target.value)}
@@ -321,10 +327,7 @@ export function SettingsView({ settings: s, status, clashes, onChange, onSaved, 
             </Row>
             {profileErr && <p className="v-error">{profileErr}</p>}
           </section>
-        )}
 
-        {tab === "common" && (
-          <>
             <section className="v-tile v-common">
               <div className="v-common-item">
                 <div className="v-common-name"><Glyph name="image" size={18} /><b>图标风格</b></div>

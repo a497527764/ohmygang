@@ -134,6 +134,7 @@ async fn route(
         ("POST", "/api/team/create") => create(body, store, server, peer).await,
         ("POST", "/api/team/join") => join(body, store).await,
         ("POST", "/api/team/heartbeat") => heartbeat(body, store, server).await,
+        ("POST", "/api/team/stats") => stats(body, store).await,
         ("GET", "/api/team/code") => code_lookup(path, store).await,
         // 管理后台 API
         ("POST", "/api/admin/login") => admin_login(body),
@@ -274,6 +275,32 @@ async fn heartbeat(body: &[u8], store: &Arc<Store>, server: &Arc<RelayServer>) -
         m.entry(room_id).or_default().insert(member_hex, now);
     }
     (200, json!({ "ok": true }))
+}
+
+/// 主页「加入过的队伍」的在线人数：15 分钟内报过心跳（每 10 分钟一次）就算在线。
+async fn stats(body: &[u8], store: &Arc<Store>) -> (u16, Value) {
+    let v: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return (400, json!({ "error": "bad json" })),
+    };
+    let Some(rooms) = v.get("room_ids").and_then(|x| x.as_array()) else {
+        return (400, json!({ "error": "缺少 room_ids" }));
+    };
+    if rooms.len() > 20 {
+        return (400, json!({ "error": "room_ids 太多" }));
+    }
+    let since = now_secs() - 15 * 60;
+    let mut out = serde_json::Map::new();
+    for r in rooms {
+        let Some(room) = r.as_str() else { continue };
+        if parse_hex(room, 16).is_none() {
+            continue;
+        }
+        if let Ok(n) = store.room_online(room, since) {
+            out.insert(room.to_string(), json!(n));
+        }
+    }
+    (200, json!({ "stats": Value::Object(out) }))
 }
 
 async fn code_lookup(path: &str, store: &Arc<Store>) -> (u16, Value) {

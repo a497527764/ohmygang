@@ -4,7 +4,7 @@
 // 信号开关在托盘或快捷键处变化时由 "pings://enabled" 推过来。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { DEFAULT_THEME, getStatus, onEnabled, onNavigate, readSettings, setEnabled, writeSettings, type KeyClash, type Settings, type Status } from "./api";
+import { DEFAULT_THEME, getStatus, onCloud, onEnabled, onNavigate, readSettings, setEnabled, writeSettings, type KeyClash, type Settings, type Status } from "./api";
 import { PermissionCard } from "./components/PermissionCard";
 import { Home } from "./ui/Home";
 import { SettingsView, type SettingsTab } from "./ui/Settings";
@@ -43,11 +43,13 @@ export default function App() {
     readSettings().then((s) => { latest.current = s; setSettings(s); }, (e) => setError(String(e)));
     getStatus().then(setStatus, (e) => setError(String(e)));
     const off = onEnabled((on) => setStatus((s) => (s ? { ...s, enabled: on } : s)));
+    // 云端服务器可达性：连不上时主页电源区显示红色「未连接」
+    const offCloud = onCloud((ok) => setStatus((s) => (s ? { ...s, cloud: ok } : s)));
     const offNav = onNavigate((p) => {
       const to = NAV_FALLBACK[p];
       if (to) { setPage(to.page); setTab(to.tab); }
     });
-    return () => { void off.then((f) => f()); void offNav.then((f) => f()); };
+    return () => { void off.then((f) => f()); void offNav.then((f) => f()); void offCloud.then((f) => f()); };
   }, []);
 
   // Ctrl+E：主页 ↔ 设置；Esc：设置页退回主页。窗口有焦点时有效（和页面里的输入框互不打架）。

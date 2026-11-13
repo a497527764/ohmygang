@@ -54,6 +54,8 @@ pub struct CreatedRoom {
 /// 由 `Core::recent_rooms` 组装；解密队伍码用的还是建房时的主密钥，不明文落盘。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecentRoom {
+    /// 给云端问在线人数用的（hex 化后传出去）。
+    pub room_id: RoomId,
     pub code: String,
     /// 云端分配的 6 位短码（显示用）；老队伍没有。
     pub short_code: Option<String>,
@@ -246,6 +248,7 @@ impl Core {
                     .filter(|m| m.in_room)
                     .count();
                 Ok(RecentRoom {
+                    room_id: r.room_id,
                     code,
                     short_code: r.short_code.clone(),
                     title: r.title,

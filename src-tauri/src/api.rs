@@ -30,6 +30,8 @@ pub struct AppState {
     /// 输入线程；启动失败时是 None，`input_error` 说明原因。
     pub input: Option<InputHandle>,
     pub input_error: Option<String>,
+    /// 云端服务器可达（中继一个都连不上就是 false）。在线状态线程每 5 秒刷新。
+    pub cloud_ok: AtomicBool,
     pub overlays: Overlays,
     /// 队伍的网络（局域网 + 中继）。
     pub node: NodeHandle,
@@ -62,6 +64,9 @@ pub struct Status {
     pub input_error: Option<String>,
     /// macOS 上监听没起来：多半是缺「辅助功能」权限，控制面板顶部显示授权卡片。
     pub needs_permission: bool,
+    /// 云端服务器（中继所在的服务器）连得上；断了主页电源区显示红色「未连接」。
+    /// 在线状态线程每 5 秒刷新，变化时推 "status://changed"。
+    pub cloud: bool,
 }
 
 /// 开关信号，并让托盘、控制面板跟上。
@@ -257,6 +262,7 @@ pub fn status_get(state: State<'_, AppState>) -> Status {
         enabled: state.enabled.load(Ordering::Relaxed),
         input_error: state.input_error.clone(),
         needs_permission: cfg!(target_os = "macos") && state.input_error.is_some(),
+        cloud: state.cloud_ok.load(Ordering::Relaxed),
     }
 }
 

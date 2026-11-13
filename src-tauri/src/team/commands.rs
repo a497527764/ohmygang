@@ -46,7 +46,18 @@ pub async fn team_recent(app: AppHandle) -> Result<Vec<RecentTeamDto>, String> {
         .await
         .ok_or("网络模块停了")?
         .map_err(|e| e.to_string())?;
-    Ok(list.iter().map(recent_dto).collect())
+    // 顺手问云端每个队伍现在几个人在线（15 分钟内报过心跳）。
+    // 问不到（服务器暂时连不上）不报错：那一列显示「—」就行，别把整个列表拖死。
+    let room_ids: Vec<String> = list.iter().map(|r| crate::crypto::hex(&r.room_id)).collect();
+    let online = crate::cloud::team_stats(&room_ids).await.unwrap_or_default();
+    Ok(list
+        .iter()
+        .map(|r| {
+            let mut dto = recent_dto(r);
+            dto.online = online.get(&crate::crypto::hex(&r.room_id)).copied();
+            dto
+        })
+        .collect())
 }
 
 /// 启动自动回归：当时没在队里、最近一个队伍不是已解散的，就重新 join 它。

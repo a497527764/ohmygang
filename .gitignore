@@ -88,3 +88,4 @@ blob-report/
 .vscode/
 .idea/
 .cursor/
+server_deploy_tmp/

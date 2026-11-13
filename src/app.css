@@ -166,6 +166,7 @@ input, select, textarea { font: inherit; color: inherit; }
 }
 .v-power.on .v-power-btn:hover .v-dial { box-shadow: 0 0 40px rgba(255, 107, 26, 0.65), inset 0 0 22px rgba(255, 255, 255, 0.18); }
 .v-power.bad .v-dial { color: var(--pink); border-color: var(--pink); }
+.v-power.bad .v-power-copy b { color: var(--pink); }
 
 .v-power-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .v-power-copy b {
@@ -392,6 +393,8 @@ input, select, textarea { font: inherit; color: inherit; }
   flex: none;
 }
 .v-squad-confirm { font-size: 13px; font-weight: 700; color: var(--text); margin-right: auto; }
+/* 加入中：脚注说明（对方在线几秒完成；一直不动说明没人） */
+.v-squad-hint { font-size: 12px; color: var(--text-2); margin-right: 12px; }
 
 /* 窄高窗口：建队 / 进队在上，历史竖排在下，不再占右侧一列 */
 .v-squad-setup {
@@ -798,6 +801,18 @@ input, select, textarea { font: inherit; color: inherit; }
 .v-profile-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .v-profile-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .v-profile-nick { width: 240px; }
+
+/* 头像裁剪 */
+.v-crop { display: flex; flex-direction: column; gap: 12px; padding: 2px 18px 6px; }
+.v-crop-canvas {
+  border: 1px solid var(--line-hi);
+  background: #060a10;
+  cursor: grab;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+}
+.v-crop-canvas:active { cursor: grabbing; }
+.v-crop-zoom { display: flex; align-items: center; gap: 10px; max-width: 360px; }
+.v-crop-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
 .v-btn.orange { background: var(--orange); border-color: var(--orange); color: var(--orange-ink); }
 .v-btn.orange:hover { background: #ff8a42; border-color: #ff8a42; }

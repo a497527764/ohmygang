@@ -185,6 +185,16 @@ impl Store {
         Ok(out)
     }
 
+    /// 一段时间内报过心跳的成员数（客户端给主页「加入过的队伍」显示 在线/总数）。
+    pub fn room_online(&self, room_id_hex: &str, since: i64) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+        conn.query_row(
+            "SELECT COUNT(*) FROM members WHERE room_id = ?1 AND last_seen >= ?2",
+            params![room_id_hex, since],
+            |r| r.get::<_, i64>(0).map(|n| n as usize),
+        )
+    }
+
     pub fn load_activity(&self) -> rusqlite::Result<HashMap<String, i64>> {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
         let mut stmt = conn.prepare("SELECT room_id, last_active FROM teams")?;

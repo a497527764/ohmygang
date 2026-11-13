@@ -283,6 +283,8 @@ fn start(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         enabled: AtomicBool::new(auto_online),
         input,
         input_error,
+        // 启动先当作连得上（中继还在连，别先闪红）；在线状态线程 5 秒内会纠正
+        cloud_ok: AtomicBool::new(true),
         overlays,
         node,
         team: Default::default(),

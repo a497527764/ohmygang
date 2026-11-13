@@ -122,6 +122,8 @@ pub struct RecentTeamDto {
     pub status: &'static str,
     /// 推导出还在队里的人数（不是实时在线数）。
     pub members: usize,
+    /// 云端统计的现在在线人数（15 分钟内报过心跳）；问不到云端时是 None，前端显示「—」。
+    pub online: Option<usize>,
 }
 
 /// 主页历史队伍列表：明文队伍码只在内存和这一层出现，落盘的仍是密文。
@@ -137,6 +139,8 @@ pub(super) fn recent_dto(r: &crate::app_core::RecentRoom) -> RecentTeamDto {
             _ => "left",
         },
         members: r.members,
+        // 在线数由命令层问完云端再填（recent_dto 拿不到网络）
+        online: None,
     }
 }
 
@@ -230,7 +234,8 @@ pub async fn view(app: &AppHandle) -> Result<TeamView, String> {
         .await
         .ok_or("网络模块停了")?;
     let presence = state.team.presence.lock().expect("在线状态锁没有中毒");
-    let members = members
+    let me_big = big_avatar(&state, me.avatar_hash.as_deref());
+    let mut members: Vec<MemberDto> = members
         .into_iter()
         .map(|m| {
             let is_me = m.member_id == me.member_id;
@@ -258,8 +263,29 @@ pub async fn view(app: &AppHandle) -> Result<TeamView, String> {
             }
         })
         .collect();
+    drop(presence);
+    // 加入中：事件还没同步过来，成员列表是空的。把自己摆进去，
+    // 队伍面板显示和进了队一样（我的那一行），别让用户以为卡在申请里没成功。
+    if team
+        .as_ref()
+        .is_some_and(|(t, _)| t.status == RoomStatus::Joining)
+        && members.is_empty()
+    {
+        members.push(MemberDto {
+            member_id: hex(&me.member_id),
+            nickname: (!me.nickname.is_empty()).then(|| me.nickname.clone()),
+            fingerprint: me.fingerprint.clone(),
+            is_owner: false,
+            is_me: true,
+            avatar: me_big
+                .clone()
+                .or_else(|| avatar_dto(&me.avatar)),
+            path: None,
+            status: None,
+            platform: None,
+        });
+    }
     let relays = relays.unwrap_or_default();
-    let me_big = big_avatar(&state, me.avatar_hash.as_deref());
     Ok(TeamView {
         me: me_dto(&me, me_big),
         team: team.map(|(t, code)| TeamDto {

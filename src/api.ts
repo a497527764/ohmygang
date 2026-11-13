@@ -99,6 +99,8 @@ export interface Status {
   inputError: string | null;
   /** macOS 上监听没起来，顶部显示授权卡片。 */
   needsPermission: boolean;
+  /** 云端服务器（中继所在的服务器）连得上；断了主页电源区显示红色「未连接」。 */
+  cloud: boolean;
 }
 
 export const readSettings = (): Promise<Settings> => invoke("settings_read");
@@ -129,6 +131,9 @@ export const removeEmote = (id: string): Promise<Settings> => invoke("emote_remo
 
 export const onEnabled = (cb: (on: boolean) => void): Promise<UnlistenFn> =>
   listen<boolean>("pings://enabled", (e) => cb(e.payload));
+/** 云端服务器可达性变了（在线状态线程每 5 秒看一次中继）。 */
+export const onCloud = (cb: (ok: boolean) => void): Promise<UnlistenFn> =>
+  listen<boolean>("status://changed", (e) => cb(e.payload));
 
 // ---- 队伍（和 Rust 的 team.rs 对应） ----
 
@@ -198,6 +203,8 @@ export interface RecentTeam {
   status: "joining" | "active" | "left";
   /** 推导出还在队里的人数（不是实时在线数）。 */
   members: number;
+  /** 云端统计的现在在线人数（15 分钟内报过心跳）；问不到云端时是 null。 */
+  online: number | null;
 }
 export const teamRecent = (): Promise<RecentTeam[]> => invoke("team_recent");
 export const teamCreate = (title: string): Promise<TeamView> => invoke("team_create", { title });
