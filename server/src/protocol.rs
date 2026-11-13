@@ -50,10 +50,8 @@ pub fn derive_room_keys(secret: &[u8; 16], owner_tag: &[u8; 10]) -> (RoomKey, Ro
     let hk = Hkdf::<Sha256>::new(Some(owner_tag), secret);
     let mut key = [0u8; 32];
     let mut id = [0u8; 16];
-    hk.expand(b"hs/room-key/v1", &mut key)
-        .expect("长度合法");
-    hk.expand(b"hs/room-id/v1", &mut id)
-        .expect("长度合法");
+    hk.expand(b"hs/room-key/v1", &mut key).expect("长度合法");
+    hk.expand(b"hs/room-id/v1", &mut id).expect("长度合法");
     (key, id)
 }
 

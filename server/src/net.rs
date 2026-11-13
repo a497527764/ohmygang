@@ -116,7 +116,9 @@ async fn handle_conn(
     let method = it.next().unwrap_or("");
     let path = it.next().unwrap_or("");
     let is_ws = head_str.contains("Upgrade: websocket")
-        && head_str.to_ascii_lowercase().contains("connection: upgrade");
+        && head_str
+            .to_ascii_lowercase()
+            .contains("connection: upgrade");
 
     if is_ws {
         let prefixed = PrefixStream::new(head, stream);
@@ -124,6 +126,13 @@ async fn handle_conn(
             Ok(ws) => server.run_ws(ws).await,
             Err(e) => eprintln!("WS 握手失败: {e}"),
         }
+        return Ok(());
+    }
+
+    // 更新包是几十 MB 的二进制，不走返回字符串的 JSON 路由，直接分流到静态文件响应
+    if method == "GET" && path.starts_with("/update/") {
+        let resp = crate::api::serve_update_file(path).await;
+        stream.write_all(&resp).await?;
         return Ok(());
     }
 

@@ -76,11 +76,9 @@ impl Store {
     pub fn team_exists(&self, short: &str) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
         Ok(conn
-            .query_row(
-                "SELECT 1 FROM teams WHERE short_code = ?1",
-                [short],
-                |_| Ok(()),
-            )
+            .query_row("SELECT 1 FROM teams WHERE short_code = ?1", [short], |_| {
+                Ok(())
+            })
             .optional()?
             .is_some())
     }
@@ -129,8 +127,7 @@ impl Store {
 
     pub fn list_teams(&self) -> rusqlite::Result<Vec<TeamRow>> {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
-        let mut stmt = conn
-            .prepare("SELECT room_id, last_active, low_since FROM teams")?;
+        let mut stmt = conn.prepare("SELECT room_id, last_active, low_since FROM teams")?;
         let rows = stmt.query_map([], |r| {
             Ok(TeamRow {
                 room_id_hex: r.get(0)?,
@@ -156,7 +153,12 @@ impl Store {
         Ok(())
     }
 
-    pub fn upsert_member(&self, room_id_hex: &str, member_hex: &str, last_seen: i64) -> rusqlite::Result<()> {
+    pub fn upsert_member(
+        &self,
+        room_id_hex: &str,
+        member_hex: &str,
+        last_seen: i64,
+    ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
         conn.execute(
             "INSERT OR REPLACE INTO members (room_id, member_hex, last_seen) VALUES (?1, ?2, ?3)",
@@ -169,7 +171,11 @@ impl Store {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
         let mut stmt = conn.prepare("SELECT room_id, member_hex, last_seen FROM members")?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
         })?;
         let mut out: HashMap<String, HashMap<String, i64>> = HashMap::new();
         for r in rows {
@@ -196,7 +202,10 @@ impl Store {
     /// 回收一支队伍：删掉队伍与成员，room_id 进黑名单，短码随之释放可复用。
     pub fn dissolve(&self, room_id_hex: &str) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
-        conn.execute("INSERT OR IGNORE INTO blacklist (room_id) VALUES (?1)", [room_id_hex])?;
+        conn.execute(
+            "INSERT OR IGNORE INTO blacklist (room_id) VALUES (?1)",
+            [room_id_hex],
+        )?;
         conn.execute("DELETE FROM teams WHERE room_id = ?1", [room_id_hex])?;
         conn.execute("DELETE FROM members WHERE room_id = ?1", [room_id_hex])?;
         Ok(())

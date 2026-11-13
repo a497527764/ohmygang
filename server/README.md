@@ -89,6 +89,25 @@ npx zeabur@latest deploy --create --name ohmygang-relay --project-id <项目ID> 
 
 首次构建约几分钟（编译 Rust + 内置 SQLite）。构建完成后服务会自动启动，健康检查 `GET /health` 返回 `{"ok":true}`。
 
+### 路线 C：更新包托管（国内直连的自有更新源）
+
+GitHub 直连在国内时通时断，第三方加速镜像寿命不可控。服务器在国内可达的 IP 上，
+顺便把更新清单和安装包也放这里：客户端 updater 的 endpoints 第一位就是它，连不上再回落 GitHub 和镜像。
+
+安装包有 minisign 端到端签名（公钥编译进客户端），HTTP 明文传输被篡改也过不了校验，所以不走 TLS 也安全。
+
+**启用（两步）**：
+
+1. 在 Zeabur 给服务加环境变量 `UPLOAD_TOKEN=<自定义随机串>`（同时给 GitHub 仓库加 secret `RELAY_UPLOAD_TOKEN` 设同一个值，CI 发版后自动同步）。
+2. 发版后同步：CI 配好 secret 会自动跑；手动跑：
+   ```bash
+   # 国内本机加 GH_MIRROR 加速下载 release 产物
+   RELAY_UPLOAD_TOKEN=<同值> GH_MIRROR=https://ghfast.top/ node scripts/release.mjs mirror v0.2.1
+   ```
+
+**上传 API**（CI / 手动都会调它）：`POST /api/admin/update?token=<UPLOAD_TOKEN>&name=<文件名>`，body 是原始字节，存到 `/data/updates/`。
+**下载**：`GET /update/<文件名>`（含 `GET /update/latest.json`）。文件名白名单：字母数字加 `.-_`，防路径穿越。
+
 ---
 
 ## 三、客户端需要改的配置

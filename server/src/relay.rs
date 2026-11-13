@@ -14,8 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::store::Store;
 
@@ -35,7 +35,10 @@ pub struct Registry {
 }
 
 impl Registry {
-    fn load(activity: HashMap<String, i64>, members: HashMap<String, HashMap<String, i64>>) -> Self {
+    fn load(
+        activity: HashMap<String, i64>,
+        members: HashMap<String, HashMap<String, i64>>,
+    ) -> Self {
         Registry {
             activity: Mutex::new(activity),
             members: Mutex::new(members),
@@ -89,7 +92,10 @@ impl RelayServer {
     }
 
     fn is_blacklisted(&self, room_hex: &str) -> bool {
-        self.blacklist.lock().map(|b| b.contains(room_hex)).unwrap_or(false)
+        self.blacklist
+            .lock()
+            .map(|b| b.contains(room_hex))
+            .unwrap_or(false)
     }
 
     /// 一支队伍被回收：落盘删除、从登记表移除、room_id 进黑名单、清空内存事件。
@@ -159,7 +165,12 @@ impl RelayServer {
             for room in &rooms {
                 if let Some(buf) = events.get(room) {
                     for ev in buf {
-                        if let Some(tx) = self.conns.lock().ok().and_then(|c| c.get(&conn_id).cloned()) {
+                        if let Some(tx) = self
+                            .conns
+                            .lock()
+                            .ok()
+                            .and_then(|c| c.get(&conn_id).cloned())
+                        {
                             let msg = json!(["EVENT", sub_id, ev]).to_string();
                             let _ = tx.send(msg);
                         }
@@ -167,7 +178,12 @@ impl RelayServer {
                 }
             }
         }
-        if let Some(tx) = self.conns.lock().ok().and_then(|c| c.get(&conn_id).cloned()) {
+        if let Some(tx) = self
+            .conns
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&conn_id).cloned())
+        {
             let _ = tx.send(json!(["EOSE", sub_id]).to_string());
         }
     }
@@ -233,14 +249,18 @@ impl RelayServer {
         };
         match cmd {
             "EVENT" => {
-                let Some(event) = v.get(1) else { return; };
+                let Some(event) = v.get(1) else {
+                    return;
+                };
                 let Some(id) = event.get("id").and_then(|x| x.as_str()) else {
                     return;
                 };
                 let Some(room_hex) = extract_room(event) else {
                     let _ = sink
                         .send(Message::Text(
-                            json!(["OK", id, false, "invalid: missing room tag"]).to_string().into(),
+                            json!(["OK", id, false, "invalid: missing room tag"])
+                                .to_string()
+                                .into(),
                         ))
                         .await;
                     return;
@@ -248,7 +268,9 @@ impl RelayServer {
                 if event.get("kind").and_then(|k| k.as_i64()) != Some(KIND as i64) {
                     let _ = sink
                         .send(Message::Text(
-                            json!(["OK", id, false, "invalid: wrong kind"]).to_string().into(),
+                            json!(["OK", id, false, "invalid: wrong kind"])
+                                .to_string()
+                                .into(),
                         ))
                         .await;
                     return;
@@ -256,7 +278,9 @@ impl RelayServer {
                 if !valid_content(event) {
                     let _ = sink
                         .send(Message::Text(
-                            json!(["OK", id, false, "invalid: bad packet"]).to_string().into(),
+                            json!(["OK", id, false, "invalid: bad packet"])
+                                .to_string()
+                                .into(),
                         ))
                         .await;
                     return;
@@ -269,9 +293,18 @@ impl RelayServer {
                 };
                 let _ = sink
                     .send(Message::Text(
-                        json!(["OK", id, accepted, if accepted { "" } else { "blocked: room dissolved" }])
-                            .to_string()
-                            .into(),
+                        json!([
+                            "OK",
+                            id,
+                            accepted,
+                            if accepted {
+                                ""
+                            } else {
+                                "blocked: room dissolved"
+                            }
+                        ])
+                        .to_string()
+                        .into(),
                     ))
                     .await;
                 if let Some(n) = notice {

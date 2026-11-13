@@ -40,11 +40,13 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFBNDFDODg3RDM5N0U2QzcKUldUSDVwZlRoOGhCR3Z3T3lLSExGdEdGQjl6cWNnN3VkSnl6dlJGNGcyUTRUck9OVE9oMmM2c3IK",
       "endpoints": [
+        "http://14.103.234.253:31818/update/latest.json",
         "https://github.com/a497527764/ohmygang/releases/latest/download/latest.json",
         "https://ghfast.top/https://github.com/a497527764/ohmygang/releases/latest/download/latest.json",
         "https://ghproxy.net/https://github.com/a497527764/ohmygang/releases/latest/download/latest.json"
       ],
       "requireSignedVersion": true,
+      "dangerousInsecureTransportProtocol": true,
       "windows": {
         "installMode": "passive"
       }

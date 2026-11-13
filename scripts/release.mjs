@@ -1,7 +1,8 @@
-// 发版工作流（.github/workflows/release.yml）用的脚本，三个子命令：
+// 发版工作流（.github/workflows/release.yml）用的脚本，四个子命令：
 //   check <标签>                       三处版本号和标签一致、更新公钥已经填了，否则失败（不打一个没法更新的包）
 //   collect <平台> <输出目录>          把这个平台打好的包改成英文文件名放进输出目录，另写一个片段：更新包的文件名和签名
 //   manifest <输出目录> <标签> <说明文件>  把各平台的片段合成 latest.json（自动更新读它），片段删掉
+//   mirror <标签>                      把 release 上的 latest.json 和各平台更新包同步到国内中继（免费自托管更新源）
 // 平台：windows、macos（3.1 起不再出 Linux 的包）。安装包的英文名：lolgang_<版本>_x64-setup.exe、lolgang_<版本>_aarch64.dmg；
 // Tauri 按产品名 lolGang 起名，这里统一成上面的小写文件名。
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -84,7 +85,56 @@ function manifest(out, tag, notesFile) {
 }
 
 const [cmd, ...args] = process.argv.slice(2);
+
+/** 国内中继更新源：客户端 updater 的 endpoints 第一位就是它（见 tauri.conf.json）。 */
+const RELAY = process.env.RELAY ?? "http://14.103.234.253:31818";
+const REPO = "a497527764/ohmygang";
+let TOKEN = "";
+
+/** 国内本机跑时给 GitHub 下载加镜像前缀（CI 上不用）：GH_MIRROR=https://ghfast.top/ */
+const GH_PREFIX = process.env.GH_MIRROR ?? "";
+
+async function download(url) {
+  const r = await fetch(GH_PREFIX + url, { redirect: "follow" });
+  if (!r.ok) fail(`下载失败 ${url}：HTTP ${r.status}`);
+  return Buffer.from(await r.arrayBuffer());
+}
+
+async function upload(name, bytes) {
+  const r = await fetch(`${RELAY}/api/admin/update?token=${encodeURIComponent(TOKEN)}&name=${encodeURIComponent(name)}`, {
+    method: "POST",
+    body: bytes,
+  });
+  const text = await r.text();
+  if (!r.ok) fail(`上传 ${name} 失败：HTTP ${r.status} ${text}`);
+  console.log(`已上传 ${name}（${bytes.length.toLocaleString()} 字节）`);
+}
+
+async function mirror(tag) {
+  TOKEN = process.env.RELAY_UPLOAD_TOKEN ?? process.env.UPLOAD_TOKEN ?? "";
+  if (!TOKEN) fail("没有 RELAY_UPLOAD_TOKEN（中继上传凭证，和服务器 UPLOAD_TOKEN 环境变量同值）");
+  if (!/^v/.test(tag)) fail(`标签要以 v 开头，收到：${tag}`);
+  // 拉发布好的 latest.json，核对版本
+  const latest = JSON.parse((await download(`https://github.com/${REPO}/releases/latest/download/latest.json`)).toString("utf8"));
+  if (latest.version !== tag.replace(/^v/, "")) {
+    fail(`latest.json 是 ${latest.version}，和标签 ${tag} 对不上（是不是这个版本还没发出去？）`);
+  }
+  // 各平台的 url 改成中继地址（这样检查和下载都走国内直连）
+  const files = [];
+  for (const [key, p] of Object.entries(latest.platforms)) {
+    const file = p.url.split("/").pop();
+    p.url = `${RELAY}/update/${file}`;
+    files.push([file, `https://github.com/${REPO}/releases/download/${tag}/${file}`]);
+  }
+  // 先传安装包再传清单：清单生效时文件已经就位
+  for (const [file, url] of files) await upload(file, await download(url));
+  await upload("latest.json", JSON.stringify(latest, null, 2));
+  console.log(`中继更新源已就绪：${RELAY}/update/latest.json（${files.map((f) => f[0]).join("、")}）`);
+}
+
+// 命令分发放在最后：上面用了 let（TOKEN），不能在声明前执行
 if (cmd === "check") check(args[0] ?? "");
 else if (cmd === "collect") collect(args[0], args[1]);
 else if (cmd === "manifest") manifest(args[0], args[1], args[2]);
-else fail("用法：node scripts/release.mjs check|collect|manifest …");
+else if (cmd === "mirror") await mirror(args[0] ?? "");
+else fail("用法：node scripts/release.mjs check|collect|manifest|mirror …");

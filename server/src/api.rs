@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::relay::RelayServer;
 use crate::store::Store;
@@ -138,22 +138,28 @@ async fn route(
         // 管理后台 API
         ("POST", "/api/admin/login") => admin_login(body),
         ("GET", "/api/admin/teams") => {
-            if check_admin(path, body) { admin_teams(store) } else { (401, json!({ "error": "未登录" })) }
+            if check_admin(path, body) {
+                admin_teams(store)
+            } else {
+                (401, json!({ "error": "未登录" }))
+            }
         }
         ("POST", "/api/admin/teams/delete") => {
-            if check_admin(path, body) { admin_delete(body, store, server) } else { (401, json!({ "error": "未登录" })) }
+            if check_admin(path, body) {
+                admin_delete(body, store, server)
+            } else {
+                (401, json!({ "error": "未登录" }))
+            }
         }
+        // 更新包上传（发版后由 CI 或本机推送）：body 是原始文件字节，token 在环境变量 UPLOAD_TOKEN
+        ("POST", "/api/admin/update") => upload_update(path, body),
         _ => (404, json!({ "error": "not found" })),
     }
 }
 
 fn parse_hex(s: &str, len: usize) -> Option<Vec<u8>> {
     let b = crate::protocol::unhex(s)?;
-    if b.len() == len {
-        Some(b)
-    } else {
-        None
-    }
+    if b.len() == len { Some(b) } else { None }
 }
 
 async fn create(
@@ -238,11 +244,7 @@ async fn join(body: &[u8], store: &Arc<Store>) -> (u16, Value) {
     }
 }
 
-async fn heartbeat(
-    body: &[u8],
-    store: &Arc<Store>,
-    server: &Arc<RelayServer>,
-) -> (u16, Value) {
+async fn heartbeat(body: &[u8], store: &Arc<Store>, server: &Arc<RelayServer>) -> (u16, Value) {
     let v: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => return (400, json!({ "error": "bad json" })),
@@ -259,11 +261,7 @@ async fn heartbeat(
         return (400, json!({ "error": "参数非法" }));
     }
     // 只对仍存在的队伍计数，避免给已回收的房间续命
-    let exists = store
-        .short_by_room(&room_id)
-        .ok()
-        .flatten()
-        .is_some();
+    let exists = store.short_by_room(&room_id).ok().flatten().is_some();
     if !exists {
         return (404, json!({ "error": "队伍不存在或已过期" }));
     }
@@ -282,10 +280,7 @@ async fn code_lookup(path: &str, store: &Arc<Store>) -> (u16, Value) {
     let room = path
         .split('?')
         .nth(1)
-        .and_then(|q| {
-            q.split('&')
-                .find_map(|p| p.strip_prefix("room="))
-        })
+        .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("room=")))
         .unwrap_or("");
     match store.short_by_room(room).ok().flatten() {
         Some(short) => (200, json!({ "short_code": short })),
@@ -384,3 +379,204 @@ fn admin_delete(body: &[u8], store: &Arc<Store>, server: &Arc<RelayServer>) -> (
 
 /// 管理后台的单页 HTML（登录 + 队伍列表 + 删除）。
 const ADMIN_PAGE: &str = include_str!("admin.html");
+
+// ---------- 更新包托管（国内直连的自有更新源） ----------
+//
+// GitHub 直连在国内时通时断，第三方镜像寿命不可控。服务器在国内可达的 IP 上，
+// 顺便把更新清单和安装包也放这里：客户端的 updater 把这里排在 endpoints 第一位，
+// 连不上再回落 GitHub 和镜像。安装包本身有 minisign 端到端签名（公钥编译进客户端），
+// 明文 HTTP 传输被篡改也过不了校验，所以不走 TLS 也安全。
+
+/// 更新文件目录：数据库同目录下的 `updates/`。
+pub fn updates_dir() -> std::path::PathBuf {
+    let db = std::env::var("DATA_DIR").unwrap_or_else(|_| "ohmygang.db".to_string());
+    std::path::Path::new(&db)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(|| "updates".into(), |p| p.join("updates"))
+}
+
+/// 文件名白名单：字母数字加 .-_，不超过 80 个字符，不以点开头（防路径穿越和怪文件）。
+fn safe_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 80
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+        && !name.contains("..")
+}
+
+/// POST /api/admin/update?token=...&name=... ：上传一个更新文件，body 是原始字节。
+fn upload_update(path: &str, body: &[u8]) -> (u16, Value) {
+    let expect = std::env::var("UPLOAD_TOKEN").unwrap_or_default();
+    upload_update_in(path, body, &expect, &updates_dir())
+}
+
+fn upload_update_in(path: &str, body: &[u8], expect: &str, dir: &std::path::Path) -> (u16, Value) {
+    if expect.is_empty() {
+        return (404, json!({ "error": "not found" }));
+    }
+    let q = path.split('?').nth(1).unwrap_or("");
+    let mut token = "";
+    let mut name = "";
+    for p in q.split('&') {
+        if let Some(t) = p.strip_prefix("token=") {
+            token = t;
+        }
+        if let Some(n) = p.strip_prefix("name=") {
+            name = n;
+        }
+    }
+    if token != expect {
+        return (403, json!({ "error": "token 不对" }));
+    }
+    if !safe_name(name) {
+        return (400, json!({ "error": "文件名不合法" }));
+    }
+    if body.is_empty() {
+        return (400, json!({ "error": "文件内容为空" }));
+    }
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return (500, json!({ "error": format!("建目录失败: {e}") }));
+    }
+    if let Err(e) = std::fs::write(dir.join(name), body) {
+        return (500, json!({ "error": format!("写文件失败: {e}") }));
+    }
+    eprintln!("更新文件已上传: {name} ({} 字节)", body.len());
+    (200, json!({ "ok": true, "name": name, "size": body.len() }))
+}
+
+/// GET /update/<name> 的完整 HTTP 响应（二进制），由网络层直接分流到这里。
+pub async fn serve_update_file(path: &str) -> Vec<u8> {
+    serve_update_bytes(path, &updates_dir()).await
+}
+
+async fn serve_update_bytes(path: &str, dir: &std::path::Path) -> Vec<u8> {
+    let name = path.trim_start_matches("/update/");
+    let not_found = |msg: &str| {
+        let s = format!("{{\"error\":\"{msg}\"}}");
+        format!(
+            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{s}",
+            s.len()
+        )
+        .into_bytes()
+    };
+    if !safe_name(name) {
+        return not_found("文件名不合法");
+    }
+    let file = match tokio::fs::File::open(dir.join(name)).await {
+        Ok(f) => f,
+        Err(_) => return not_found("not found"),
+    };
+    let meta = match file.metadata().await {
+        Ok(m) => m,
+        Err(_) => return not_found("not found"),
+    };
+    let mut buf = Vec::with_capacity(meta.len() as usize + 512);
+    use tokio::io::AsyncReadExt;
+    let mut file = file;
+    if file.read_to_end(&mut buf).await.is_err() {
+        return not_found("读取失败");
+    }
+    let ctype = match name.rsplit('.').next().unwrap_or("") {
+        "json" => "application/json",
+        "exe" => "application/octet-stream",
+        "dmg" => "application/octet-stream",
+        "gz" => "application/gzip",
+        "sig" => "text/plain",
+        _ => "application/octet-stream",
+    };
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        buf.len()
+    );
+    let mut resp = head.into_bytes();
+    resp.extend_from_slice(&buf);
+    resp
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    fn tmpdir(tag: &str) -> std::path::PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("ohmygang-update-{tag}-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn upload_needs_token_and_safe_name() {
+        let dir = tmpdir("auth");
+        // 没配 token：接口整体关闭
+        let (s, _) = upload_update_in(
+            "/api/admin/update?token=anything&name=latest.json",
+            b"{}",
+            "",
+            &dir,
+        );
+        assert_eq!(s, 404);
+        // token 不对
+        let (s, _) = upload_update_in(
+            "/api/admin/update?token=wrong&name=latest.json",
+            b"{}",
+            "secret",
+            &dir,
+        );
+        assert_eq!(s, 403);
+        // 路径穿越
+        for bad in ["../db", "a/b", ".hidden", "x..y", ""] {
+            let (s, _) = upload_update_in(
+                &format!("/api/admin/update?token=secret&name={bad}"),
+                b"{}",
+                "secret",
+                &dir,
+            );
+            assert_eq!(s, 400, "文件名 {bad:?} 要拒绝");
+        }
+        // 正常上传
+        let (s, v) = upload_update_in(
+            "/api/admin/update?token=secret&name=latest.json",
+            b"{\"version\":\"0.2.0\"}",
+            "secret",
+            &dir,
+        );
+        assert_eq!(s, 200);
+        assert_eq!(v["name"], "latest.json");
+        assert_eq!(
+            std::fs::read(dir.join("latest.json")).unwrap(),
+            b"{\"version\":\"0.2.0\"}"
+        );
+    }
+
+    #[tokio::test]
+    async fn uploaded_file_downloads_back() {
+        let dir = tmpdir("roundtrip");
+        let payload = b"binary installer bytes";
+        upload_update_in(
+            "/api/admin/update?token=t&name=lolgang_0.2.0_x64-setup.exe",
+            payload,
+            "t",
+            &dir,
+        );
+        let resp = serve_update_bytes("/update/lolgang_0.2.0_x64-setup.exe", &dir).await;
+        let text = String::from_utf8_lossy(&resp);
+        assert!(text.starts_with("HTTP/1.1 200 OK"));
+        assert!(text.contains("Content-Type: application/octet-stream"));
+        assert!(text.contains("Connection: close"));
+        let body = &resp[resp.len() - payload.len()..];
+        assert_eq!(body, payload);
+
+        // 不存在的文件 404；怪名字也 404
+        assert!(
+            String::from_utf8_lossy(&serve_update_bytes("/update/nope.exe", &dir).await)
+                .starts_with("HTTP/1.1 404")
+        );
+        assert!(
+            String::from_utf8_lossy(&serve_update_bytes("/update/../secret", &dir).await)
+                .starts_with("HTTP/1.1 404")
+        );
+    }
+}

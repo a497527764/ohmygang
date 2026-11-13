@@ -110,8 +110,8 @@ mod tests {
 
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
-    use tokio_tungstenite::tungstenite::Message;
     use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message;
 
     fn hex(n: usize) -> String {
         "ab".repeat(n)
@@ -135,7 +135,9 @@ mod tests {
         let (status, v) = api::handle_json(
             "POST",
             "/api/team/create",
-            serde_json::to_vec(&json!({ "member_id": me })).unwrap().as_slice(),
+            serde_json::to_vec(&json!({ "member_id": me }))
+                .unwrap()
+                .as_slice(),
             &server,
             &store,
             "9.9.9.9",
@@ -145,7 +147,9 @@ mod tests {
         let short = v["short_code"].as_str().unwrap().to_string();
         assert_eq!(short.len(), 6);
         assert!(
-            short.bytes().all(|b| b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ".contains(&b)),
+            short
+                .bytes()
+                .all(|b| b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ".contains(&b)),
             "短码应为大写字母数字"
         );
         assert!(v["code"].as_str().unwrap().starts_with("GT2-"));
@@ -155,7 +159,9 @@ mod tests {
         let (status2, v2) = api::handle_json(
             "POST",
             "/api/team/join",
-            serde_json::to_vec(&json!({ "code": v["short_code"] })).unwrap().as_slice(),
+            serde_json::to_vec(&json!({ "code": v["short_code"] }))
+                .unwrap()
+                .as_slice(),
             &server,
             &store,
             "9.9.9.9",
@@ -168,7 +174,9 @@ mod tests {
         let (status3, _v3) = api::handle_json(
             "POST",
             "/api/team/join",
-            serde_json::to_vec(&json!({ "code": "AAAAAA" })).unwrap().as_slice(),
+            serde_json::to_vec(&json!({ "code": "AAAAAA" }))
+                .unwrap()
+                .as_slice(),
             &server,
             &store,
             "9.9.9.9",
@@ -179,7 +187,9 @@ mod tests {
         let (status3b, _v3b) = api::handle_json(
             "POST",
             "/api/team/join",
-            serde_json::to_vec(&json!({ "code": "IIIIII" })).unwrap().as_slice(),
+            serde_json::to_vec(&json!({ "code": "IIIIII" }))
+                .unwrap()
+                .as_slice(),
             &server,
             &store,
             "9.9.9.9",
@@ -231,7 +241,9 @@ mod tests {
         let (_status, v) = api::handle_json(
             "POST",
             "/api/team/create",
-            serde_json::to_vec(&json!({ "member_id": me })).unwrap().as_slice(),
+            serde_json::to_vec(&json!({ "member_id": me }))
+                .unwrap()
+                .as_slice(),
             &server,
             &store,
             "1.1.1.1",
@@ -241,14 +253,13 @@ mod tests {
 
         let (b_ws, _) = connect_async(url.clone()).await.unwrap();
         let (mut b_tx, mut b_rx) = b_ws.split();
-        b_tx
-            .send(
-                json!(["REQ", "s1", { "kinds": [24810], "#x": [room] }])
-                    .to_string()
-                    .into(),
-            )
-            .await
-            .unwrap();
+        b_tx.send(
+            json!(["REQ", "s1", { "kinds": [24810], "#x": [room] }])
+                .to_string()
+                .into(),
+        )
+        .await
+        .unwrap();
 
         let (a_ws, _) = connect_async(url.clone()).await.unwrap();
         let (mut a_tx, mut _a_rx) = a_ws.split();
@@ -256,8 +267,7 @@ mod tests {
             "id": "a1", "pubkey": "aa", "created_at": 1, "kind": 24810,
             "tags": [["x", room]], "content": "AAAA", "sig": "00"
         });
-        a_tx
-            .send(json!(["EVENT", event]).to_string().into())
+        a_tx.send(json!(["EVENT", event]).to_string().into())
             .await
             .unwrap();
 
