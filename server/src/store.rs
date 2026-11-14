@@ -310,6 +310,22 @@ impl Store {
         Ok(())
     }
 
+    /// 短码寿命从 30 天改成 90 天后，给存量队伍补一个新周期。
+    ///
+    /// 只动**还没到期**的队伍：它们本来有效，不该因为改参数就在几天后被回收。
+    /// 已经过期的队伍不碰——那是回收逻辑该判的活（有活跃成员就续期，没有就回收）。
+    /// `code_expires_at` 为 NULL 的老队伍也顺延：它们的短码从来没被回收过，
+    /// 现在开始纳入「90 天后到期」的节奏。
+    pub fn extend_active_code_expiries(&self, now: i64, new_expires_at: i64) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().expect("SQLite 锁没有中毒");
+        let n = conn.execute(
+            "UPDATE teams SET code_expires_at = ?2
+             WHERE code_expires_at IS NULL OR code_expires_at > ?1",
+            params![now, new_expires_at],
+        )?;
+        Ok(n)
+    }
+
     /// 最近 `since` 秒内报过心跳的不同成员数：判断这支队伍是不是「真有人在用」。
     pub fn recent_member_count(&self, room_id_hex: &str, since: i64) -> rusqlite::Result<usize> {
         let conn = self.conn.lock().expect("SQLite 锁没有中毒");
@@ -633,7 +649,10 @@ mod tests {
                 peer       TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_create_events_at ON create_events(created_at);
-            INSERT INTO create_events (created_at, peer) VALUES (1000, '1.2.3.4');",
+            INSERT INTO create_events (created_at, peer) VALUES (1000, '1.2.3.4');
+            -- 一支老队伍：短码到期时间按旧的 30 天算的，再过 10 天就到期
+            INSERT INTO teams (short_code, room_secret, owner_tag, room_id, created_at, last_active)
+            VALUES ('ABC234', x'00', x'00', 'aabb', 1000, 1000);",
         )
         .unwrap();
     }
@@ -713,6 +732,32 @@ mod tests {
             store.reserve_create(now, "5.6.7.8", "dev-A", limits).unwrap(),
             Quota::Device,
             "同一台设备换 IP 也该被挡住"
+        );
+
+        // 短码寿命从 30 天改成 90 天：老队伍顺延到新周期，不该因为参数变了就被回收。
+        let new_expiry = now + 90 * 86400;
+        let moved = store.extend_active_code_expiries(now, new_expiry).unwrap();
+        assert_eq!(moved, 1, "老队伍该被顺延到新周期");
+        let got: i64 = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT code_expires_at FROM teams WHERE room_id = 'aabb'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(got, new_expiry, "老队伍的短码到期时间没顺延");
+
+        // 已经过期的队伍不碰：那是回收逻辑该判的活。
+        store
+            .extend_code_expiry("aabb", now - 10)
+            .unwrap();
+        assert_eq!(
+            store.extend_active_code_expiries(now, new_expiry).unwrap(),
+            0,
+            "已过期的队伍不该被顺延，该交给回收逻辑判定"
         );
 
         let _ = std::fs::remove_file(&path);

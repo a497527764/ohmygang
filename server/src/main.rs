@@ -35,6 +35,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = std::env::var("DATA_DIR").unwrap_or_else(|_| "ohmygang.db".to_string());
 
     let store = Arc::new(Store::open(&db_path)?);
+    // 短码寿命改过（30 天 → 90 天）：给存量队伍补上新周期，别让老队伍
+    // 因为参数变了就几天后被回收。已经过期的队伍不碰，交给回收逻辑判。
+    {
+        let now = api::now_secs();
+        match store.extend_active_code_expiries(now, now + api::code_ttl()) {
+            Ok(n) if n > 0 => eprintln!("短码寿命调整为 90 天，{n} 支存量队伍已顺延到新周期"),
+            Ok(_) => {}
+            Err(e) => eprintln!("顺延存量短码失败（不影响启动）：{e}"),
+        }
+    }
     // 黑名单带回收时刻，久了可以老化清理。
     let blacklist: HashMap<String, i64> = store.load_blacklist()?.into_iter().collect();
     let blacklist = Arc::new(Mutex::new(blacklist));
@@ -118,14 +128,16 @@ async fn reap(server: &Arc<RelayServer>, store: &Arc<Store>) {
 
 /// 短码回收：一支队伍要「有人在用」才配继续占着短码。
 ///
-/// 「有人在用」= 最近 24 小时内有 2 个以上成员报过心跳。一个人开着软件挂机
-/// 不会续命——不然建了队再也不用的话，短码会永远占着，码池就这么被吃光了。
+/// 「有人在用」= 最近 `api::code_active_window()` 天（默认 7 天）内有 2 个以上
+/// 不同成员报过心跳。一个人开着软件挂机不会续命——不然建了队再也不用的话，
+/// 短码会永远占着，码池就这么被吃光了。
 /// 回收下来的短码进池子等着复用（有过冷却期，不会立刻发给别人）。
 fn reap_expired_codes(server: &Arc<RelayServer>, store: &Arc<Store>, now: i64) {
     let ttl = api::code_ttl();
+    let window = api::code_active_window();
     let expired = store.expired_codes(now).unwrap_or_default();
     for (room_id, short) in expired {
-        let recent = store.recent_member_count(&room_id, now - DAY).unwrap_or(0);
+        let recent = store.recent_member_count(&room_id, now - window).unwrap_or(0);
         if recent >= 2 {
             // 有人在用：给短码续期。
             let _ = store.extend_code_expiry(&room_id, now + ttl);
@@ -134,7 +146,10 @@ fn reap_expired_codes(server: &Arc<RelayServer>, store: &Arc<Store>, now: i64) {
         // 没人用了：把短码收回来。队伍在中继上还能互相发消息（不进黑名单），
         // 只是服务器不再发这个短码了，别人拿旧码来会得到「已过期」。
         if store.release_code(&room_id, now).unwrap_or(None).is_some() {
-            eprintln!("回收短码（{days} 天没人用）：{short}", days = ttl / DAY);
+            eprintln!(
+                "回收短码（{days} 天内不足 2 人用过）：{short}",
+                days = window / DAY
+            );
             // 内存登记表也清掉：这个房间服务器不再承认了，后面会按死队回收掉。
             if let Ok(mut a) = server.registry().activity.lock() {
                 a.remove(&room_id);
@@ -613,6 +628,61 @@ mod tests {
         )
         .await;
         assert_eq!(status, 200, "有人在用的队伍，短码不该被回收");
+    }
+
+    /// 续期看的是「最近 7 天内有没有 2 个不同成员用过」。
+    ///
+    /// 窗口从 24 小时放宽到 7 天后，判定边界跟着变了，这条测试把新边界钉住：
+    /// - 3 天前用过（窗口内）→ 算活跃 → 续期
+    /// - 10 天前用过（窗口外）→ 不算活跃 → 回收
+    #[tokio::test]
+    async fn the_active_window_is_seven_days() {
+        let (server, store, _addr) = test_server().await;
+        let now = api::now_secs();
+
+        // 造两支队伍：一支成员 3 天前用过，一支 10 天前用过
+        let mut rooms = Vec::new();
+        for (peer, days_ago) in [("10.8.0.1", 3i64), ("10.8.0.2", 10i64)] {
+            let me = hex(32);
+            let (_s, v) = api::handle_json(
+                "POST",
+                "/api/team/create",
+                serde_json::to_vec(&json!({ "member_id": me }))
+                    .unwrap()
+                    .as_slice(),
+                &server,
+                &store,
+                peer,
+            )
+            .await;
+            let room = v["room_id"].as_str().unwrap().to_string();
+            let short = v["short_code"].as_str().unwrap().to_string();
+
+            // 建队时创建者已被记为「刚刚活跃」，这里把所有人的活跃时间都拉到同一天，
+            // 免得创建者意外凑够 2 个人。
+            let seen_at = now - days_ago * DAY;
+            store.upsert_member(&room, &me, seen_at).unwrap();
+            store
+                .upsert_member(&room, &format!("aa{}", &hex(32)[..62]), seen_at)
+                .unwrap();
+
+            // 短码调到已到期，等回收任务来判
+            store.extend_code_expiry(&room, now - 10).unwrap();
+            rooms.push((room, short));
+        }
+
+        reap_expired_codes(&server, &store, now);
+
+        // 3 天前用过 → 在 7 天窗口内 → 续期，短码还在
+        assert!(
+            store.short_by_room(&rooms[0].0).unwrap().is_some(),
+            "3 天前用过的队伍应在 7 天窗口内，短码该被续期而不是回收"
+        );
+        // 10 天前用过 → 超出 7 天窗口 → 回收
+        assert!(
+            store.short_by_room(&rooms[1].0).unwrap().is_none(),
+            "10 天前用过的队伍已超出 7 天窗口，短码该被回收"
+        );
     }
 
     /// 中继必须给发布者自己回显。
