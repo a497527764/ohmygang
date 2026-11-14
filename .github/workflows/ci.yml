@@ -1,5 +1,6 @@
-# 每次推送和拉取请求：在 Windows、macOS（Apple 芯片）上构建前端、检查 Rust 格式和 clippy、跑全部 Rust 测试。
-# macOS 的键鼠监听是实验版：CI 保证它能编译、纯逻辑测试能过；真机上要人测。3.1 起不再支持 Linux。
+# 每次推送和拉取请求：在 Windows 上构建前端、检查 Rust 格式和 clippy、跑全部 Rust 测试。
+# 只跑 Windows：macOS 版是实验版，没在真机上测过，不值得为它单独占一台 runner
+# （macos-latest 经常排队，还会因为平台差异把 CI 弄红）。3.1 起不再支持 Linux。
 name: CI
 
 on:
@@ -21,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
