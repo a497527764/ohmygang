@@ -616,9 +616,12 @@ mod acl_tests {
     ) -> Result<tauri::ipc::InvokeResponseBody, serde_json::Value> {
         let app = tauri::test::mock_builder()
             .invoke_handler(tauri::generate_handler![team_recent, overlay_hello])
-            // 真配置（真 capabilities + 真命令权限清单），资源用空壳占位
+            // 真配置（真 capabilities + 真命令权限清单），资源用空壳占位。
+            // test = true：macOS 上 generate_context! 会往二进制里塞 Info.plist，
+            // 这里第二次调用必须跳过，不然符号重复定义、macOS 上编译不过。
             .build(tauri::generate_context!(
-                assets = tauri::test::noop_assets()
+                assets = tauri::test::noop_assets(),
+                test = true
             ))
             .expect("建测试应用");
         let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -630,7 +633,15 @@ mod acl_tests {
                 cmd: cmd.to_string(),
                 callback: tauri::ipc::CallbackFn(0),
                 error: tauri::ipc::CallbackFn(1),
-                url: "http://tauri.localhost".parse().unwrap(),
+                // 本地页面在 Windows/Android 是 http://tauri.localhost，
+                // 在 macOS/Linux 是 tauri://localhost——权限是按「来源」判的，写错就调不通。
+                url: if cfg!(any(windows, target_os = "android")) {
+                    "http://tauri.localhost"
+                } else {
+                    "tauri://localhost"
+                }
+                .parse()
+                .unwrap(),
                 body: tauri::ipc::InvokeBody::default(),
                 headers: Default::default(),
                 invoke_key: tauri::test::INVOKE_KEY.to_string(),
