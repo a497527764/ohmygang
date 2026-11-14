@@ -395,3 +395,268 @@ fn hotkey_label(h: Hotkey) -> String {
     parts.push(key);
     parts.join(" + ")
 }
+
+/// 权限清单的一致性测试。
+///
+/// Tauri 2 的权限是白名单：前端 `invoke("xxx")` 的命令，必须同时满足三件事才会被放行——
+/// ① 在 lib.rs 的 `generate_handler!` 里注册；② 在 build.rs 的 `COMMANDS` 里列了
+/// （tauri-build 才会给它生成 `allow-xxx` 权限文件）；③ 被某个 capabilities/*.json 放行。
+/// 少任何一环，运行时就是一句 `Command xxx not allowed by ACL`，界面上的功能直接罢工。
+///
+/// 3.2.9 实测踩过这个坑：队伍历史（team_recent）、删历史记录（team_forget）、
+/// 踢人拉黑（team_moderate）、窗口缩放（ui_sync_window）四个命令都只注册了、
+/// 忘了补权限，用户点一下就报错。这几个测试就是防止它再发生。
+#[cfg(test)]
+mod acl_tests {
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    /// src-tauri 目录。
+    fn manifest_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
+    }
+
+    /// lib.rs 的 `generate_handler![...]` 里注册的命令名。
+    fn registered_commands() -> BTreeSet<String> {
+        let src =
+            std::fs::read_to_string(manifest_dir().join("src/lib.rs")).expect("读不到 src/lib.rs");
+        let marker = "generate_handler![";
+        let start = src
+            .find(marker)
+            .expect("src/lib.rs 里没有 generate_handler![]");
+        let rest = &src[start + marker.len()..];
+        let end = rest
+            .find(']')
+            .expect("generate_handler![] 里的方括号没闭合");
+        rest[..end]
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            // 注册时写的是 `team::commands::team_recent`，命令名是最后一段
+            .map(|s| s.rsplit("::").next().unwrap_or(s).to_string())
+            .collect()
+    }
+
+    /// build.rs 的 COMMANDS 清单（权限清单的源头）。
+    fn manifest_commands() -> BTreeSet<String> {
+        let src =
+            std::fs::read_to_string(manifest_dir().join("build.rs")).expect("读不到 build.rs");
+        let start = src
+            .find("const COMMANDS")
+            .expect("build.rs 里没有 COMMANDS");
+        let rest = &src[start..];
+        // 数组是 `= &[` 开头的那种（类型标注里的 `&[&str]` 不算数）
+        let open = rest.find("= &[").expect("COMMANDS 的数组没找到") + 3;
+        let close = rest[open..].find(']').expect("COMMANDS 的方括号没闭合");
+        rest[open + 1..open + close]
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.trim_matches('"').to_string())
+            .collect()
+    }
+
+    /// capabilities/*.json 里所有放行过的权限标识。
+    fn allowed_permissions() -> BTreeSet<String> {
+        let dir = manifest_dir().join("capabilities");
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .expect("读不到 capabilities 目录")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+            .collect();
+        files.sort();
+        let mut out = BTreeSet::new();
+        for f in files {
+            let text = std::fs::read_to_string(&f).expect("读不了 capabilities 文件");
+            let v: serde_json::Value =
+                serde_json::from_str(&text).expect("capabilities 文件不是合法 JSON");
+            if let Some(list) = v.get("permissions").and_then(|p| p.as_array()) {
+                for p in list {
+                    if let Some(s) = p.as_str() {
+                        out.insert(s.to_string());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// 前端 invoke 了哪些命令（仓库根的 src/ 下所有 .ts/.tsx）。
+    fn invoked_commands() -> BTreeSet<String> {
+        fn walk(dir: &Path, out: &mut BTreeSet<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.filter_map(|e| e.ok()) {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                    continue;
+                }
+                let is_ts = p
+                    .extension()
+                    .map(|x| x == "ts" || x == "tsx")
+                    .unwrap_or(false);
+                if !is_ts {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&p) else {
+                    continue;
+                };
+                // 扫出所有 invoke("命令名" 的写法：invoke("x")、invoke<number>("x", ...)
+                let bytes = text.as_bytes();
+                let mut rest = text.as_str();
+                while let Some(pos) = rest.find("invoke") {
+                    let mut i = pos + "invoke".len();
+                    // 跳过空白
+                    while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+                        i += 1;
+                    }
+                    // 可能有泛型参数：invoke<number>("x", ...)
+                    if i < bytes.len() && bytes[i] == b'<' {
+                        if let Some(gt) = rest[i..].find('>') {
+                            i += gt + 1;
+                        }
+                        while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+                            i += 1;
+                        }
+                    }
+                    // 必须是 invoke( 才算调用（注释里出现「invoke」不算）
+                    if i >= bytes.len() || bytes[i] != b'(' {
+                        rest = &rest[pos + "invoke".len()..];
+                        continue;
+                    }
+                    i += 1;
+                    while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+                        i += 1;
+                    }
+                    if i >= bytes.len() || bytes[i] != b'"' {
+                        rest = &rest[i..];
+                        continue;
+                    }
+                    let start = i + 1;
+                    let Some(end) = rest[start..].find('"') else {
+                        break;
+                    };
+                    out.insert(rest[start..start + end].to_string());
+                    rest = &rest[start + end..];
+                }
+            }
+        }
+        let mut out = BTreeSet::new();
+        walk(&manifest_dir().join("../src"), &mut out);
+        out
+    }
+
+    #[test]
+    fn invoked_commands_are_registered() {
+        let registered = registered_commands();
+        let invoked = invoked_commands();
+        let missing: Vec<&String> = invoked
+            .iter()
+            .filter(|c| !registered.contains(*c))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "前端调用了 lib.rs 里没注册的命令：{missing:?}"
+        );
+    }
+
+    #[test]
+    fn registered_commands_are_in_the_permission_manifest() {
+        let manifest = manifest_commands();
+        let registered = registered_commands();
+        let missing: Vec<&String> = registered
+            .iter()
+            .filter(|c| !manifest.contains(*c))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "这些命令注册了但没进 build.rs 的 COMMANDS，tauri-build 不会给它们生成 allow-* 权限：{missing:?}"
+        );
+    }
+
+    #[test]
+    fn every_command_is_allowed_by_some_capability() {
+        let allowed = allowed_permissions();
+        let manifest = manifest_commands();
+        let missing: Vec<String> = manifest
+            .iter()
+            .filter(|c| !allowed.contains(&format!("allow-{}", c.replace('_', "-"))))
+            .cloned()
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "这些命令没有任何 capabilities 放行，前端一调就报 \"not allowed by ACL\"：{missing:?}"
+        );
+    }
+
+    // ---- 真跑一遍 IPC 的那部分 ----
+    //
+    // 上面的几个测试是「看清单」，这里是「真调一次」：用真实的 tauri.conf.json 和
+    // capabilities 建一个测试应用，发一条真的 IPC 请求，看 Tauri 的权限层放不放行。
+    // 命令体是假的（同名的空壳），因为要验的是「这个命令名放不放行」，跟命令做什么无关。
+
+    /// 同名的空壳命令：登记成 "team_recent"，好让权限层按这个名字去查放行名单。
+    #[tauri::command]
+    fn team_recent() -> &'static str {
+        "ok"
+    }
+
+    /// 同名的空壳命令：登记成 "overlay_hello"。它只归透明窗口（overlay-*）用，
+    /// 控制面板不该能调——拿来当反例，证明这个测试不是「怎么调都过」。
+    #[tauri::command]
+    fn overlay_hello() -> &'static str {
+        "ok"
+    }
+
+    /// 以控制面板（main 窗口）的身份真的调一次命令。
+    fn invoke_as_main_window(
+        cmd: &str,
+    ) -> Result<tauri::ipc::InvokeResponseBody, serde_json::Value> {
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![team_recent, overlay_hello])
+            // 真配置（真 capabilities + 真命令权限清单），资源用空壳占位
+            .build(tauri::generate_context!(
+                assets = tauri::test::noop_assets()
+            ))
+            .expect("建测试应用");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("建测试窗口");
+        tauri::test::get_ipc_response(
+            &webview,
+            tauri::webview::InvokeRequest {
+                cmd: cmd.to_string(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "http://tauri.localhost".parse().unwrap(),
+                body: tauri::ipc::InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        )
+    }
+
+    #[test]
+    fn main_window_can_really_call_team_recent() {
+        let res = invoke_as_main_window("team_recent");
+        assert!(
+            res.is_ok(),
+            "控制面板调 team_recent 被权限层拦了（用户看到的「读队伍历史失败」）：{res:?}"
+        );
+    }
+
+    #[test]
+    fn main_window_cannot_call_overlay_commands() {
+        let res = invoke_as_main_window("overlay_hello");
+        let err = res.expect_err("控制面板不该能调透明窗口的命令");
+        let msg = err.to_string();
+        // 正式版（release）里 Tauri 报「Command xxx not allowed by ACL」，
+        // 开发版报得细一点（会列出这个命令只归哪些窗口用）。
+        assert!(
+            msg.contains("not allowed"),
+            "反例不对：控制面板竟然能调 overlay_hello：{msg}"
+        );
+    }
+}

@@ -31,6 +31,10 @@
     "allow-team-leave",
     "allow-team-dissolve",
     "allow-team-rename",
-    "allow-profile-set"
+    "allow-team-recent",
+    "allow-team-forget",
+    "allow-team-moderate",
+    "allow-profile-set",
+    "allow-ui-sync-window"
   ]
 }
